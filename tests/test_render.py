@@ -3,6 +3,7 @@ import subprocess
 import sys
 import imageio.v2 as imageio
 import numpy as np
+import vtk
 from slam_fpv.renderer import Renderer
 from slam_fpv.cloud import CloudMap
 from slam_fpv.sources import DemoSource
@@ -60,3 +61,28 @@ def test_slam_outline_keeps_tf_and_transparent_inset_background():
                 assert np.any(pixels[:, channel] > others + 60)
     finally:
         r.close()
+
+
+def test_configurable_point_cloud_cameras_are_separate_and_unlabelled():
+    cloud = CloudMap()
+    source = DemoSource(1)
+    _, xyz, rgb = next(source.clouds())
+    cloud.add(xyz, rgb)
+    renderer = Renderer(480, 270, edl=False, slam_view=True, clean=True,
+                        view_modes=("left", "right"))
+    try:
+        renderer.update_cloud(cloud)
+        main, views = renderer.frame(source.pose(source.first), [], "")
+        assert main.shape == (270, 480, 4)
+        assert tuple(views) == ("left", "right")
+        assert all(view.mode == "RGBA" for view in views.values())
+        assert np.count_nonzero(np.asarray(views["left"])[:, :, 3]) > 0
+        assert not np.array_equal(np.asarray(views["left"]), np.asarray(views["right"]))
+        for _, overlay in renderer.views:
+            props = overlay.GetViewProps()
+            for index in range(props.GetNumberOfItems()):
+                actor = props.GetItemAsObject(index)
+                if isinstance(actor, (vtk.vtkBillboardTextActor3D, vtk.vtkTextActor)):
+                    assert actor.GetInput() != "TF"
+    finally:
+        renderer.close()

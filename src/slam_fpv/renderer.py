@@ -1,4 +1,4 @@
-"""Two synchronized VTK EDL viewports, plus foreground body RGB axes."""
+"""Synchronized VTK viewports with foreground body RGB axes."""
 import numpy as np
 from PIL import Image, ImageChops
 import vtk
@@ -55,7 +55,7 @@ def overlay_line(points,color,width):
 class Renderer:
     def __init__(self,width=1280,height=720,edl=True,axis=.48,axis_pixels=28,point_size=2,
                  distance=3.8,camera_height=1.35,side=0.,fov=65,inset_distance=10,inset_height=6.7,
-                 *, supersample=1, cloud_color=None, trajectory_color=(1,.73,.18), trajectory_width=3, clean=False, slam_view=False):
+                 *, supersample=1, cloud_color=None, trajectory_color=(1,.73,.18), trajectory_width=3, clean=False, slam_view=False, view_modes=None):
         self.output_size = (width, height)
         self.scale = supersample
         self.edl = edl
@@ -73,8 +73,9 @@ class Renderer:
         self.views=[]
         self.cloud_actors=[]
         self.dynamic=[]
-        self.tf_labels = []
-        for index in range(2):
+        self.view_modes = view_modes
+        self.modes = ("main", *(("oblique",) if view_modes is None else view_modes))
+        for index in range(len(self.modes)):
             window=vtk.vtkRenderWindow()
             window.SetSize(self.width if index == 0 else round(self.width * .32),
                            self.height if index == 0 else round(self.height * .33))
@@ -96,22 +97,9 @@ class Renderer:
             scene.GetActiveCamera().SetViewAngle(fov)
             window.AddRenderer(scene); window.AddRenderer(overlay)
             self.views.append((scene,overlay))
-            tf_label = vtk.vtkBillboardTextActor3D()
-            tf_label.SetInput("TF")
-            tf_label.SetDisplayOffset(8 * self.scale, 8 * self.scale)
-            tf_label.GetTextProperty().SetFontSize((18 if index == 0 else 14) * self.scale)
-            tf_label.GetTextProperty().SetColor(.94, .96, 1.)
-            tf_label.GetTextProperty().BoldOn()
-            tf_label.GetTextProperty().ShadowOn()
-            overlay.AddViewProp(tf_label)
-            self.tf_labels.append(tf_label)
         self.label=vtk.vtkTextActor(); self.label.SetPosition(22*self.scale,22*self.scale)
         self.label.GetTextProperty().SetFontSize(17*self.scale); self.label.GetTextProperty().SetColor(.9,.94,1)
         self.views[0][1].AddViewProp(self.label)
-        self.inset_label=vtk.vtkTextActor()
-        self.inset_label.SetPosition(10*self.scale,10*self.scale); self.inset_label.GetTextProperty().SetFontSize(12*self.scale)
-        self.views[1][1].AddViewProp(self.inset_label)
-        self.inset_label.SetInput('OBLIQUE FOLLOW')
 
     def update_cloud(self,cloud):
         for scene,actor in self.cloud_actors: scene.RemoveActor(actor)
@@ -129,7 +117,14 @@ class Renderer:
         self.label.SetInput(('SIMULATION' if label.startswith('SYNTHETIC') else '') if self.clean
                             else label+'\nX red / Y green / Z blue | metres')
         for index,(scene,overlay) in enumerate(self.views):
-            args=self.camera_args if index==0 else self.inset_args
+            mode = self.modes[index]
+            if mode == "main":
+                args = self.camera_args
+            elif mode == "oblique":
+                args = self.inset_args
+            else:
+                distance, height, _ = self.inset_args
+                args = (0., height * .32, distance if mode == "left" else -distance)
             position,target=camera(pose,*args,lookahead=1.5 if index==0 else 0.)
             cam=scene.GetActiveCamera(); cam.SetPosition(*position); cam.SetFocalPoint(*target)
             cam.SetViewUp(0,0,1); cam.SetClippingRange(.03,1000)
@@ -148,7 +143,6 @@ class Renderer:
             min_length=self.axis_pixels*2*distance*np.tan(np.deg2rad(cam.GetViewAngle()/2))/viewport_height
             length=max(self.axis,min_length)
             origin=pose[:3,3]
-            self.tf_labels[index].SetPosition(*origin)
             for j,color in reversed(list(enumerate([(1,.13,.12),(.15,1,.27),(.15,.43,1)]))):
                 points=np.array([origin,origin+pose[:3,j]*length])
                 for c,w in [((.01,.015,.025),7),(color,3.5)]:
@@ -163,24 +157,36 @@ class Renderer:
             capture.ShouldRerenderOff(); capture.Update()
             w,h=window.GetSize()
             images.append(np.flipud(vtk_to_numpy(capture.GetOutput().GetPointData().GetScalars()).reshape(h,w,4)).copy())
-        result, inset = (Image.fromarray(frame) for frame in images)
-        w, h = inset.size
-        corner = round(self.width * .66), round(self.height * .04)
-        mask = inset.getchannel("A")
-        if self.clean:
-            mask = ImageChops.multiply(mask, rounded_mask(inset.size, 18 * self.scale))
+        result = Image.fromarray(images[0])
         color = result.convert("RGB")
-        color.paste(inset.convert("RGB"), corner, mask)
+        alpha = result.getchannel("A")
+        if self.view_modes is None:
+            inset = Image.fromarray(images[1])
+            corner = round(self.width * .66), round(self.height * .04)
+            mask = inset.getchannel("A")
+            if self.clean:
+                mask = ImageChops.multiply(mask, rounded_mask(inset.size, 18 * self.scale))
+            color.paste(inset.convert("RGB"), corner, mask)
+            inset_alpha = Image.new("L", result.size)
+            inset_alpha.paste(mask, corner)
+            alpha = ImageChops.screen(alpha, inset_alpha)
         if self.scale > 1:
             color = color.resize(self.output_size, Image.Resampling.LANCZOS)
         if self.edl:
             color = color.point(EDL_TONES)
         if self.clean:
-            inset_alpha = Image.new("L", result.size)
-            inset_alpha.paste(mask, corner)
-            alpha = ImageChops.screen(result.getchannel("A"), inset_alpha)
             color.putalpha(alpha.resize(self.output_size, Image.Resampling.LANCZOS)
                            if self.scale > 1 else alpha)
+        if self.view_modes is not None:
+            view_images = {}
+            for mode, captured in zip(self.view_modes, images[1:]):
+                view = Image.fromarray(captured)
+                if self.edl:
+                    corrected = view.convert("RGB").point(EDL_TONES)
+                    corrected.putalpha(view.getchannel("A"))
+                    view = corrected
+                view_images[mode] = view
+            return np.asarray(color), view_images
         return np.asarray(color)
 
     def close(self):

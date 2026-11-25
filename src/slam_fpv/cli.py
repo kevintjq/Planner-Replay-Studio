@@ -92,7 +92,7 @@ def extrinsics(path):
     return [(v['parent'],v['child'],v['translation'],v['quaternion_xyzw']) for v in data]
 
 
-def make_renderer(a, *, clean=False):
+def make_renderer(a, *, clean=False, view_modes=None):
     from .renderer import Renderer
     solid = rgb_bytes(a.cloud_color) if a.color == 'solid' else None
     trajectory = ((1,.73,.18) if a.trajectory_color is None
@@ -100,7 +100,7 @@ def make_renderer(a, *, clean=False):
     return Renderer(a.width,a.height,not a.no_edl and not a.slam_view,a.axis,a.axis_pixels,a.point_size,
                     a.distance,a.camera_height,a.side,a.fov,a.inset_distance,a.inset_height,
                     supersample=a.supersample,cloud_color=solid,trajectory_color=trajectory,
-                    trajectory_width=a.trajectory_width,clean=clean,slam_view=a.slam_view)
+                    trajectory_width=a.trajectory_width,clean=clean,slam_view=a.slam_view,view_modes=view_modes)
 
 
 class Export:
@@ -145,7 +145,8 @@ def render(a, source, *, preview=None, preview_offset=0, progress=None, check_ca
         with ExitStack() as stack:
             video = stack.enter_context(FlightVideo(a.video, video_edit(a)))
             layers = [stack.enter_context(FlightVideo(layer.path, layer.edit)) for layer in project.videos] if project else ()
-            renderer = make_renderer(a, clean=project is not None)
+            view_modes = None if project is None else tuple(view.kind for view in project.views)
+            renderer = make_renderer(a, clean=project is not None, view_modes=view_modes)
             stack.callback(renderer.close)
             output = None
             if preview is None:
@@ -195,11 +196,12 @@ def render(a, source, *, preview=None, preview_offset=0, progress=None, check_ca
                 label = 'SYNTHETIC DEMO' if is_synthetic else 'RECORDED ROS1 DATA'
                 frame = renderer.frame(pose, trajectory, f'{label} | t={elapsed:.3f}s | REAR CHASE + OBLIQUE')
                 if project is not None:
+                    frame, cloud_views = frame
                     footage = tuple(layer.frame_at(elapsed) for layer in layers)
                     if preview is not None:
-                        preview(frame, footage, elapsed, speed)
+                        preview(frame, footage, elapsed, speed, cloud_views)
                         return
-                    combined, _ = compose(frame, project, footage, elapsed, speed)
+                    combined, _ = compose(frame, project, footage, elapsed, speed, cloud_views)
                     output.append(np.asarray(combined))
                 else:
                     footage = video.frame_at(elapsed)

@@ -45,9 +45,30 @@ class TextLayer:
         ImageColor.getrgb(self.color)
 
 
+POINT_CLOUD_VIEWS = {
+    "oblique": ("高位斜视", (.97, .05)),
+    "left": ("左侧跟随", (.04, .9)),
+    "right": ("右侧跟随", (.96, .9)),
+}
+
+
+@dataclass(frozen=True)
+class PointCloudView:
+    kind: str = "oblique"
+    width: float = .32
+    position: tuple = (.97, .05)
+
+    def __post_init__(self):
+        if self.kind not in POINT_CLOUD_VIEWS:
+            raise ValueError("未知的点云视角。")
+        if not .12 <= self.width <= .75:
+            raise ValueError("视角宽度应为 12–75%。")
+
+
 @dataclass(frozen=True)
 class Composition:
     videos: tuple = ()
+    views: tuple = (PointCloudView(),)
     texts: tuple = ()
     speed_position: tuple = (.05, .32)
     show_speed: bool = False
@@ -56,6 +77,8 @@ class Composition:
     speed_end: float | None = None
 
     def __post_init__(self):
+        if len({view.kind for view in self.views}) != len(self.views):
+            raise ValueError("每个附加视角只能添加一次。")
         if sum(layer.backdrop for layer in self.videos) > 1:
             raise ValueError("请选择一路全屏底片。")
         if not isfinite(self.speed_limit) or self.speed_limit <= 0:
@@ -180,7 +203,7 @@ def position_tile(canvas, tile, position):
     return (round((canvas[0] - tile.width) * position[0]), round((canvas[1] - tile.height) * position[1]))
 
 
-def compose(base, project, videos, elapsed, speed):
+def compose(base, project, videos, elapsed, speed, cloud_views=None):
     """Return pixels and visible hit boxes in the same coordinates as the supplied frame."""
     scene = base if isinstance(base, Image.Image) else Image.fromarray(base)
     image = scene.convert("RGB")
@@ -195,6 +218,15 @@ def compose(base, project, videos, elapsed, speed):
             image = video
             break
     bounds = {}
+    for index, layer in enumerate(project.views):
+        captured = None if cloud_views is None else cloud_views.get(layer.kind)
+        if captured is None:
+            continue
+        inset = captured if isinstance(captured, Image.Image) else Image.fromarray(captured)
+        x, y, w, h = video_rect(image.size, inset.size, layer.width, layer.position)
+        tile = inset.resize((w, h), Image.Resampling.LANCZOS)
+        image.paste(tile, (x, y), tile.getchannel("A"))
+        bounds["view", index] = x, y, w, h
     for index, (layer, footage) in enumerate(zip(project.videos, videos)):
         if footage is None or layer.backdrop:
             continue

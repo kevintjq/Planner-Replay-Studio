@@ -6,7 +6,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import colorchooser, filedialog, messagebox, ttk
 
-from .composition import TextLayer, VideoLayer
+from .composition import POINT_CLOUD_VIEWS, PointCloudView, TextLayer, VideoLayer
 from .footage import VideoEdit
 
 
@@ -23,6 +23,8 @@ class LayerControls:
         ttk.Button(toolbar, text="+ 视频", command=self.add_videos).pack(side="left")
         ttk.Button(toolbar, text="+ 文字", command=self.edit_text).pack(side="left", padx=4)
         ttk.Button(toolbar, text="+ 速度表", command=self.edit_speed).pack(side="left")
+        self.add_view_button = ttk.Button(toolbar, text="+ 视角", command=self.choose_view)
+        self.add_view_button.pack(side="left", padx=(4,0))
         table = ttk.Frame(parent)
         table.grid(row=2, column=0, columnspan=2, sticky="ew")
         self.layer_list = ttk.Treeview(table, show="tree", height=7, selectmode="browse", takefocus=True)
@@ -59,12 +61,13 @@ class LayerControls:
         return f"{key[0]}-{key[1]}"
 
     def layers(self, kind):
-        return self.project.videos if kind == "video" else self.project.texts
+        return getattr(self.project, {"video":"videos", "text":"texts", "view":"views"}[kind])
 
     def replace_layer(self, kind, index, layer, *, redraw=True):
         values = list(self.layers(kind))
         values[index] = layer
-        self.project = replace(self.project, **{("videos" if kind == "video" else "texts"): tuple(values)})
+        name = {"video":"videos", "text":"texts", "view":"views"}[kind]
+        self.project = replace(self.project, **{name:tuple(values)})
         if redraw:
             self.refresh_layers()
 
@@ -80,6 +83,9 @@ class LayerControls:
         for i, layer in enumerate(self.project.videos):
             role = "全屏底片" if layer.backdrop else f"视频 {i+1}"
             listing.insert("", "end", iid=f"video-{i}", text=f"{role}   {layer.path.name}")
+        for i, view in enumerate(self.project.views):
+            listing.insert("", "end", iid=f"view-{i}", text=f"点云视角   {POINT_CLOUD_VIEWS[view.kind][0]}")
+        self.add_view_button.state(["disabled" if len(self.project.views) == len(POINT_CLOUD_VIEWS) else "!disabled"])
         for i, layer in enumerate(self.project.texts):
             name = " ".join(layer.text.split())
             listing.insert("", "end", iid=f"text-{i}", text=f"文字 {i+1}   {name}")
@@ -132,6 +138,9 @@ class LayerControls:
             placement = "全屏底片" if layer.backdrop else f"宽 {layer.width:.0%}"
             message = f"{placement}  ·  不透明度 {layer.opacity:.0%}  ·  " + (
                 f"{n} 个对齐锚点" if n else f"偏移 {layer.edit.offset:+.3f} s")
+        elif kind == "view":
+            view = self.project.views[i]
+            message = f"{POINT_CLOUD_VIEWS[view.kind][0]}  ·  宽 {view.width:.0%}  ·  透明底"
         elif kind == "text":
             layer = self.project.texts[i]
             message = f"{layer.start:.3f} – {layer.end:.3f} s  ·  字号 {layer.size}"
@@ -140,6 +149,24 @@ class LayerControls:
         self.layer_info.set(message)
         self.draw_preview()
         self.update_timeline()
+
+    def choose_view(self):
+        selected = {view.kind for view in self.project.views}
+        available = {title: kind for kind, (title, _) in POINT_CLOUD_VIEWS.items() if kind not in selected}
+        if not available:
+            return
+        options = tuple(available)
+        self.layer_dialog("添加点云视角", (("view", "视角", options[0], options),),
+                          lambda values: self.add_view(available[values["view"]]))
+
+    def add_view(self, kind):
+        order = len(self.project.views)
+        layer = PointCloudView(kind=kind, position=POINT_CLOUD_VIEWS[kind][1])
+        self.project = replace(self.project, views=(*self.project.views, layer))
+        self.selection = "view", order
+        self.refresh_layers()
+        if self.frame is not None and kind not in self.cloud_views:
+            self.root.after_idle(lambda: self.start_render(True))
 
     def add_videos(self):
         paths = filedialog.askopenfilenames(parent=self.root, title="导入多路视频",
@@ -205,6 +232,8 @@ class LayerControls:
         elif kind == "video":
             self.project = replace(self.project, videos=self.project.videos[:index]+self.project.videos[index+1:])
             self.footages = self.footages[:index]+self.footages[index+1:]
+        elif kind == "view":
+            self.project = replace(self.project, views=self.project.views[:index]+self.project.views[index+1:])
         else:
             self.project = replace(self.project, texts=self.project.texts[:index]+self.project.texts[index+1:])
         self.refresh_layers()
@@ -217,6 +246,10 @@ class LayerControls:
             self.edit_text(index)
         elif kind == "speed":
             self.edit_speed()
+        elif kind == "view":
+            layer = self.project.views[index]
+            self.layer_dialog("点云视角", (("width", "小窗宽度 (%)", f"{layer.width*100:g}"),),
+                              lambda values: self.replace_layer(kind, index, replace(layer, width=float(values["width"])/100)))
         else:
             layer = self.project.videos[index]
             def save(values):

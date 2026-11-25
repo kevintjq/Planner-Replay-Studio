@@ -48,6 +48,7 @@ class RendererApp(LayerControls):
         self.project = Composition()
         self.frame = self.elapsed = self.speed = None
         self.footages = ()
+        self.cloud_views = {}
         self.selection = None
         self.drag_offset = None
         self.base_cache = None
@@ -264,6 +265,7 @@ class RendererApp(LayerControls):
     def reset_alignment(self, _event=None):
         self.frame = self.elapsed = self.speed = self.base_cache = None
         self.footages = (None,) * len(self.project.videos)
+        self.cloud_views = {}
         videos = tuple(replace(layer, edit=replace(layer.edit, anchors=())) for layer in self.project.videos)
         self.project = replace(self.project, videos=videos)
         self.preview_label.configure(text="画面预览")
@@ -479,13 +481,13 @@ class RendererApp(LayerControls):
                 elif kind == "topics":
                     self.set_topics(*value)
                 elif kind == "preview":
-                    frame, videos, elapsed, self.speed = value
+                    frame, videos, elapsed, self.speed, self.cloud_views = value
                     self.frame = Image.fromarray(frame)
                     self.elapsed = elapsed
                     self.base_cache = None
                     self.footages = tuple(None if video is None else Image.fromarray(video) for video in videos)
                     self.preview_label.configure(text=f"画面预览    {elapsed:.3f} s")
-                    self.status.set("预览已更新。拖动画面中的视频、文字或速度表可调整位置。")
+                    self.status.set("预览已更新。拖动画面中的图层可调整位置。")
                     self.draw_preview()
                     self.update_timeline()
                 elif kind == "saved":
@@ -518,7 +520,7 @@ class RendererApp(LayerControls):
             self.base_cache = self.frame.convert("RGB").resize(size, Image.Resampling.LANCZOS)
             if self.frame.mode == "RGBA":
                 self.base_cache.putalpha(self.frame.getchannel("A").resize(size, Image.Resampling.LANCZOS))
-        image, bounds = compose(self.base_cache, self.project, self.footages, self.elapsed, self.speed)
+        image, bounds = compose(self.base_cache, self.project, self.footages, self.elapsed, self.speed, self.cloud_views)
         image.putalpha(rounded_mask(image.size, 16))
         self.base_photo = ImageTk.PhotoImage(image)
         self.canvas.create_image(x, y, image=self.base_photo, anchor="nw")

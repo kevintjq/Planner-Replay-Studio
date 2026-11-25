@@ -141,21 +141,30 @@ class RendererApp(LayerControls):
         self.field(quality, 1, "帧率", "fps", "60", ("60", "30", "24"))
         self.field(quality, 2, "超采样", "supersample", "2", ("1", "2"))
         self.field(quality, 3, "MP4 质量 (CRF/CQ)", "crf", "15", ("12", "15", "18", "23"))
-        self.field(quality, 4, "体素大小 (m)", "voxel", ".05")
-        self.field(quality, 5, "点数上限", "max_points", "400000")
-        self.field(quality, 6, "点大小 (px)", "point_size", "2.6")
-        self.field(quality, 7, "点云着色", "color", "原始 RGB", ("原始 RGB", "按高度", "自选纯色"))
+        self.field(quality, 4, "体素 (m，0 为原始)", "voxel", ".015")
+        self.field(quality, 5, "点数上限", "max_points", "850000")
+        self.field(quality, 6, "点大小 (px)", "point_size", "2.3")
+        self.field(quality, 7, "点云着色", "color", "SLAM 高度彩虹", ("SLAM 高度彩虹", "原始 RGB", "按高度", "自选纯色"))
         self.color_field(quality, 8, "点云纯色", "cloud_color", "#70d9ff")
-        self.color_field(quality, 9, "轨迹颜色", "trajectory_color", "#ffba2e")
+        self.color_field(quality, 9, "轨迹颜色", "trajectory_color", "#f9d74b")
         self.field(quality, 10, "轨迹线宽 (px)", "trajectory_width", "3")
+        self.field(quality, 11, "高度范围 (m)", "height_range", "")
         self.edl = tk.BooleanVar(value=True)
-        ttk.Checkbutton(quality, text="启用 EDL 深度明暗", variable=self.edl).grid(
-            row=11, column=0, columnspan=2, sticky="w", pady=6)
-        self.field(quality, 12, "MP4 编码器", "encoder", "自动", ("自动", "CPU", "NVIDIA NVENC"))
+        self.slam_view = tk.BooleanVar(value=True)
+        render_styles = ttk.Frame(quality)
+        render_styles.grid(row=12, column=0, columnspan=2, sticky="w", pady=4)
+        ttk.Checkbutton(render_styles, text="SLAM 原貌", variable=self.slam_view).pack(side="left", padx=(0, 8))
+        edl_toggle = ttk.Checkbutton(render_styles, text="EDL", variable=self.edl)
+        edl_toggle.pack(side="left")
+        def update_edl(*_):
+            edl_toggle.state(["disabled" if self.slam_view.get() else "!disabled"])
+        self.slam_view.trace_add("write", update_edl)
+        update_edl()
+        self.field(quality, 13, "MP4 编码器", "encoder", "自动", ("自动", "CPU", "NVIDIA NVENC"))
 
         for row, (label, key, value) in enumerate((
-            ("跟随距离 (m)", "distance", "3.8"),
-            ("主视角高度 (m)", "camera_height", "1.35"),
+            ("跟随距离 (m)", "distance", "8.5"),
+            ("主视角高度 (m)", "camera_height", "4.8"),
             ("主视角横向偏移 (m)", "side", "0"),
             ("垂直视场角 (°)", "fov", "65"),
             ("高位斜视距离 (m)", "inset_distance", "10"),
@@ -300,7 +309,7 @@ class RendererApp(LayerControls):
             raise ValueError("请先打开 ROS1 bag 或选择使用模拟数据。")
         values = {key: variable.get().strip() for key, variable in self.values.items()}
         width, height = values["resolution"].split(" × ")
-        args = ["demo"] if self.bag_path is None else ["bag", str(self.bag_path)]
+        args = ["demo", "--demo-scene", "trail"] if self.bag_path is None else ["bag", str(self.bag_path)]
         args += ["--output", str(destination), "--width", width, "--height", height]
         keys = ("start", "seconds", "fps", "supersample", "crf", "voxel", "max_points", "point_size",
                 "cloud_color", "trajectory_color", "trajectory_width", "distance", "camera_height",
@@ -316,7 +325,12 @@ class RendererApp(LayerControls):
                 keys += ("extrinsics",)
         for key in keys:
             args += ["--" + key.replace("_", "-") + "=" + values[key]]
-        color = {"原始 RGB": "rgb", "按高度": "height", "自选纯色": "solid"}[values["color"]]
+        color = {"SLAM 高度彩虹": "scan", "原始 RGB": "rgb", "按高度": "height", "自选纯色": "solid"}[values["color"]]
+        if values["height_range"]:
+            limits = values["height_range"].replace("，", " ").replace(",", " ").split()
+            args += ["--height-range", *limits]
+        if self.slam_view.get():
+            args.append("--slam-view")
         mode = "accumulate" if values["cloud_mode"] == "累积扫描" else "replace"
         encoder = {"自动": "auto", "CPU": "cpu", "NVIDIA NVENC": "nvenc"}[values["encoder"]]
         args += ["--color", color, "--cloud-mode", mode, "--encoder", encoder]

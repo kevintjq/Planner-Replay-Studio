@@ -9,7 +9,7 @@ import numpy as np
 import imageio.v2 as imageio
 from .cloud import CloudMap
 from .composition import SpeedHistory, compose, estimated_speed
-from .sources import BagSource, DemoSource, inspect_bag
+from .sources import BagSource, DemoSource, TrailDemoSource, inspect_bag
 from .encoding import h264_encoder
 from .footage import FULL_FRAME, FlightVideo, VideoEdit, composite
 
@@ -22,6 +22,7 @@ def parser(parser_class=argparse.ArgumentParser):
     for name in ('demo','bag','listen'):
         x=sub.add_parser(name)
         if name=='bag': x.add_argument('bag',type=Path)
+        if name=='demo': x.add_argument('--demo-scene',choices=('room','trail'),default='room')
         if name=='listen':
             x.add_argument('--port',type=int,default=8765)
             x.add_argument('--delay',type=float,default=.3,help='TF lookahead buffering seconds')
@@ -51,7 +52,9 @@ def parser(parser_class=argparse.ArgumentParser):
         x.add_argument('--voxel',type=float,default=.08)
         x.add_argument('--max-points',type=int,default=200000)
         x.add_argument('--cloud-mode',choices=['accumulate','replace'],default='accumulate')
-        x.add_argument('--color',choices=['rgb','height','solid'],default='rgb')
+        x.add_argument('--color',choices=['rgb','height','scan','solid'],default='rgb')
+        x.add_argument('--height-range',type=float,nargs=2,metavar=('MIN_Z','MAX_Z'))
+        x.add_argument('--slam-view',action='store_true',help='Unlit LiDAR points and foreground trajectory')
         x.add_argument('--cloud-color',type=hex_color,default='#70d9ff')
         x.add_argument('--trajectory-color',type=hex_color,default=None)
         x.add_argument('--trajectory-width',type=float,default=3)
@@ -94,10 +97,10 @@ def make_renderer(a, *, clean=False):
     solid = rgb_bytes(a.cloud_color) if a.color == 'solid' else None
     trajectory = ((1,.73,.18) if a.trajectory_color is None
                   else tuple(c / 255 for c in rgb_bytes(a.trajectory_color)))
-    return Renderer(a.width,a.height,not a.no_edl,a.axis,a.axis_pixels,a.point_size,
+    return Renderer(a.width,a.height,not a.no_edl and not a.slam_view,a.axis,a.axis_pixels,a.point_size,
                     a.distance,a.camera_height,a.side,a.fov,a.inset_distance,a.inset_height,
                     supersample=a.supersample,cloud_color=solid,trajectory_color=trajectory,
-                    trajectory_width=a.trajectory_width,clean=clean)
+                    trajectory_width=a.trajectory_width,clean=clean,slam_view=a.slam_view)
 
 
 class Export:
@@ -131,7 +134,7 @@ class Export:
 def render(a, source, *, preview=None, preview_offset=0, progress=None, check_cancel=None, staging=None, project=None):
     """Render an export, or deliver one uncomposited preview and its optional footage."""
     destination = a.output if staging is None else staging
-    cloud = CloudMap(a.voxel, a.max_points)
+    cloud = CloudMap(a.voxel, a.max_points, scan_height=a.color == "scan", height_limits=a.height_range)
     trajectory = []
     speed_history = SpeedHistory()
     dropped = transformed = count = 0
@@ -219,7 +222,7 @@ def render(a, source, *, preview=None, preview_offset=0, progress=None, check_ca
             report = dict(source='synthetic' if is_synthetic else 'recorded_ros1',
                           frames=count,leading_pose_skips=dropped,clouds=transformed,
                           leading_cloud_skips=getattr(source,'leading_cloud_skips',0),
-                          retained_points=len(cloud.xyz),fps=a.fps,edl_requested=not a.no_edl,
+                          retained_points=len(cloud.xyz),fps=a.fps,edl_requested=not a.no_edl and not a.slam_view,
                           complete=failure is None and count > 0,error=failure,encoder=codec,
                           config={k:str(v) if isinstance(v,Path) else v for k,v in vars(a).items() if k != 'bag'})
             if project is not None:
@@ -232,7 +235,7 @@ def render(a, source, *, preview=None, preview_offset=0, progress=None, check_ca
 
 def open_source(a, check_cancel=None):
     if a.command == 'demo':
-        return DemoSource(a.seconds)
+        return (TrailDemoSource if a.demo_scene == "trail" else DemoSource)(a.seconds)
     return BagSource(a.bag,a.cloud_topic,a.odom_topic,a.world,a.body,a.pose_source,
                      a.max_gap,extrinsics(a.extrinsics)).index(check_cancel)
 
@@ -243,9 +246,13 @@ def video_edit(a):
 
 def validate(a):
     positive=['fps','seconds','width','height','distance','inset_distance','inset_height',
-              'axis','axis_pixels','point_size','voxel','max_points','trajectory_width']
+              'axis','axis_pixels','point_size','max_points','trajectory_width']
     if any(not np.isfinite(getattr(a,k)) or getattr(a,k)<=0 for k in positive):
         raise ValueError('Sizes, distances, rates and duration must be finite and positive')
+    if not np.isfinite(a.voxel) or a.voxel < 0:
+        raise ValueError('Voxel size must be nonnegative; use 0 for raw sampling')
+    if a.height_range is not None and (not np.isfinite(a.height_range).all() or a.height_range[0] >= a.height_range[1]):
+        raise ValueError('Height range must contain increasing, finite values')
     if min(a.width, a.height) < 8 or a.width%2 or a.height%2: raise ValueError('Use even output dimensions of at least 8 pixels')
     if not 1<a.fov<170: raise ValueError('FOV must be between 1 and 170 degrees')
     if not np.isfinite([a.side,a.camera_height,a.start]).all() or a.start<0:

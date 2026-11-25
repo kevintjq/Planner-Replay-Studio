@@ -23,3 +23,17 @@ def test_map_voxel_bound_replace():
     m.add(xyz); assert len(m.xyz)<=10
     m.add(np.zeros((100,3)),replace=True)
     assert len(m.xyz)==1
+
+
+def test_scan_palette_is_stable_and_zero_voxel_keeps_raw_samples():
+    from slam_fpv.cloud import CloudMap
+
+    cloud = CloudMap(0, 5, scan_height=True, height_limits=(-1, 3))
+    points = np.array([[0, 0, 0], [.001, 0, 0], [0, 0, 2]], dtype=float)
+    cloud.add(points)
+    first_colors = cloud.rgb.copy()
+    assert len(cloud.xyz) == 3
+    assert (first_colors[0] != first_colors[2]).any()
+    cloud.add(points)
+    assert len(cloud.xyz) == 5
+    np.testing.assert_array_equal(cloud.rgb[-3:], first_colors)

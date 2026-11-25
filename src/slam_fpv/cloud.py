@@ -33,14 +33,36 @@ def decode(msg):
     return xyz[mask], None if rgb is None else rgb[mask]
 
 
+# A height palette with visible cyan/green midtones and cool upper returns.
+SCAN_COLORS = np.array([
+    [41, 37, 149], [29, 83, 241], [22, 177, 255], [56, 244, 230],
+    [60, 237, 132], [180, 248, 70], [245, 189, 74], [177, 70, 230],
+], dtype=float)
+
+
+def scan_colors(z, limits):
+    low, high = limits
+    scale = np.clip((z - low) / (high - low), 0., 1.) * (len(SCAN_COLORS) - 1)
+    return np.column_stack([
+        np.interp(scale, np.arange(len(SCAN_COLORS)), SCAN_COLORS[:, channel])
+        for channel in range(3)
+    ]).astype('u1')
+
+
 class CloudMap:
-    def __init__(self, voxel=.08, max_points=200000):
+    def __init__(self, voxel=.08, max_points=200000, *, scan_height=False, height_limits=None):
         self.voxel, self.max_points = voxel, max_points
+        self.scan_height, self.height_limits = scan_height, height_limits
         self.xyz = np.empty((0, 3))
         self.rgb = np.empty((0, 3), dtype='u1')
 
     def add(self, xyz, rgb=None, replace=False):
-        if rgb is None:
+        if self.scan_height:
+            if self.height_limits is None and len(xyz):
+                low, high = np.percentile(xyz[:, 2], (2, 98))
+                self.height_limits = float(low), float(max(high, low + .5))
+            rgb = scan_colors(xyz[:, 2], self.height_limits) if len(xyz) else np.empty((0, 3), dtype='u1')
+        elif rgb is None:
             h = np.clip((xyz[:, 2]+1)/5, 0, 1)
             rgb = np.column_stack([50+180*h, 180-50*h, 230-150*h]).astype('u1')
         # Limit incoming work as well as the retained map.
@@ -48,8 +70,8 @@ class CloudMap:
         xyz, rgb = xyz[::step], rgb[::step]
         if not replace:
             xyz, rgb = np.concatenate([self.xyz, xyz]), np.concatenate([self.rgb, rgb])
-        if len(xyz):
+        if self.voxel and len(xyz):
             _, idx = np.unique(np.floor(xyz/self.voxel).astype('i8'), axis=0, return_index=True)
             idx = np.sort(idx)[-self.max_points:]
             xyz, rgb = xyz[idx], rgb[idx]
-        self.xyz, self.rgb = xyz, rgb
+        self.xyz, self.rgb = xyz[-self.max_points:], rgb[-self.max_points:]

@@ -143,3 +143,55 @@ class DemoSource:
             x=self.pose(t)[0,3]
             mask=(xyz[:,0]<x+5)&(xyz[:,0]>x-5)
             yield t, xyz[mask], None
+
+
+class TrailDemoSource(DemoSource):
+    """Synthetic roadside LiDAR-like returns, revealed as a vehicle follows the trail."""
+
+    @staticmethod
+    def center(x):
+        return 5.4 * np.sin(x / 8.3) + .1 * x
+
+    @staticmethod
+    def ground(x):
+        return .24 * np.sin(x / 5.8)
+
+    def pose(self, t):
+        from .geometry import matrix
+        x = (t - self.first) / 1e9 * 2.8
+        yaw = np.arctan(.1 + 5.4 / 8.3 * np.cos(x / 8.3))
+        return matrix([x, self.center(x), 1.25 + self.ground(x)],
+                      [0, 0, np.sin(yaw / 2), np.cos(yaw / 2)])
+
+    def clouds(self):
+        rng = np.random.default_rng(27)
+        start, end = -7, (self.last - self.first) / 1e9 * 2.8 + 12
+        # Narrow sweep bands on the road and uneven strips behind the shoulders.
+        x, d = np.meshgrid(np.arange(start, end, .061), np.arange(-5.5, 5.6, .060))
+        x, d = x.ravel(), d.ravel()
+        d += rng.normal(0, .032, len(d))
+        y = self.center(x) + d
+        z = self.ground(x) + np.maximum(0, np.abs(d) - 2) ** 1.7 * (
+            .10 + .034 * np.cos(x / 2.4)) + rng.normal(0, .024, len(x))
+        clouds = [np.column_stack((x, y, z))]
+        for x in np.arange(start + 1, end, .69):
+            for side in (-1, 1):
+                if rng.random() < .18:
+                    continue
+                ground = self.ground(x)
+                y = self.center(x) + side * rng.uniform(3.1, 5.5)
+                height = rng.uniform(.75, 4.4) * (1 if side > 0 else .72)
+                samples = rng.integers(260, 680)
+                h = rng.uniform(0, height, samples)
+                ar = rng.uniform(0, 2 * np.pi, samples)
+                r = rng.uniform(.07, .69, samples) * (.35 + .65 * np.sin(np.pi * h / height))
+                clouds.append(np.column_stack((x + np.cos(ar) * r, y + np.sin(ar) * r, ground + h)))
+        xyz = np.concatenate(clouds)
+        xyz = xyz[np.argsort(xyz[:, 0])]
+        previous = 0
+        for t in range(self.first, self.last + 1, 100_000_000):
+            front = self.pose(t)[0, 3] + 10
+            end_index = np.searchsorted(xyz[:, 0], front)
+            if end_index > previous:
+                yield t, xyz[previous:end_index], None
+            previous = end_index

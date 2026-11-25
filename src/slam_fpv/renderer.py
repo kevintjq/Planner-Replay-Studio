@@ -55,11 +55,12 @@ def overlay_line(points,color,width):
 class Renderer:
     def __init__(self,width=1280,height=720,edl=True,axis=.48,axis_pixels=28,point_size=2,
                  distance=3.8,camera_height=1.35,side=0.,fov=65,inset_distance=10,inset_height=6.7,
-                 *, supersample=1, cloud_color=None, trajectory_color=(1,.73,.18), trajectory_width=3, clean=False):
+                 *, supersample=1, cloud_color=None, trajectory_color=(1,.73,.18), trajectory_width=3, clean=False, slam_view=False):
         self.output_size = (width, height)
         self.scale = supersample
         self.edl = edl
         self.clean = clean
+        self.slam_view = slam_view
         self.width, self.height = width * supersample, height * supersample
         self.axis, self.axis_pixels = axis, axis_pixels * supersample
         self.point_size = point_size * supersample
@@ -80,6 +81,10 @@ class Renderer:
             self.windows.append(window)
             scene=vtk.vtkRenderer(); scene.SetViewport(0,0,1,1); scene.SetLayer(0)
             scene.SetBackground(.018,.028,.047); scene.SetPreserveColorBuffer(False)
+            if slam_view:
+                scene.SetBackground(.045, .058, .078)
+                scene.SetBackground2(.095, .107, .127)
+                scene.SetGradientBackground(True)
             if edl:
                 basic=vtk.vtkRenderStepsPass(); effect=vtk.vtkEDLShading(); effect.SetDelegatePass(basic)
                 scene.SetPass(effect)
@@ -117,8 +122,17 @@ class Renderer:
             cam=scene.GetActiveCamera(); cam.SetPosition(*position); cam.SetFocalPoint(*target)
             cam.SetViewUp(0,0,1); cam.SetClippingRange(.03,1000)
             if len(trajectory)>1:
-                actor=line_actor(trajectory,self.trajectory_color,self.trajectory_width)
-                scene.AddActor(actor); self.dynamic.append((scene,actor))
+                if self.slam_view:
+                    for color, width in (((.09, .085, .065), self.trajectory_width + 2 * self.scale),
+                                         (self.trajectory_color, self.trajectory_width)):
+                        artist = overlay_line(trajectory, color, width)
+                        overlay.AddViewProp(artist)
+                        self.dynamic.append((overlay, artist))
+                else:
+                    actor=line_actor(trajectory,self.trajectory_color,self.trajectory_width)
+                    scene.AddActor(actor); self.dynamic.append((scene,actor))
+            if self.slam_view:
+                continue
             viewport_height=self.height*(1 if index==0 else .33)
             distance=np.linalg.norm(position-pose[:3,3])
             min_length=self.axis_pixels*2*distance*np.tan(np.deg2rad(cam.GetViewAngle()/2))/viewport_height

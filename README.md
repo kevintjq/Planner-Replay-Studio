@@ -23,6 +23,8 @@ py -m venv .venv
 3. Add timed captions or a speed gauge. Drag annotation handles to change their visible intervals and scrub the timeline to preview. Times are relative to the first cloud. The gauge estimates 3D speed in m/s from world-frame poses.
 4. Drag overlays directly in the preview. Export MP4 or PNG at 1080p and 60 fps by default. Automatic encoding tests NVENC and falls back to CPU H.264.
 
+The desktop defaults to an unlit SLAM view with a fixed world-height palette. Set voxel size to `0` to preserve raw points up to the configured point limit, or select native RGB for colorized clouds.
+
 ## CLI
 
 ```powershell

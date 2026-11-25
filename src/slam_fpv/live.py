@@ -21,7 +21,7 @@ def listen(a):
     if a.delay<0 or not np.isfinite(a.delay): raise ValueError('Invalid --delay')
     tree=TransformTree(a.max_gap)
     for parent,child,p,q in extrinsics(a.extrinsics): tree.add(parent,child,0,p,q,True)
-    cloud=CloudMap(a.voxel,a.max_points); trajectory=deque(maxlen=10000)
+    cloud=CloudMap(a.voxel,a.max_points,scan_height=a.color=="scan",height_limits=a.height_range); trajectory=deque(maxlen=10000)
     pending=deque(maxlen=32); latest=0; first=None; last_cloud=None; frame_index=0
     renderer=make_renderer(a); output=Export(a)
     stats=dict(source='ros1_bridge',frames=0,dropped_clouds=0,complete=False)

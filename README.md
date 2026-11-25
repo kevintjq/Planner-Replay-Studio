@@ -8,20 +8,12 @@ Turn ROS1 SLAM point clouds into a rear-follow view with a high oblique inset. E
 
 ## Windows desktop
 
-Install 64-bit Python 3.10+ with Tcl/Tk. In PowerShell:
-
-```powershell
-git clone https://github.com/kevintjq/SLAM-FPV-Renderer.git
-cd SLAM-FPV-Renderer
-py -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e .
-.\.venv\Scripts\python.exe -m slam_fpv.gui
-```
+Install 64-bit Python 3.10+ with Tcl/Tk, clone the repository, then double-click [Start_SLAM_FPV.cmd](Start_SLAM_FPV.cmd). The first launch installs dependencies and needs Internet access.
 
 1. Open a ROS1 `.bag`, select PointCloud2 and Odometry or TF, then set the export interval.
-2. Add multiple flight videos in the Layers tab. Edit the trim, crop, alignment, width and opacity of each video independently. Use matching events as anchors to align time and correct drift.
+2. Add multiple flight videos in the Layers tab. Edit the trim, crop, alignment, width and opacity of each video independently. Swap any clip or use it as a full-screen backdrop beneath the cloud. Use matching events as alignment anchors.
 3. Add timed captions or a speed gauge. Drag annotation handles to change their visible intervals and scrub the timeline to preview. Times are relative to the first cloud. The gauge estimates 3D speed in m/s from world-frame poses.
-4. Drag overlays directly in the preview. Export MP4 or PNG at 1080p and 60 fps by default. Automatic encoding tests NVENC and falls back to CPU H.264.
+4. Drag overlays directly in the preview. Both views show the TF axes and the oblique inset has a transparent background. Export MP4 or PNG at 1080p and 60 fps by default. Automatic encoding tests NVENC and falls back to CPU H.264.
 
 The desktop defaults to an unlit SLAM view with a fixed world-height palette. Set voxel size to `0` to preserve raw points up to the configured point limit, or select native RGB for colorized clouds.
 

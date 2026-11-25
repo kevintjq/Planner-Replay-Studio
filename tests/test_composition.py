@@ -37,3 +37,21 @@ def test_speed_uses_timestamps_and_treats_tracking_gaps_as_missing():
     assert stats.update(2., 3.) == (3., 3., 2.)
     stats.update(3., None)
     assert stats.update(10., 7.) == (7., 7., 2.)
+
+
+def test_video_backdrop_keeps_foreground_and_draws_insets_above_it():
+    scene = Image.new("RGBA", (200, 100), (10, 15, 20, 0))
+    scene.putpixel((100, 50), (4, 6, 8, 255))
+    footage = Image.new("RGB", (80, 120), (55, 90, 130))
+    inset = Image.new("RGB", (160, 90), (240, 70, 50))
+    project = Composition(videos=(
+        VideoLayer(Path("inset.mp4"), width=.25, position=(1, 1), opacity=1),
+        VideoLayer(Path("fpv.mp4"), backdrop=True, opacity=1),
+    ))
+    image, bounds = compose(scene, project, (inset, footage), 1., None)
+    assert image.getpixel((0, 0)) == (55, 90, 130)
+    assert image.getpixel((100, 50)) == (4, 6, 8)
+    assert image.getpixel((175, 85)) == (240, 70, 50)
+    assert set(bounds) == {("video", 0)}
+    gap, _ = compose(scene, project, (None, None), 5., None)
+    assert gap.getpixel((0, 0)) == (10, 15, 20)

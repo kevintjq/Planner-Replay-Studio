@@ -515,7 +515,9 @@ class RendererApp(LayerControls):
         x, y = (width - size[0]) // 2, (height - size[1]) // 2
         self.view_bounds = x, y, *size
         if self.base_cache is None or self.base_cache.size != size:
-            self.base_cache = self.frame.resize(size, Image.Resampling.LANCZOS)
+            self.base_cache = self.frame.convert("RGB").resize(size, Image.Resampling.LANCZOS)
+            if self.frame.mode == "RGBA":
+                self.base_cache.putalpha(self.frame.getchannel("A").resize(size, Image.Resampling.LANCZOS))
         image, bounds = compose(self.base_cache, self.project, self.footages, self.elapsed, self.speed)
         image.putalpha(rounded_mask(image.size, 16))
         self.base_photo = ImageTk.PhotoImage(image)

@@ -7,6 +7,10 @@ import tkinter as tk
 from tkinter import colorchooser, filedialog, messagebox, ttk
 
 from .composition import TextLayer, VideoLayer
+from .footage import VideoEdit
+
+
+VIDEO_FILES = (("视频", "*.mp4 *.mov *.mkv *.avi *.m4v"), ("所有文件", "*"))
 
 
 class LayerControls:
@@ -39,6 +43,16 @@ class LayerControls:
         self.layer_align.pack(side="left", padx=4)
         self.layer_remove = ttk.Button(tools, text="移除", command=self.remove_layer)
         self.layer_remove.pack(side="left")
+        video_tools = ttk.Frame(parent)
+        video_tools.grid(row=5, column=0, columnspan=2, sticky="w", pady=(5,0))
+        self.layer_replace = ttk.Button(video_tools, text="替换视频", command=self.replace_video)
+        self.layer_replace.pack(side="left")
+        self.layer_backdrop = ttk.Button(video_tools, text="设为全屏底片", command=self.toggle_backdrop)
+        self.layer_backdrop.pack(side="left", padx=4)
+        self.layer_down = ttk.Button(video_tools, text="置后", command=lambda: self.move_video_layer(-1))
+        self.layer_up = ttk.Button(video_tools, text="置前", command=lambda: self.move_video_layer(1))
+        self.layer_down.pack(side="left")
+        self.layer_up.pack(side="left", padx=(3,0))
 
     @staticmethod
     def layer_id(key):
@@ -64,7 +78,8 @@ class LayerControls:
         listing = self.layer_list
         listing.delete(*listing.get_children())
         for i, layer in enumerate(self.project.videos):
-            listing.insert("", "end", iid=f"video-{i}", text=f"视频 {i+1}   {layer.path.name}")
+            role = "全屏底片" if layer.backdrop else f"视频 {i+1}"
+            listing.insert("", "end", iid=f"video-{i}", text=f"{role}   {layer.path.name}")
         for i, layer in enumerate(self.project.texts):
             name = " ".join(layer.text.split())
             listing.insert("", "end", iid=f"text-{i}", text=f"文字 {i+1}   {name}")
@@ -103,11 +118,19 @@ class LayerControls:
         self.layer_settings.state(["!disabled" if selection else "disabled"])
         self.layer_align.state(["!disabled" if kind == "video" else "disabled"])
         self.layer_remove.state(["!disabled" if selection else "disabled"])
+        video_selected = kind == "video"
+        for control in (self.layer_replace, self.layer_backdrop):
+            control.state(["!disabled" if video_selected else "disabled"])
+        self.layer_down.state(["!disabled" if video_selected and i > 0 else "disabled"])
+        self.layer_up.state(["!disabled" if video_selected and i+1 < len(self.project.videos) else "disabled"])
+        backdrop = video_selected and self.project.videos[i].backdrop
+        self.layer_backdrop.configure(text="恢复画中画" if backdrop else "设为全屏底片")
         message = "选择一个图层，或直接拖动画面中的图层。"
         if kind == "video":
             layer = self.project.videos[i]
             n = len(layer.edit.anchors)
-            message = f"宽 {layer.width:.0%}  ·  不透明度 {layer.opacity:.0%}  ·  " + (
+            placement = "全屏底片" if layer.backdrop else f"宽 {layer.width:.0%}"
+            message = f"{placement}  ·  不透明度 {layer.opacity:.0%}  ·  " + (
                 f"{n} 个对齐锚点" if n else f"偏移 {layer.edit.offset:+.3f} s")
         elif kind == "text":
             layer = self.project.texts[i]
@@ -120,7 +143,7 @@ class LayerControls:
 
     def add_videos(self):
         paths = filedialog.askopenfilenames(parent=self.root, title="导入多路视频",
-                                            filetypes=(("视频", "*.mp4 *.mov *.mkv *.avi *.m4v"), ("所有文件", "*")))
+                                            filetypes=VIDEO_FILES)
         if not paths:
             return
         spots = ((.05,.82), (.50,.82), (.95,.82), (.96,.44), (.05,.44))
@@ -133,6 +156,44 @@ class LayerControls:
         self.refresh_layers()
         if self.frame is not None:
             self.start_render(True)
+
+    def replace_video(self):
+        if self.busy or not self.selection or self.selection[0] != "video":
+            return
+        index = self.selection[1]
+        layer = self.project.videos[index]
+        file = filedialog.askopenfilename(parent=self.root, title="替换视频", filetypes=VIDEO_FILES)
+        if file and Path(file) != layer.path:
+            self.invalidate_video(index)
+            self.replace_layer("video", index, replace(layer, path=Path(file), edit=VideoEdit()))
+            if self.frame is not None:
+                self.start_render(True)
+
+    def toggle_backdrop(self):
+        if self.busy or not self.selection or self.selection[0] != "video":
+            return
+        index = self.selection[1]
+        enabled = not self.project.videos[index].backdrop
+        videos = tuple(replace(layer, backdrop=enabled and i == index)
+                       for i, layer in enumerate(self.project.videos))
+        self.project = replace(self.project, videos=videos)
+        self.refresh_layers()
+
+    def move_video_layer(self, direction):
+        if self.busy or not self.selection or self.selection[0] != "video":
+            return
+        index = self.selection[1]
+        target = index + direction
+        if not 0 <= target < len(self.project.videos):
+            return
+        videos = list(self.project.videos)
+        frames = list(self.footages)
+        videos[index], videos[target] = videos[target], videos[index]
+        frames[index], frames[target] = frames[target], frames[index]
+        self.project = replace(self.project, videos=tuple(videos))
+        self.footages = tuple(frames)
+        self.selection = "video", target
+        self.refresh_layers()
 
     def remove_layer(self):
         if not self.selection:
@@ -160,14 +221,15 @@ class LayerControls:
             layer = self.project.videos[index]
             def save(values):
                 edit = replace(layer.edit, offset=float(values["offset"]))
-                result = replace(layer, width=float(values["width"])/100, opacity=float(values["opacity"])/100, edit=edit)
+                result = replace(layer, width=float(values.get("width", layer.width*100))/100,
+                                 opacity=float(values["opacity"])/100, edit=edit)
                 self.replace_layer(kind, index, result)
                 if edit != layer.edit:
                     self.invalidate_video(index)
                     if self.frame is not None:
                         self.root.after_idle(lambda: self.start_render(True))
-            self.layer_dialog("视频图层设置", (
-                ("width", "画面宽度 (%)", f"{layer.width*100:g}"),
+            width_field = () if layer.backdrop else (("width", "画面宽度 (%)", f"{layer.width*100:g}"),)
+            self.layer_dialog("视频图层设置", (*width_field,
                 ("opacity", "不透明度 (%)", f"{layer.opacity*100:g}"),
                 ("offset", "手动偏移 (s)", str(layer.edit.offset)),
             ), save, note="有对齐锚点时优先使用锚点。")

@@ -1,6 +1,6 @@
 """Two synchronized VTK EDL viewports, plus foreground body RGB axes."""
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageChops
 import vtk
 from vtk.util.numpy_support import numpy_to_vtk, numpy_to_vtkIdTypeArray, vtk_to_numpy
 from .geometry import camera
@@ -73,26 +73,38 @@ class Renderer:
         self.views=[]
         self.cloud_actors=[]
         self.dynamic=[]
+        self.tf_labels = []
         for index in range(2):
             window=vtk.vtkRenderWindow()
             window.SetSize(self.width if index == 0 else round(self.width * .32),
                            self.height if index == 0 else round(self.height * .33))
             window.SetOffScreenRendering(1); window.SetMultiSamples(0); window.SetNumberOfLayers(2)
+            window.SetAlphaBitPlanes(1)
             self.windows.append(window)
             scene=vtk.vtkRenderer(); scene.SetViewport(0,0,1,1); scene.SetLayer(0)
             scene.SetBackground(.018,.028,.047); scene.SetPreserveColorBuffer(False)
+            scene.SetBackgroundAlpha(0)
             if slam_view:
-                scene.SetBackground(.045, .058, .078)
-                scene.SetBackground2(.095, .107, .127)
-                scene.SetGradientBackground(True)
+                # VTK draws its gradient opaque even when the clear alpha is zero.
+                scene.SetBackground(.058, .070, .092)
             if edl:
                 basic=vtk.vtkRenderStepsPass(); effect=vtk.vtkEDLShading(); effect.SetDelegatePass(basic)
                 scene.SetPass(effect)
             overlay=vtk.vtkRenderer(); overlay.SetViewport(0,0,1,1); overlay.SetLayer(1)
             overlay.SetActiveCamera(scene.GetActiveCamera()); overlay.SetPreserveDepthBuffer(False)
+            overlay.SetBackgroundAlpha(0)
             scene.GetActiveCamera().SetViewAngle(fov)
             window.AddRenderer(scene); window.AddRenderer(overlay)
             self.views.append((scene,overlay))
+            tf_label = vtk.vtkBillboardTextActor3D()
+            tf_label.SetInput("TF")
+            tf_label.SetDisplayOffset(8 * self.scale, 8 * self.scale)
+            tf_label.GetTextProperty().SetFontSize((18 if index == 0 else 14) * self.scale)
+            tf_label.GetTextProperty().SetColor(.94, .96, 1.)
+            tf_label.GetTextProperty().BoldOn()
+            tf_label.GetTextProperty().ShadowOn()
+            overlay.AddViewProp(tf_label)
+            self.tf_labels.append(tf_label)
         self.label=vtk.vtkTextActor(); self.label.SetPosition(22*self.scale,22*self.scale)
         self.label.GetTextProperty().SetFontSize(17*self.scale); self.label.GetTextProperty().SetColor(.9,.94,1)
         self.views[0][1].AddViewProp(self.label)
@@ -131,13 +143,12 @@ class Renderer:
                 else:
                     actor=line_actor(trajectory,self.trajectory_color,self.trajectory_width)
                     scene.AddActor(actor); self.dynamic.append((scene,actor))
-            if self.slam_view:
-                continue
             viewport_height=self.height*(1 if index==0 else .33)
             distance=np.linalg.norm(position-pose[:3,3])
             min_length=self.axis_pixels*2*distance*np.tan(np.deg2rad(cam.GetViewAngle()/2))/viewport_height
             length=max(self.axis,min_length)
             origin=pose[:3,3]
+            self.tf_labels[index].SetPosition(*origin)
             for j,color in reversed(list(enumerate([(1,.13,.12),(.15,1,.27),(.15,.43,1)]))):
                 points=np.array([origin,origin+pose[:3,j]*length])
                 for c,w in [((.01,.015,.025),7),(color,3.5)]:
@@ -148,25 +159,29 @@ class Renderer:
         for window in self.windows:
             window.Render()
             capture=vtk.vtkWindowToImageFilter(); capture.SetInput(window)
-            capture.SetInputBufferTypeToRGB(); capture.ReadFrontBufferOff()
+            capture.SetInputBufferTypeToRGBA(); capture.ReadFrontBufferOff()
             capture.ShouldRerenderOff(); capture.Update()
             w,h=window.GetSize()
-            images.append(np.flipud(vtk_to_numpy(capture.GetOutput().GetPointData().GetScalars()).reshape(h,w,3)).copy())
-        result,inset=images
-        h,w=inset.shape[:2]; top=round(self.height*.04); left=round(self.width*.66)
-        border = 2 * self.scale
+            images.append(np.flipud(vtk_to_numpy(capture.GetOutput().GetPointData().GetScalars()).reshape(h,w,4)).copy())
+        result, inset = (Image.fromarray(frame) for frame in images)
+        w, h = inset.size
+        corner = round(self.width * .66), round(self.height * .04)
+        mask = inset.getchannel("A")
         if self.clean:
-            image = Image.fromarray(result)
-            image.paste(Image.fromarray(inset), (left, top), rounded_mask((w, h), 18 * self.scale, 236))
-        else:
-            result[max(0, top-border):top+h+border, max(0, left-border):left+w+border] = [75,92,115]
-            result[top:top+h,left:left+w]=inset
-            image = Image.fromarray(result)
+            mask = ImageChops.multiply(mask, rounded_mask(inset.size, 18 * self.scale))
+        color = result.convert("RGB")
+        color.paste(inset.convert("RGB"), corner, mask)
         if self.scale > 1:
-            image = image.resize(self.output_size, Image.Resampling.LANCZOS)
+            color = color.resize(self.output_size, Image.Resampling.LANCZOS)
         if self.edl:
-            image = image.point(EDL_TONES)
-        return np.asarray(image)
+            color = color.point(EDL_TONES)
+        if self.clean:
+            inset_alpha = Image.new("L", result.size)
+            inset_alpha.paste(mask, corner)
+            alpha = ImageChops.screen(result.getchannel("A"), inset_alpha)
+            color.putalpha(alpha.resize(self.output_size, Image.Resampling.LANCZOS)
+                           if self.scale > 1 else alpha)
+        return np.asarray(color)
 
     def close(self):
         for window in self.windows: window.Finalize()

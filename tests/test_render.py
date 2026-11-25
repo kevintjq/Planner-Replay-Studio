@@ -40,3 +40,23 @@ def test_video_export_frame_count_size_and_motion(tmp_path):
     finally: r.close()
     report=json.loads(output.with_suffix('.json').read_text())
     assert report['source']=='synthetic' and report['complete'] and report['frames']==9
+
+
+def test_slam_outline_keeps_tf_and_transparent_inset_background():
+    from slam_fpv.geometry import matrix
+
+    r = Renderer(640, 360, edl=False, slam_view=True, clean=True)
+    try:
+        pose = matrix([0, 0, 0], [0.12, .1, .3, .94])
+        frame = r.frame(pose, [], "")
+        assert frame.shape == (360, 640, 4)
+        # Inspect blank regions within each view and compare projected TF axes.
+        assert frame[0, 0, 3] == frame[21, 431, 3] == 0
+        for x0, y0, x1, y1 in ((0, 0, 415, 360), (423, 14, 630, 134)):
+            region = frame[y0:y1, x0:x1]
+            pixels = region[region[:, :, 3] == 255, :3].astype(int)
+            for channel in range(3):
+                others = np.delete(pixels, channel, axis=1).max(axis=1)
+                assert np.any(pixels[:, channel] > others + 60)
+    finally:
+        r.close()

@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageColor, ImageDraw, ImageFont
+from PIL import Image, ImageColor, ImageDraw, ImageFont, ImageOps
 
 from .footage import VideoEdit, video_rect
 
@@ -19,6 +19,7 @@ class VideoLayer:
     width: float = .29
     position: tuple = (.055, .84)
     opacity: float = .96
+    backdrop: bool = False
 
     def __post_init__(self):
         if not .05 <= self.width <= .9 or not 0 < self.opacity <= 1:
@@ -55,6 +56,8 @@ class Composition:
     speed_end: float | None = None
 
     def __post_init__(self):
+        if sum(layer.backdrop for layer in self.videos) > 1:
+            raise ValueError("请选择一路全屏底片。")
         if not isfinite(self.speed_limit) or self.speed_limit <= 0:
             raise ValueError("速度表量程须大于 0。")
         if not isfinite(self.speed_start) or self.speed_start < 0:
@@ -179,10 +182,21 @@ def position_tile(canvas, tile, position):
 
 def compose(base, project, videos, elapsed, speed):
     """Return pixels and visible hit boxes in the same coordinates as the supplied frame."""
-    image = base.copy() if isinstance(base, Image.Image) else Image.fromarray(base)
+    scene = base if isinstance(base, Image.Image) else Image.fromarray(base)
+    image = scene.convert("RGB")
+    alpha = scene.getchannel("A") if scene.mode == "RGBA" else None
+    for layer, footage in zip(project.videos, videos):
+        if layer.backdrop and footage is not None and alpha is not None:
+            source = footage if isinstance(footage, Image.Image) else Image.fromarray(footage)
+            video = ImageOps.fit(source.convert("RGB"), image.size, Image.Resampling.LANCZOS)
+            if layer.opacity < 1.:
+                video = Image.blend(image, video, layer.opacity)
+            video.paste(image, (0, 0), alpha)
+            image = video
+            break
     bounds = {}
     for index, (layer, footage) in enumerate(zip(project.videos, videos)):
-        if footage is None:
+        if footage is None or layer.backdrop:
             continue
         inset = footage if isinstance(footage, Image.Image) else Image.fromarray(footage)
         x, y, w, h = video_rect(image.size, inset.size, layer.width, layer.position)

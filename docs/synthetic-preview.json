@@ -1,0 +1,8 @@
+{
+  "source": "synthetic",
+  "video": "synthetic-demo.mp4",
+  "frame_index": 120,
+  "time_s": 5.0,
+  "fps": 24,
+  "note": "Still extracted from the labelled synthetic demo video"
+}

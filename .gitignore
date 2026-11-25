@@ -8,3 +8,16 @@ dist/
 *.bag
 *.bag.active
 captures/
+
+# Rendered clips and imported footage are local media.
+*.[mM][pP]4
+*.[mM]4[vV]
+*.[mM][oO][vV]
+*.[mM][kK][vV]
+*.[wW][eE][bB][mM]
+*.[aA][vV][iI]
+*.[wW][mM][vV]
+*.[mM][pP][gG]
+*.[mM][pP][eE][gG]
+*.[oO][gG][vV]
+*.[fF][lL][vV]

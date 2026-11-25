@@ -5,13 +5,17 @@ import numpy as np
 from PIL import Image, ImageChops
 import vtk
 from vtk.util.numpy_support import numpy_to_vtk, numpy_to_vtkIdTypeArray, vtk_to_numpy
-from .geometry import camera
+from .geometry import camera, fpv_angles, level_fpv_pose
 from .composition import rounded_mask
 
 
 # Lift EDL midtones while preserving the dark background and white overlays.
 EDL_TONES = [v if v <= 14 else round(14 + 241 * ((v - 14) / 241) ** .66)
              for v in range(256)] * 3
+FPV_MODES = {"fpv", "fpv_raw"}
+# Fixed world-oriented projection for the FPV attitude indicator.
+ATTITUDE_PROJECTION = np.array([[1., -1., 0.], [-1., -1., 2.], [0., 0., 0.]])
+ATTITUDE_PROJECTION[:2] /= np.linalg.norm(ATTITUDE_PROJECTION[:2], axis=1)[:, None]
 
 
 def point_actor(xyz, rgb, size):
@@ -41,22 +45,28 @@ def line_actor(points, color, width=3):
     return actor
 
 
-def overlay_line(points,color,width):
+def overlay_line(points,color,width, *, screen_space=False):
     poly=vtk.vtkPolyData(); pts=vtk.vtkPoints()
     pts.SetData(numpy_to_vtk(np.ascontiguousarray(points,dtype=float),deep=True)); poly.SetPoints(pts)
     cells=vtk.vtkCellArray(); cells.InsertNextCell(len(points))
     for i in range(len(points)): cells.InsertCellPoint(i)
     poly.SetLines(cells)
-    coordinate=vtk.vtkCoordinate(); coordinate.SetCoordinateSystemToWorld()
+    coordinate=vtk.vtkCoordinate()
+    if screen_space:
+        coordinate.SetCoordinateSystemToDisplay()
+    else:
+        coordinate.SetCoordinateSystemToWorld()
     mapper=vtk.vtkPolyDataMapper2D(); mapper.SetInputData(poly); mapper.SetTransformCoordinate(coordinate)
     actor=vtk.vtkActor2D(); actor.SetMapper(mapper)
     actor.GetProperty().SetColor(*color); actor.GetProperty().SetLineWidth(width)
     return actor
 
 
-def view_camera(pose, mode, rear, oblique, elapsed):
+def view_camera(pose, mode, rear, oblique, elapsed, fpv_pose=None):
     distance, height, side = oblique
-    if mode == "fpv":
+    if mode in FPV_MODES:
+        if mode == "fpv":
+            pose = fpv_pose if fpv_pose is not None else level_fpv_pose(pose, fpv_angles(pose))
         forward, _, up = pose[:3, :3].T
         position = pose[:3, 3] + forward * .12
         return position, position + forward * 8., up
@@ -140,17 +150,17 @@ class Renderer:
             scene.AddActor(actor)
             self.cloud_actors.append((scene, actor))
 
-    def frame(self,pose,trajectory,label,elapsed=0.):
+    def frame(self,pose,trajectory,label,elapsed=0.,fpv_pose=None):
         for renderer,actor in self.dynamic: renderer.RemoveActor(actor)
         self.dynamic=[]
         self.label.SetInput(('SIMULATION' if label.startswith('SYNTHETIC') else '') if self.clean
                             else label+'\nX red / Y green / Z blue | metres')
         for index,(scene,overlay) in enumerate(self.views):
             mode = self.modes[index]
-            position,target,up = view_camera(pose, mode, self.camera_args, self.inset_args, elapsed)
+            position,target,up = view_camera(pose, mode, self.camera_args, self.inset_args, elapsed, fpv_pose)
             cam=scene.GetActiveCamera(); cam.SetPosition(*position); cam.SetFocalPoint(*target)
             cam.SetViewUp(*up); cam.SetClippingRange(.035,1000)
-            if len(trajectory)>1:
+            if mode not in FPV_MODES and len(trajectory)>1:
                 if self.slam_view:
                     for color, width in (((.09, .085, .065), self.trajectory_width + 2 * self.scale),
                                          (self.trajectory_color, self.trajectory_width)):
@@ -160,18 +170,24 @@ class Renderer:
                 else:
                     actor=line_actor(trajectory,self.trajectory_color,self.trajectory_width)
                     scene.AddActor(actor); self.dynamic.append((scene,actor))
-            viewport_height = self.windows[index].GetSize()[1]
-            distance=np.linalg.norm(position-pose[:3,3])
-            min_length=self.axis_pixels*2*distance*np.tan(np.deg2rad(cam.GetViewAngle()/2))/viewport_height
-            length=max(self.axis,min_length)
-            origin=pose[:3,3]
-            if mode == "fpv":
-                forward, left, up = pose[:3, :3].T
-                origin = position + 1.4 * forward + .72 * left - .47 * up
+            viewport_width, viewport_height = self.windows[index].GetSize()
+            screen_space = mode in FPV_MODES
+            if screen_space:
+                origin = np.array([.095 * viewport_width, .17 * viewport_height, 0.])
+                length = np.clip(.065 * min(viewport_width, viewport_height), 18 * self.scale, 54 * self.scale)
+                # Use the measured, unsmoothed body rotation even for a stabilized camera.
+                axes = ATTITUDE_PROJECTION @ pose[:3, :3]
+            else:
+                origin = pose[:3, 3]
+                distance = np.linalg.norm(position - origin)
+                min_length = self.axis_pixels * 2 * distance * np.tan(np.deg2rad(cam.GetViewAngle()/2)) / viewport_height
+                length = max(self.axis, min_length)
+                axes = pose[:3, :3]
             for j,color in reversed(list(enumerate([(1,.13,.12),(.15,1,.27),(.15,.43,1)]))):
-                points=np.array([origin,origin+pose[:3,j]*length])
+                points=np.array([origin, origin + axes[:, j] * length])
                 for c,w in [((.01,.015,.025),7),(color,3.5)]:
-                    actor=overlay_line(points,c,w*self.scale); overlay.AddViewProp(actor); self.dynamic.append((overlay,actor))
+                    actor=overlay_line(points,c,w*self.scale,screen_space=screen_space)
+                    overlay.AddViewProp(actor); self.dynamic.append((overlay,actor))
         # Independent EDL framebuffers avoid driver-dependent viewport clearing.
         # Both use exactly the same cloud, trajectory and timestamped pose above.
         images=[]

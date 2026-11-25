@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import imageio.v2 as imageio
 from .cloud import CloudMap
+from .geometry import stabilized_fpv_pose
 from .composition import SpeedHistory, compose, estimated_speed
 from .sources import BagSource, DemoSource, TrailDemoSource, inspect_bag
 from .encoding import h264_encoder
@@ -197,7 +198,9 @@ def render(a, source, *, preview=None, preview_offset=0, progress=None, check_ca
                     renderer.update_cloud(cloud)
                     dirty = False
                 label = 'SYNTHETIC DEMO' if is_synthetic else 'RECORDED ROS1 DATA'
-                frame = renderer.frame(pose, trajectory, f'{label} | t={elapsed:.3f}s | REAR CHASE + OBLIQUE', elapsed=elapsed)
+                camera_pose = stabilized_fpv_pose(source, t, pose) if "fpv" in renderer.modes else None
+                frame = renderer.frame(pose, trajectory, f'{label} | t={elapsed:.3f}s | REAR CHASE + OBLIQUE',
+                                       elapsed=elapsed, fpv_pose=camera_pose)
                 if project is not None:
                     frame, cloud_views = frame
                     footage = tuple(layer.frame_at(elapsed) for layer in layers)

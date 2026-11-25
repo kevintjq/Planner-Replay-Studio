@@ -1,34 +1,32 @@
 # SLAM FPV Renderer
 
-将 ROS1 SLAM 点云渲染为正后方跟随主画面和高位斜俯视小窗，可叠加实拍视频并导出 MP4 或 PNG。
+把 ROS1 SLAM 点云和位姿做成多机位飞行画面，可叠加实飞视频、文字和速度表。
 
-[English](README.md) · [模拟演示](docs/synthetic-demo.mp4) · [验证记录](docs/VALIDATION.md)
+[English](README.md) · [验证记录](docs/VALIDATION.md)
 
-## Windows 安装
+![工作台模拟效果，包含点云主画面、高位斜视和稳定 FPV](docs/studio-preview.png)
 
-安装 64 位 Python 3.10 或更高版本并保留 Tcl/Tk。克隆仓库后，双击 [Start_SLAM_FPV.cmd](Start_SLAM_FPV.cmd)。首次启动联网安装依赖，以后直接打开。
+*截图使用模拟数据。*
 
-## 操作
+## Windows 启动
 
-1. 在「数据」打开 ROS1 `.bag`，选择点云和 Odometry 或 TF，确认世界与机体坐标系。设置导出起点和时长。
-2. 在「图层」一次导入多个视频。选中某一视角后用「裁剪 / 对齐」设置其入点、出点、画幅及时间锚点。点「替换视频」更换素材。点「设为全屏底片」把该视频放到点云下方，其他视频仍可自由摆放。
-3. 添加文字或速度表。选中图层后可输入显示时间，也可在下方时间轴拖动区间两端。拖动蓝色播放头定位预览。时间均从首帧点云计起。速度表显示由世界坐标系位姿估算的三维速度（m/s），最高和平均值从导出起点累计。
-4. 在预览里直接拖动叠加图层。右上角「主视角」和「图层 → + 视角」均可选 11 个机位，包括后方跟随、高位斜视、机头 FPV、正前回望、左/右侧跟随、左/右后斜视、高位近俯视、低位追踪和环绕观察。机头 FPV 随机体姿态转动。点选图层后拖动位置，拉右下角缩放，点「设为透明底 / 设为深色底」切换底色。文字和速度表使用透明底，实拍小窗可调整不透明度。导出 MP4 或 PNG，默认 1080p、60 FPS。自动编码先试 NVIDIA NVENC，再回退 CPU H.264。
+安装带 Tcl/Tk 的 64 位 Python 3.10 或更高版本。克隆仓库后，双击 [Start_SLAM_FPV.cmd](Start_SLAM_FPV.cmd)。首次启动会联网安装依赖。想先看效果，可以直接点「使用模拟数据」。
 
-「画质」默认使用 **SLAM 原貌 + SLAM 高度彩虹**。高度范围留空时，从首批非空点云确定，并在整段保持固定。也可输入两个世界坐标系 Z 值，如 `-1 4`。体素填 `0` 可跳过体素筛选，点数上限仍生效。已有地图按原始颜色渲染时可选「原始 RGB」。
+## 合成流程
 
-## 命令行与录制
+1. **读取数据。** 在「数据」打开 ROS1 `.bag`，选择 PointCloud2 和 Odometry 或 TF，设置导出起点与时长。
+2. **选机位。** 右上角选择主视角，从「图层 → + 视角」添加小窗。共有 12 个机位可选，包括稳定 FPV、原始 FPV、高位斜视、左右跟随和环绕。两种 FPV 都隐藏轨迹线，角落三轴显示原始机体姿态。
+3. **组合图层。** 实拍可作为底片或画中画，支持裁剪及双锚点对齐。可添加定时文字和 m/s 速度表。选中图层后，拖动位置，拉右下角缩放，也可以切换透明底或深色底。
+4. **导出。** 支持 MP4 和 PNG，视频默认 1080p、60 FPS。自动检测 NVIDIA NVENC，必要时回退到 CPU H.264。
+
+## 命令行
 
 ```powershell
 .\.venv\Scripts\slam-fpv.exe inspect run.bag
-.\.venv\Scripts\slam-fpv.exe bag run.bag --output run.mp4 --cloud-topic /cloud_registered --odom-topic /Odometry --world camera_init --body body
+.\.venv\Scripts\slam-fpv.exe bag run.bag --output captures/run.mp4 --cloud-topic /cloud_registered --odom-topic /Odometry --world camera_init --body body
 .\.venv\Scripts\slam-fpv.exe bag --help
 ```
 
-在 ROS1 主机上录制实际的话题。例如：
+使用 TF 时选 `--pose-source tf`，按需录制 `/tf` 与 `/tf_static`。实时订阅与回放见 [ROS1 桥接](examples/ros1_bridge.py)。实录 bag、导入素材和导出视频保存在本地。
 
-```bash
-rosbag record -O run.bag /cloud_registered /Odometry /tf /tf_static
-```
-
-TF 模式选 `--pose-source tf`。传感器坐标系点云需要连接到世界坐标系的 TF，或通过 [外参模板](examples/extrinsics.json) 填入实测外参。实际 ROS1 订阅或回放使用 [ROS1 桥接](examples/ros1_bridge.py) 和 `slam-fpv listen --help`。Windows 可直接读包，无需安装 ROS1。
+[MIT 许可](LICENSE)

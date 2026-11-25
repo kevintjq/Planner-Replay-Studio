@@ -135,3 +135,47 @@ def camera(pose, distance=3.8, height=1.35, side=0., lookahead=1.5):
     left = np.array([-forward[1], forward[0], 0])
     p = pose[:3, 3]
     return p-distance*forward+side*left+[0, 0, height], p+lookahead*forward
+
+
+def level_fpv_pose(pose, angles):
+    """Construct a camera pose from yaw and softened pitch with a level horizon."""
+    yaw, pitch = angles
+    pitch = np.clip(.30 * pitch, -np.deg2rad(12), np.deg2rad(12))
+    horizontal = np.array([np.cos(yaw), np.sin(yaw), 0.])
+    left = np.array([-horizontal[1], horizontal[0], 0.])
+    forward = horizontal * np.cos(pitch) + np.array([0., 0., np.sin(pitch)])
+    result = pose.copy()
+    result[:3, :3] = np.column_stack((forward, left, np.cross(forward, left)))
+    return result
+
+
+def fpv_angles(pose):
+    x, y, z = pose[:3, 0]
+    return np.array([np.arctan2(y, x), np.arctan2(z, np.hypot(x, y))])
+
+
+def stabilized_fpv_pose(source, stamp, pose):
+    """Smooth only the viewing pose in a symmetric, frame-rate independent time window."""
+    reference = fpv_angles(pose)
+    angles = reference.copy()
+    position = pose[:3, 3].copy()
+    total = 1.
+    for direction in (-1, 1):
+        for offset, weight in ((90_000_000, .88), (180_000_000, .54), (270_000_000, .23)):
+            sample_time = stamp + direction * offset
+            if not source.first <= sample_time <= source.last:
+                break
+            try:
+                sample = source.pose(sample_time)
+            except LookupError:
+                # Stay on the current side of any unavailable pose interval.
+                break
+            sample_angles = fpv_angles(sample)
+            delta = sample_angles[0] - reference[0]
+            sample_angles[0] = reference[0] + np.arctan2(np.sin(delta), np.cos(delta))
+            angles += weight * sample_angles
+            position += weight * sample[:3, 3]
+            total += weight
+    result = level_fpv_pose(pose, angles / total)
+    result[:3, 3] = position / total
+    return result

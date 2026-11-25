@@ -43,7 +43,7 @@ Agreement checks validate interpretation of the two recorded paths, **not SLAM a
 
 ## Synthetic media
 
-`synthetic-demo.mp4`: generated room, pillars and prescribed motion; 1280×720, 24 FPS, 145 samples including the 6-second endpoint. `synthetic-preview.png` is a labelled still. No claim of measured obstacle avoidance is made.
+[`studio-preview.png`](studio-preview.png) is a screenshot of the desktop’s synthetic point-cloud preview. It illustrates the editing controls, camera layers and simulated speed gauge.
 
 ## Unverified
 

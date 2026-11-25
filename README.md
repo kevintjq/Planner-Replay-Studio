@@ -1,30 +1,32 @@
 # SLAM FPV Renderer
 
-Turn ROS1 SLAM point clouds into a rear-follow view with a high oblique inset. Export MP4 or PNG and optionally add movable flight footage.
+A Windows desktop workspace for turning ROS1 SLAM point clouds and poses into multi-view flight videos. Combine point-cloud cameras with real flight footage, captions and a speed gauge.
 
-[简体中文](README_CN.md) · [Demo](docs/synthetic-demo.mp4) · [Validation](docs/VALIDATION.md)
+[简体中文](README_CN.md) · [Validation](docs/VALIDATION.md)
 
-![Synthetic dual-view preview](docs/synthetic-preview.png)
+![SLAM FPV workspace with simulated point clouds, an oblique overview, and a stabilized FPV inset](docs/studio-preview.png)
 
-## Windows desktop
+*The workspace screenshot uses simulated data.*
 
-Install 64-bit Python 3.10+ with Tcl/Tk, clone the repository, then double-click [Start_SLAM_FPV.cmd](Start_SLAM_FPV.cmd). The first launch installs dependencies and needs Internet access.
+## Start on Windows
 
-1. Open a ROS1 `.bag`, select PointCloud2 and Odometry or TF, then set the export interval.
-2. Add multiple flight videos in the Layers tab. Edit the trim, crop, alignment, width and opacity of each video independently. Swap any clip or use it as a full-screen backdrop beneath the cloud. Use matching events as alignment anchors.
-3. Add timed captions or a speed gauge. Drag annotation handles to change their visible intervals and scrub the timeline to preview. Times are relative to the first cloud. The gauge estimates 3D speed in m/s from world-frame poses.
-4. Drag overlays directly in the preview. Choose one of 11 presets for the main view or add it as a secondary panel, including a body-aligned FPV camera, chase, side, oblique, and orbit views. Drag layers to reposition them, pull the corner handle to resize, and choose a transparent or dark layer background. Export MP4 or PNG at 1080p and 60 fps by default. Automatic encoding tests NVENC and falls back to CPU H.264.
+Install 64-bit Python 3.10 or newer with Tcl/Tk. Clone the repository, then double-click [Start_SLAM_FPV.cmd](Start_SLAM_FPV.cmd). The first launch downloads dependencies. Open **Use simulated data** to try the workspace before loading a bag.
 
-The desktop defaults to an unlit SLAM view with a fixed world-height palette. Set voxel size to `0` to preserve raw points up to the configured point limit, or select native RGB for colorized clouds.
+## Make a composition
+
+1. Open a ROS1 `.bag` under **Data**. Select a PointCloud2 topic, choose Odometry or TF, and set the export interval.
+2. Choose the main camera and add secondary views in **Layers → + View**. Pick from 12 presets, including stabilized FPV, raw FPV, oblique, side, chase and orbit. Both FPV modes hide the trajectory and show the original body attitude on the corner triad.
+3. Add flight footage as a backdrop or an inset. Align clips using matching events, then add timed captions or a speed gauge. Drag layers, resize them by the corner, and choose a transparent or dark background.
+4. Export MP4 or PNG. The default video settings are 1080p at 60 fps, with automatic NVIDIA NVENC or CPU H.264 encoding.
 
 ## CLI
 
 ```powershell
 .\.venv\Scripts\slam-fpv.exe inspect run.bag
-.\.venv\Scripts\slam-fpv.exe bag run.bag --output run.mp4 --cloud-topic /cloud_registered --odom-topic /Odometry --world camera_init --body body
+.\.venv\Scripts\slam-fpv.exe bag run.bag --output captures/run.mp4 --cloud-topic /cloud_registered --odom-topic /Odometry --world camera_init --body body
 .\.venv\Scripts\slam-fpv.exe bag --help
 ```
 
-For TF, use `--pose-source tf` and record `/tf` and `/tf_static`. For live ROS1 or ROS-based replay, use [the bridge](examples/ros1_bridge.py) and `slam-fpv listen --help`.
+For TF, use `--pose-source tf` and include `/tf` and `/tf_static` as needed. See the [ROS1 bridge](examples/ros1_bridge.py) for live or replay use. Keep recorded bags, imported footage and video exports local.
 
-MIT license. See [LICENSE](LICENSE).
+[MIT License](LICENSE)

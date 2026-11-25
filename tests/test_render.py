@@ -94,8 +94,56 @@ def test_fpv_camera_tracks_body_pitch_and_roll_and_orbit_moves():
 
     pose = matrix([3., 4., 5.], [0.12, .16, .3, .93])
     rear, high = (4., 2., 0.), (7., 4., 0.)
-    position, target, up = view_camera(pose, "fpv", rear, high, 0.)
+    position, target, up = view_camera(pose, "fpv_raw", rear, high, 0.)
     np.testing.assert_allclose((target-position)/8, pose[:3, 0])
     np.testing.assert_allclose(up, pose[:3, 2])
     assert not np.allclose(view_camera(pose,"orbit",rear,high,0.)[0],
                            view_camera(pose,"orbit",rear,high,2.)[0])
+
+
+def test_stabilized_fpv_reduces_jitter_without_wrapping_the_turn():
+    from slam_fpv.geometry import fpv_angles, matrix, stabilized_fpv_pose
+
+    class Source:
+        first, last = 0, 2_000_000_000
+
+        @staticmethod
+        def pose(stamp):
+            t = stamp / 1e9
+            yaw = np.deg2rad(178 + 6*t + 5*np.sin(2*np.pi*8*t))
+            roll = np.deg2rad(15*np.cos(2*np.pi*8*t))
+            return matrix([t, .04 * np.cos(2*np.pi*8*t), 1],
+                          [np.sin(roll/2)*np.cos(yaw/2), np.sin(roll/2)*np.sin(yaw/2),
+                           np.cos(roll/2)*np.sin(yaw/2), np.cos(roll/2)*np.cos(yaw/2)])
+
+    source = Source()
+    times = np.arange(350_000_000, 1_650_000_000, 16_666_667)
+    raw = [source.pose(int(stamp)) for stamp in times]
+    smooth = [stabilized_fpv_pose(source, int(stamp), frame) for stamp, frame in zip(times, raw)]
+    assert abs(smooth[0][3, 3]-1) < 1e-9
+    assert all(abs(frame[2, 1]) < 1e-9 for frame in smooth)
+    baseline = np.deg2rad(178 + 6 * times / 1e9)
+    raw_yaw = np.unwrap([fpv_angles(frame)[0] for frame in raw])
+    smooth_yaw = np.unwrap([fpv_angles(frame)[0] for frame in smooth])
+    assert np.std(smooth_yaw - baseline) < .40 * np.std(raw_yaw - baseline)
+    assert smooth_yaw[-1] - smooth_yaw[0] > np.deg2rad(6)
+    assert np.std([frame[1, 3] for frame in smooth]) < .40 * np.std([frame[1, 3] for frame in raw])
+
+
+def test_fpv_hides_trajectory_and_indicator_shows_unsmoothed_attitude():
+    from slam_fpv.geometry import matrix
+
+    pose = matrix([0., 0., 1.], [0., 0., 0., 1.])
+    rolled = matrix([0., 0., 1.], [.30, 0., 0., .95])
+    trajectory = [[1., .1, 1.], [2., .4, 1.2], [3., .5, 1.]]
+    renderer = Renderer(480, 270, edl=False, clean=True, view_modes=("fpv_raw",), main_mode="fpv")
+    try:
+        stable, raw = renderer.frame(pose, [], "", fpv_pose=pose)
+        with_path, raw_with_path = renderer.frame(pose, trajectory, "", fpv_pose=pose)
+        np.testing.assert_array_equal(stable, with_path)
+        np.testing.assert_array_equal(np.asarray(raw["fpv_raw"]), np.asarray(raw_with_path["fpv_raw"]))
+        measured, raw_rolled = renderer.frame(rolled, [], "", fpv_pose=pose)
+        assert np.count_nonzero(stable != measured) > 20
+        assert np.count_nonzero(np.asarray(raw["fpv_raw"]) != np.asarray(raw_rolled["fpv_raw"])) > 10
+    finally:
+        renderer.close()

@@ -1,0 +1,8 @@
+[
+  {
+    "parent": "body",
+    "child": "lidar",
+    "translation": [0.0, 0.0, 0.0],
+    "quaternion_xyzw": [0.0, 0.0, 0.0, 1.0]
+  }
+]

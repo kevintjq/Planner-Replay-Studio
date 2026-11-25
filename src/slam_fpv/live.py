@@ -69,7 +69,7 @@ def listen(a):
                             trajectory.append(frame_pose[:3,3].copy())
                             output.append(renderer.frame(frame_pose,list(trajectory),f'ROS1 BRIDGE | t={(next_frame-first)/1e9:.3f}s'))
                             frame_index+=1; next_frame=first+round(frame_index*1e9/a.fps)
-                            if (next_frame-first)/1e9>=a.seconds or a.output.suffix=='.png':
+                            if (next_frame-first)/1e9>=a.seconds or a.output.suffix.lower()=='.png':
                                 stats['complete']=True; return
                         xyz,rgb=decode(msg)
                         cloud.add(transform_points(T,xyz),None if a.color=='height' else rgb,a.cloud_mode=='replace')

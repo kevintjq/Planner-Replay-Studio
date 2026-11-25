@@ -1,7 +1,8 @@
 """Two synchronized VTK EDL viewports, plus foreground body RGB axes."""
 import numpy as np
+from PIL import Image
 import vtk
-from vtk.util.numpy_support import numpy_to_vtk, vtk_to_numpy
+from vtk.util.numpy_support import numpy_to_vtk, numpy_to_vtkIdTypeArray, vtk_to_numpy
 from .geometry import camera
 
 
@@ -9,8 +10,9 @@ def point_actor(xyz, rgb, size):
     poly=vtk.vtkPolyData()
     pts=vtk.vtkPoints(); pts.SetData(numpy_to_vtk(np.ascontiguousarray(xyz),deep=True)); poly.SetPoints(pts)
     cells=vtk.vtkCellArray()
-    for i in range(len(xyz)):
-        cells.InsertNextCell(1); cells.InsertCellPoint(i)
+    offsets = np.arange(len(xyz) + 1, dtype=np.int64)
+    cells.SetData(numpy_to_vtkIdTypeArray(offsets, deep=True),
+                  numpy_to_vtkIdTypeArray(offsets[:-1], deep=True))
     poly.SetVerts(cells)
     poly.GetPointData().SetScalars(numpy_to_vtk(np.ascontiguousarray(rgb,dtype='u1'),deep=True))
     mapper=vtk.vtkPolyDataMapper(); mapper.SetInputData(poly)
@@ -46,18 +48,26 @@ def overlay_line(points,color,width):
 
 class Renderer:
     def __init__(self,width=1280,height=720,edl=True,axis=.48,axis_pixels=28,point_size=2,
-                 distance=3.8,camera_height=1.35,side=0.,fov=65,inset_distance=10,inset_height=6.7):
-        self.width,self.height=width,height
-        self.axis,self.axis_pixels,self.point_size=axis,axis_pixels,point_size
+                 distance=3.8,camera_height=1.35,side=0.,fov=65,inset_distance=10,inset_height=6.7,
+                 *, supersample=1, cloud_color=None, trajectory_color=(1,.73,.18), trajectory_width=3):
+        self.output_size = (width, height)
+        self.scale = supersample
+        self.width, self.height = width * supersample, height * supersample
+        self.axis, self.axis_pixels = axis, axis_pixels * supersample
+        self.point_size = point_size * supersample
+        self.cloud_color = cloud_color
+        self.trajectory_color = trajectory_color
+        self.trajectory_width = trajectory_width * supersample
         self.camera_args=(distance,camera_height,side)
         self.inset_args=(inset_distance,inset_height,0.)
         self.windows=[]
         self.views=[]
         self.cloud_actors=[]
         self.dynamic=[]
-        for index,viewport in enumerate([(0,0,1,1),(.66,.63,.98,.96)]):
+        for index in range(2):
             window=vtk.vtkRenderWindow()
-            window.SetSize(width if index==0 else round(width*.32),height if index==0 else round(height*.33))
+            window.SetSize(self.width if index == 0 else round(self.width * .32),
+                           self.height if index == 0 else round(self.height * .33))
             window.SetOffScreenRendering(1); window.SetMultiSamples(0); window.SetNumberOfLayers(2)
             self.windows.append(window)
             scene=vtk.vtkRenderer(); scene.SetViewport(0,0,1,1); scene.SetLayer(0)
@@ -70,20 +80,23 @@ class Renderer:
             scene.GetActiveCamera().SetViewAngle(fov)
             window.AddRenderer(scene); window.AddRenderer(overlay)
             self.views.append((scene,overlay))
-        self.label=vtk.vtkTextActor(); self.label.SetPosition(22,22)
-        self.label.GetTextProperty().SetFontSize(17); self.label.GetTextProperty().SetColor(.9,.94,1)
+        self.label=vtk.vtkTextActor(); self.label.SetPosition(22*self.scale,22*self.scale)
+        self.label.GetTextProperty().SetFontSize(17*self.scale); self.label.GetTextProperty().SetColor(.9,.94,1)
         self.views[0][1].AddViewProp(self.label)
-        self.inset_label=vtk.vtkTextActor(); self.inset_label.SetInput('OBLIQUE FOLLOW | 34 deg')
-        self.inset_label.SetPosition(10,10); self.inset_label.GetTextProperty().SetFontSize(12)
+        self.inset_label=vtk.vtkTextActor()
+        self.inset_label.SetPosition(10*self.scale,10*self.scale); self.inset_label.GetTextProperty().SetFontSize(12*self.scale)
         self.views[1][1].AddViewProp(self.inset_label)
         self.inset_label.SetInput('OBLIQUE FOLLOW')
 
     def update_cloud(self,cloud):
         for scene,actor in self.cloud_actors: scene.RemoveActor(actor)
         self.cloud_actors=[]
-        actor=point_actor(cloud.xyz,cloud.rgb,self.point_size)
-        for scene,_ in self.views:
-            scene.AddActor(actor); self.cloud_actors.append((scene,actor))
+        rgb = cloud.rgb if self.cloud_color is None else np.broadcast_to(self.cloud_color, cloud.rgb.shape)
+        for scene, _ in self.views:
+            # Each mapper owns GPU buffers for its own OpenGL context.
+            actor = point_actor(cloud.xyz, rgb, self.point_size)
+            scene.AddActor(actor)
+            self.cloud_actors.append((scene, actor))
 
     def frame(self,pose,trajectory,label):
         for renderer,actor in self.dynamic: renderer.RemoveActor(actor)
@@ -95,7 +108,7 @@ class Renderer:
             cam=scene.GetActiveCamera(); cam.SetPosition(*position); cam.SetFocalPoint(*target)
             cam.SetViewUp(0,0,1); cam.SetClippingRange(.03,1000)
             if len(trajectory)>1:
-                actor=line_actor(trajectory,(1,.73,.18),3)
+                actor=line_actor(trajectory,self.trajectory_color,self.trajectory_width)
                 scene.AddActor(actor); self.dynamic.append((scene,actor))
             viewport_height=self.height*(1 if index==0 else .33)
             distance=np.linalg.norm(position-pose[:3,3])
@@ -105,7 +118,7 @@ class Renderer:
             for j,color in reversed(list(enumerate([(1,.13,.12),(.15,1,.27),(.15,.43,1)]))):
                 points=np.array([origin,origin+pose[:3,j]*length])
                 for c,w in [((.01,.015,.025),7),(color,3.5)]:
-                    actor=overlay_line(points,c,w); overlay.AddViewProp(actor); self.dynamic.append((overlay,actor))
+                    actor=overlay_line(points,c,w*self.scale); overlay.AddViewProp(actor); self.dynamic.append((overlay,actor))
         # Independent EDL framebuffers avoid driver-dependent viewport clearing.
         # Both use exactly the same cloud, trajectory and timestamped pose above.
         images=[]
@@ -117,8 +130,11 @@ class Renderer:
             images.append(np.flipud(vtk_to_numpy(capture.GetOutput().GetPointData().GetScalars()).reshape(h,w,3)).copy())
         result,inset=images
         h,w=inset.shape[:2]; top=round(self.height*.04); left=round(self.width*.66)
-        result[top-2:top+h+2,left-2:left+w+2]=[75,92,115]
+        border = 2 * self.scale
+        result[max(0, top-border):top+h+border, max(0, left-border):left+w+border] = [75,92,115]
         result[top:top+h,left:left+w]=inset
+        if self.scale > 1:
+            result = np.asarray(Image.fromarray(result).resize(self.output_size, Image.Resampling.LANCZOS))
         return result
 
     def close(self):

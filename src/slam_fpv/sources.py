@@ -6,6 +6,12 @@ from .geometry import TransformTree, transform_points
 from .cloud import decode
 
 
+def inspect_bag(path):
+    with AnyReader([path]) as reader:
+        return dict(storage_start_ns=reader.start_time, storage_end_ns=reader.end_time,
+                    topics=[dict(topic=c.topic,type=c.msgtype,count=c.msgcount) for c in reader.connections])
+
+
 def stamp(msg):
     t = msg.header.stamp
     sec = getattr(t, 'sec', getattr(t, 'secs', 0))
@@ -40,7 +46,7 @@ class BagSource:
         self.count = 0
         self.leading_cloud_skips = 0
 
-    def index(self):
+    def index(self, check_cancel=None):
         odom_count = 0
         with AnyReader([self.path]) as reader:
             if reader.is2 or self.path.suffix != '.bag':
@@ -52,6 +58,8 @@ class BagSource:
                 raise ValueError("Cloud topic missing or not sensor_msgs/PointCloud2; Livox CustomMsg needs SLAM/driver conversion")
             previous = None
             for c, _, raw in reader.messages(connections=wanted):
+                if check_cancel is not None:
+                    check_cancel()
                 msg = reader.deserialize(raw, c.msgtype)
                 if c.topic == self.cloud_topic:
                     t = stamp(msg)

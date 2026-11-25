@@ -8,7 +8,8 @@ import numpy as np
 import imageio.v2 as imageio
 from .cloud import CloudMap
 from .sources import BagSource, DemoSource, inspect_bag
-from .footage import FlightVideo, composite
+from .encoding import h264_encoder
+from .footage import FULL_FRAME, FlightVideo, VideoEdit, composite
 
 
 def parser(parser_class=argparse.ArgumentParser):
@@ -54,8 +55,14 @@ def parser(parser_class=argparse.ArgumentParser):
         x.add_argument('--trajectory-width',type=float,default=3)
         x.add_argument('--supersample',type=int,choices=(1,2),default=1)
         x.add_argument('--crf',type=int,choices=range(0,52),default=None,metavar='0–51')
+        x.add_argument('--encoder',choices=('auto','cpu','nvenc'),default='cpu')
         if name != 'listen':
             x.add_argument('--video',type=Path)
+            x.add_argument('--video-in',type=float,default=0)
+            x.add_argument('--video-out',type=float)
+            x.add_argument('--video-crop',type=float,nargs=4,default=FULL_FRAME,metavar=('X0','Y0','X1','Y1'))
+            x.add_argument('--sync-anchor',type=float,nargs=2,action='append',default=[],
+                           metavar=('BAG_SECONDS','VIDEO_SECONDS'))
             x.add_argument('--video-offset',type=float,default=0,help='Source time in seconds at the first video frame')
             x.add_argument('--video-width',type=float,default=.30,help='Video width as a fraction of the output frame')
             x.add_argument('--video-position',type=float,nargs=2,default=(.035,.87),metavar=('X','Y'),
@@ -96,10 +103,19 @@ class Export:
         self.path = a.output if path is None else path
         self.count = 0
         self.path.parent.mkdir(parents=True,exist_ok=True)
-        options = {} if a.crf is None else dict(
-            quality=None, output_params=['-crf',str(a.crf),'-preset','medium','-movflags','+faststart'])
-        self.writer=None if self.path.suffix.lower()=='.png' else imageio.get_writer(
-            str(self.path),fps=a.fps,codec='libx264',pixelformat='yuv420p',macro_block_size=2,**options)
+        self.writer = self.codec = None
+        if self.path.suffix.lower() == '.mp4':
+            self.codec = h264_encoder(a.encoder, a.width, a.height, a.fps)
+            options = {}
+            if self.codec == "h264_nvenc":
+                options = dict(quality=None, output_params=[
+                    "-preset", "p5", "-rc", "vbr", "-cq", str(a.crf if a.crf is not None else 18),
+                    "-b:v", "0", "-movflags", "+faststart"])
+            elif a.crf is not None:
+                options = dict(quality=None, output_params=[
+                    "-crf", str(a.crf), "-preset", "medium", "-movflags", "+faststart"])
+            self.writer = imageio.get_writer(str(self.path), fps=a.fps, codec=self.codec,
+                                             pixelformat="yuv420p", macro_block_size=2, **options)
 
     def append(self,frame):
         if self.writer: self.writer.append_data(frame)
@@ -117,16 +133,17 @@ def render(a, source, *, preview=None, preview_offset=0, progress=None, check_ca
     trajectory = []
     dropped = transformed = count = 0
     dirty = False
-    failure = None
+    failure = codec = None
     is_synthetic = isinstance(source, DemoSource)
     try:
         with ExitStack() as stack:
-            video = stack.enter_context(FlightVideo(a.video, a.video_offset))
+            video = stack.enter_context(FlightVideo(a.video, video_edit(a)))
             renderer = make_renderer(a)
             stack.callback(renderer.close)
             output = None
             if preview is None:
                 output = Export(a, destination)
+                codec = output.codec
                 stack.callback(output.close)
             iterator = iter(source.clouds())
             stack.callback(iterator.close)
@@ -189,7 +206,7 @@ def render(a, source, *, preview=None, preview_offset=0, progress=None, check_ca
                           frames=count,leading_pose_skips=dropped,clouds=transformed,
                           leading_cloud_skips=getattr(source,'leading_cloud_skips',0),
                           retained_points=len(cloud.xyz),fps=a.fps,edl_requested=not a.no_edl,
-                          complete=failure is None and count > 0,error=failure,
+                          complete=failure is None and count > 0,error=failure,encoder=codec,
                           config={k:str(v) if isinstance(v,Path) else v for k,v in vars(a).items() if k != 'bag'})
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.with_suffix('.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
@@ -202,6 +219,10 @@ def open_source(a, check_cancel=None):
         return DemoSource(a.seconds)
     return BagSource(a.bag,a.cloud_topic,a.odom_topic,a.world,a.body,a.pose_source,
                      a.max_gap,extrinsics(a.extrinsics)).index(check_cancel)
+
+
+def video_edit(a):
+    return VideoEdit(a.video_offset, a.video_in, a.video_out, tuple(a.video_crop), tuple(a.sync_anchor))
 
 
 def validate(a):
@@ -218,7 +239,8 @@ def validate(a):
         raise ValueError('--max-gap must be positive')
 
     if a.command != 'listen':
-        if not np.isfinite(a.video_offset) or not .05 <= a.video_width <= .90:
+        video_edit(a)
+        if not .05 <= a.video_width <= .90:
             raise ValueError('Invalid video time offset or size (5–90%)')
         if not all(0 <= coordinate <= 1 for coordinate in a.video_position):
             raise ValueError('Video position must be between 0 and 1')

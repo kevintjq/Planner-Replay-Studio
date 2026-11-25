@@ -20,8 +20,8 @@ py -m venv .venv
 
 1. Open a ROS1 `.bag`. Select a PointCloud2 topic and Odometry or recorded TF. Set the world and body frames to match the bag. The desktop labels are in Chinese.
 2. Set the export start and duration, then generate a preview. Adjust the camera, point density, point-cloud color and trajectory color in the settings tabs.
-3. Optionally add a constant-frame-rate flight video. Set its time offset from the first cloud timestamp, then generate a preview and drag the video layer. An offset of `+2` starts the video at source time 2 s. Export includes the picture only.
-4. Export MP4 or PNG. The default is 1080p at 30 fps with EDL, 2× supersampling and CRF 15. Reduce supersampling or resolution if rendering is slow.
+3. Optionally open a flight video and use the editor to set in/out times and drag a crop rectangle. Find a matching event in both views, then mark an anchor. Mark a later matching event to correct clock drift, or enter a manual offset relative to the first cloud. Generate a preview to move the video layer.
+4. Export MP4 or PNG. The default is 1080p at 60 fps with EDL and 2× supersampling. Automatic encoding tests NVIDIA NVENC and falls back to CPU H.264 if hardware initialization fails. The flight overlay is exported without audio.
 
 ## CLI
 

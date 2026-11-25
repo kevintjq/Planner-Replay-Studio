@@ -7,7 +7,7 @@ name = "slam-fpv-renderer"
 version = "0.2.0"
 description = "Timestamped ROS1 point clouds with rear chase and oblique inset views"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.24,<3", "vtk>=9.3,<10", "rosbags>=0.10,<0.12", "imageio>=2.34,<3", "imageio-ffmpeg>=0.5,<1", "Pillow>=10,<14"]
+dependencies = ["numpy>=1.24,<3", "vtk>=9.3,<10", "rosbags>=0.10,<0.12", "imageio>=2.34,<3", "imageio-ffmpeg>=0.5,<1", "Pillow>=10,<14", "av>=15,<19"]
 
 [project.optional-dependencies]
 test = ["pytest>=8,<10"]

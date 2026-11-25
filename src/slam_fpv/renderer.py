@@ -6,6 +6,11 @@ from vtk.util.numpy_support import numpy_to_vtk, numpy_to_vtkIdTypeArray, vtk_to
 from .geometry import camera
 
 
+# Lift EDL midtones while preserving the dark background and white overlays.
+EDL_TONES = [v if v <= 14 else round(14 + 241 * ((v - 14) / 241) ** .66)
+             for v in range(256)] * 3
+
+
 def point_actor(xyz, rgb, size):
     poly=vtk.vtkPolyData()
     pts=vtk.vtkPoints(); pts.SetData(numpy_to_vtk(np.ascontiguousarray(xyz),deep=True)); poly.SetPoints(pts)
@@ -52,6 +57,7 @@ class Renderer:
                  *, supersample=1, cloud_color=None, trajectory_color=(1,.73,.18), trajectory_width=3):
         self.output_size = (width, height)
         self.scale = supersample
+        self.edl = edl
         self.width, self.height = width * supersample, height * supersample
         self.axis, self.axis_pixels = axis, axis_pixels * supersample
         self.point_size = point_size * supersample
@@ -125,7 +131,8 @@ class Renderer:
         for window in self.windows:
             window.Render()
             capture=vtk.vtkWindowToImageFilter(); capture.SetInput(window)
-            capture.SetInputBufferTypeToRGB(); capture.ReadFrontBufferOff(); capture.Update()
+            capture.SetInputBufferTypeToRGB(); capture.ReadFrontBufferOff()
+            capture.ShouldRerenderOff(); capture.Update()
             w,h=window.GetSize()
             images.append(np.flipud(vtk_to_numpy(capture.GetOutput().GetPointData().GetScalars()).reshape(h,w,3)).copy())
         result,inset=images
@@ -133,9 +140,12 @@ class Renderer:
         border = 2 * self.scale
         result[max(0, top-border):top+h+border, max(0, left-border):left+w+border] = [75,92,115]
         result[top:top+h,left:left+w]=inset
+        image = Image.fromarray(result)
         if self.scale > 1:
-            result = np.asarray(Image.fromarray(result).resize(self.output_size, Image.Resampling.LANCZOS))
-        return result
+            image = image.resize(self.output_size, Image.Resampling.LANCZOS)
+        if self.edl:
+            image = image.point(EDL_TONES)
+        return np.asarray(image)
 
     def close(self):
         for window in self.windows: window.Finalize()

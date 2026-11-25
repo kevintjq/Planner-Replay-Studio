@@ -42,3 +42,38 @@ def test_preview_and_export_apply_same_video_time_and_position(tmp_path):
         exported = reader.get_data(2)
         assert exported[245, 30, 1] > 220
         assert np.abs(exported.astype(float) - expected).mean() < 7
+
+
+def test_pts_crop_trim_and_two_anchor_drift(tmp_path):
+    from fractions import Fraction
+
+    import av
+
+    from slam_fpv.footage import FlightVideo, VideoEdit, VideoReader
+
+    clip = tmp_path / "variable-rate.mp4"
+    with av.open(str(clip), mode="w") as output:
+        stream = output.add_stream("libx264", rate=60)
+        stream.width, stream.height, stream.pix_fmt = 64, 32, "yuv420p"
+        stream.codec_context.time_base = Fraction(1, 60)
+        for pts, color in [(0, (210, 10, 40)), (3, (10, 210, 40)), (24, (10, 40, 210))]:
+            pixels = np.empty((32, 64, 3), dtype=np.uint8)
+            pixels[:, :32] = (245, 245, 245)
+            pixels[:, 32:] = color
+            frame = av.VideoFrame.from_ndarray(pixels, format="rgb24")
+            frame.pts, frame.time_base = pts, Fraction(1, 60)
+            output.mux(stream.encode(frame))
+        output.mux(stream.encode())
+
+    edit = VideoEdit(trim_in=.05, trim_out=.38, crop=(.5, 0, 1, 1),
+                     anchors=((1., .05), (2., .25)))
+    assert abs(edit.rate - .2) < 1e-9
+    with FlightVideo(clip, edit) as footage:
+        assert footage.frame_at(.99) is None
+        image = footage.frame_at(2.)
+        assert image.shape == (32, 32, 3)
+        assert image[16, 16, 1] > 190
+        assert footage.frame_at(2.7) is None
+    with VideoReader(clip) as reader:
+        assert abs(reader.time(reader.select(.4)) - .4) < 1e-9
+        assert reader.time(reader.select(.01)) == 0

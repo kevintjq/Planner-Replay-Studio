@@ -1,18 +1,24 @@
 """Desktop controls for offline bag rendering and optional flight footage."""
 
 from argparse import ArgumentParser
+from dataclasses import replace
+import json
+import os
+import sys
 from math import isfinite
 from pathlib import Path
 from queue import Empty, Queue
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
 import tkinter as tk
+import av
 from tkinter import colorchooser, filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
 
 from .cli import open_source, parser, render, validate
-from .footage import video_rect
+from .footage import FULL_FRAME, VideoEdit, video_rect
+from .video_editor import VideoEditor
 from .sources import inspect_bag
 
 
@@ -28,6 +34,9 @@ class Cancelled(Exception):
 
 class RendererApp:
     def __init__(self, root):
+        # The POSIX FFmpeg pre-exec callback can deadlock after OpenGL creates threads.
+        if os.name != "nt":
+            os.environ["IMAGEIO_FFMPEG_NO_PREVENT_SIGINT"] = "1"
         self.root = root
         self.events = Queue()
         self.cancel_event = Event()
@@ -35,7 +44,9 @@ class RendererApp:
         self.closing = False
         self.values = {}
         self.position = (.035, .87)
-        self.frame = self.video_frame = None
+        self.frame = self.video_frame = self.elapsed = None
+        self.video_edit = VideoEdit()
+        self.video_editor = None
         self.drag_offset = None
         self.layer_bounds = None
         self.view_bounds = None
@@ -86,11 +97,12 @@ class RendererApp:
     def configure_style(self):
         style = ttk.Style(self.root)
         style.theme_use("clam")
-        style.configure(".", font=("Segoe UI", 10), background="#ffffff", foreground="#18263b")
+        font = "Microsoft YaHei UI" if sys.platform == "win32" else "Noto Sans CJK SC"
+        style.configure(".", font=(font, 10), background="#ffffff", foreground="#18263b")
         style.configure("Shell.TFrame", background="#edf1f6")
         style.configure("Shell.TLabel", background="#edf1f6", foreground="#46566c")
-        style.configure("Title.TLabel", background="#edf1f6", font=("Segoe UI", 20, "bold"))
-        style.configure("PanelTitle.TLabel", font=("Segoe UI", 11, "bold"))
+        style.configure("Title.TLabel", background="#edf1f6", font=(font, 20, "bold"))
+        style.configure("PanelTitle.TLabel", font=(font, 11, "bold"))
         style.configure("TButton", padding=(9, 6), background="#e7edf6", borderwidth=0)
         style.configure("Primary.TButton", background="#2558a6", foreground="white")
         style.map("Primary.TButton", background=[("disabled", "#8194ad"), ("active", "#1b4689")])
@@ -117,6 +129,7 @@ class RendererApp:
         ttk.Label(source, textvariable=self.bag_name, wraplength=310).grid(
             row=1, column=0, columnspan=2, sticky="w", pady=(0, 12))
         self.cloud_topics = self.field(source, 2, "点云话题", "cloud_topic", "", ())
+        self.cloud_topics.bind("<<ComboboxSelected>>", self.reset_alignment)
         self.field(source, 3, "位姿来源", "pose_source", "Odometry", ("Odometry", "TF"))
         self.odom_topics = self.field(source, 4, "里程计话题", "odom_topic", "", ())
         self.field(source, 5, "世界坐标系", "world", "camera_init")
@@ -131,12 +144,12 @@ class RendererApp:
 
         self.field(quality, 0, "分辨率", "resolution", "1920 × 1080",
                    ("1280 × 720", "1920 × 1080", "2560 × 1440", "3840 × 2160"))
-        self.field(quality, 1, "帧率", "fps", "30", ("24", "30", "60"))
+        self.field(quality, 1, "帧率", "fps", "60", ("60", "30", "24"))
         self.field(quality, 2, "超采样", "supersample", "2", ("1", "2"))
-        self.field(quality, 3, "MP4 质量 (CRF)", "crf", "15", ("12", "15", "18", "23"))
+        self.field(quality, 3, "MP4 质量 (CRF/CQ)", "crf", "15", ("12", "15", "18", "23"))
         self.field(quality, 4, "体素大小 (m)", "voxel", ".05")
         self.field(quality, 5, "点数上限", "max_points", "400000")
-        self.field(quality, 6, "点大小 (px)", "point_size", "2")
+        self.field(quality, 6, "点大小 (px)", "point_size", "2.6")
         self.field(quality, 7, "点云着色", "color", "原始 RGB", ("原始 RGB", "按高度", "自选纯色"))
         self.color_field(quality, 8, "点云纯色", "cloud_color", "#70d9ff")
         self.color_field(quality, 9, "轨迹颜色", "trajectory_color", "#ffba2e")
@@ -144,6 +157,7 @@ class RendererApp:
         self.edl = tk.BooleanVar(value=True)
         ttk.Checkbutton(quality, text="启用 EDL 深度明暗", variable=self.edl).grid(
             row=11, column=0, columnspan=2, sticky="w", pady=6)
+        self.field(quality, 12, "MP4 编码器", "encoder", "自动", ("自动", "CPU", "NVIDIA NVENC"))
 
         for row, (label, key, value) in enumerate((
             ("跟随距离 (m)", "distance", "3.8"),
@@ -162,10 +176,15 @@ class RendererApp:
         self.field(footage, 1, "视频起点偏移 (s)", "video_offset", "0")
         self.field(footage, 2, "画中画宽度 (%)", "video_width", "30")
         self.values["video_width"].trace_add("write", lambda *_: self.draw_preview())
+        ttk.Button(footage, text="裁剪与时间对齐", command=self.open_video_editor,
+                   style="Primary.TButton").grid(row=3, column=0, columnspan=2, sticky="ew", pady=(14, 6))
+        self.edit_summary = tk.StringVar(value="全片 · 原画幅 · 手动偏移")
+        ttk.Label(footage, textvariable=self.edit_summary, wraplength=300).grid(
+            row=4, column=0, columnspan=2, sticky="w", pady=(0, 8))
         ttk.Button(footage, text="重置视频位置", command=self.reset_position).grid(
-            row=3, column=0, columnspan=2, sticky="w", pady=8)
-        ttk.Label(footage, text="生成预览后，直接拖动实拍画面。\n偏移 +2 表示 bag 时间 2 秒时开始显示视频。",
-                  wraplength=290, justify="left").grid(row=4, column=0, columnspan=2, sticky="w")
+            row=5, column=0, columnspan=2, sticky="w", pady=5)
+        ttk.Label(footage, text="生成预览后，可直接拖动视频小窗。", wraplength=290).grid(
+            row=6, column=0, columnspan=2, sticky="w")
 
         actions = ttk.Frame(self.form, style="Shell.TFrame")
         actions.pack(fill="x", pady=(10, 0))
@@ -190,10 +209,10 @@ class RendererApp:
             self.values[name].set(path)
             display.set(Path(path).name if path else placeholder)
             if name == "video":
-                self.video_frame = None
-                self.draw_preview()
+                self.apply_video_edit(VideoEdit())
+                self.values["video_offset"].set("0")
                 if path:
-                    self.status.set("生成预览后可拖动实拍视频")
+                    self.status.set("已导入视频，可裁剪并与 SLAM 对齐")
 
         def browse():
             path = filedialog.askopenfilename(parent=self.root, title=label, filetypes=filetypes)
@@ -231,6 +250,8 @@ class RendererApp:
             self.run_job(lambda: ("topics", (path, inspect_bag(path))), "正在读取 bag 话题…")
 
     def use_demo(self):
+        if not self.demo_selected:
+            self.reset_alignment()
         self.bag_path = None
         self.demo_selected = True
         self.bag_name.set("模拟点云与轨迹")
@@ -241,6 +262,7 @@ class RendererApp:
         self.odom_topics.configure(state=state)
 
     def set_topics(self, path, data):
+        self.reset_alignment()
         self.bag_path = path
         self.demo_selected = False
         self.bag_name.set(path.name)
@@ -253,6 +275,54 @@ class RendererApp:
             widget.set(fallback if fallback in choices else (choices[0] if choices else ""))
         self.values["pose_source"].set("Odometry" if odometry else "TF")
         self.status.set(f"已读取 {len(clouds)} 个点云话题，{len(odometry)} 个里程计话题")
+
+    def reset_alignment(self, _event=None):
+        self.frame = self.elapsed = None
+        self.preview_label.configure(text="画面预览")
+        self.apply_video_edit(replace(self.video_edit, anchors=()))
+
+    def apply_video_edit(self, edit):
+        self.video_edit = edit
+        clip = "全片"
+        if edit.trim_in or edit.trim_out is not None:
+            end = "片尾" if edit.trim_out is None else f"{edit.trim_out:.3f} s"
+            clip = f"{edit.trim_in:.3f} s – {end}"
+        crop = "原画幅" if edit.crop == FULL_FRAME else "已裁剪画幅"
+        align = f"{len(edit.anchors)} 个锚点" if edit.anchors else "手动偏移"
+        self.edit_summary.set(f"{clip}  ·  {crop}  ·  {align}")
+        self.video_frame = None
+        self.draw_preview()
+        self.status.set("视频设置已更新，生成预览确认效果")
+
+    def open_video_editor(self):
+        path = self.values["video"].get().strip()
+        if not path:
+            messagebox.showinfo("实拍视频", "请先打开实拍视频文件。", parent=self.root)
+            return
+        try:
+            edit = replace(self.video_edit, offset=float(self.values["video_offset"].get()))
+            self.video_editor = VideoEditor(self.root, path, edit, self.frame, self.elapsed,
+                                            self.request_alignment_frame, self.apply_video_edit)
+        except (ValueError, OSError, av.FFmpegError) as error:
+            messagebox.showerror("无法打开视频", str(error), parent=self.root)
+
+    def request_alignment_frame(self, seconds):
+        if self.busy:
+            raise ValueError("请等待当前预览完成")
+        args = self.build_args(Path("preview.png"))
+        args.video = None
+        args.start = 0
+        args.seconds = max(args.seconds, seconds + 1 / args.fps)
+        args.width, args.height, args.supersample = 960, 540, 1
+
+        def work():
+            result = []
+            source = open_source(args, self.check_cancel)
+            render(args, source, preview=lambda *frame: result.append(frame),
+                   preview_offset=seconds, check_cancel=self.check_cancel)
+            return "alignment", result[0]
+
+        self.run_job(work, "正在定位 SLAM 帧…")
 
     def build_args(self, destination):
         if self.bag_path is None and not self.demo_selected:
@@ -279,7 +349,15 @@ class RendererApp:
             args += ["--" + key.replace("_", "-") + "=" + values[key]]
         color = {"原始 RGB": "rgb", "按高度": "height", "自选纯色": "solid"}[values["color"]]
         mode = "accumulate" if values["cloud_mode"] == "累积扫描" else "replace"
-        args += ["--color", color, "--cloud-mode", mode]
+        encoder = {"自动": "auto", "CPU": "cpu", "NVIDIA NVENC": "nvenc"}[values["encoder"]]
+        args += ["--color", color, "--cloud-mode", mode, "--encoder", encoder]
+        if values["video"]:
+            edit = self.video_edit
+            args += ["--video-in", str(edit.trim_in), "--video-crop", *map(str, edit.crop)]
+            if edit.trim_out is not None:
+                args += ["--video-out", str(edit.trim_out)]
+            for pair in edit.anchors:
+                args += ["--sync-anchor", *map(str, pair)]
         args += ["--video-width", str(float(values["video_width"]) / 100),
                  "--video-position", *map(str, self.position)]
         if not self.edl.get():
@@ -324,9 +402,16 @@ class RendererApp:
                 self.check_cancel()
                 if not temporary_output.is_file() or not temporary_output.stat().st_size:
                     raise ValueError("编码器未写入成品，请检查 FFmpeg 或改用较低分辨率。")
+                report = temporary_output.with_suffix(".json")
+                summary = json.loads(report.read_text(encoding="utf-8"))
+                codec = summary["encoder"]
+                if codec is not None:
+                    with av.open(str(temporary_output)) as video:
+                        if not video.streams.video or video.streams.video[0].frames != summary["frames"]:
+                            raise ValueError("导出视频的帧数与渲染记录不符。")
                 temporary_output.replace(destination)
-                temporary_output.with_suffix(".json").replace(destination.with_suffix(".json"))
-            return "saved", destination
+                report.replace(destination.with_suffix(".json"))
+            return "saved", (destination, codec)
 
         self.run_job(work, "正在准备预览…" if preview else "正在准备导出…")
 
@@ -397,11 +482,22 @@ class RendererApp:
                 for widget in self.disabled_controls:
                     widget.state(["!disabled"])
                 self.disabled_controls.clear()
-                if kind == "topics":
+                editor = self.video_editor
+                if editor is not None and not editor.window.winfo_exists():
+                    self.video_editor = editor = None
+                if editor is not None:
+                    editor.set_slam(editor.slam_frame, editor.slam_time)
+                if kind == "alignment":
+                    frame, _, elapsed = value
+                    if editor is not None:
+                        editor.set_slam(Image.fromarray(frame), elapsed)
+                    self.status.set(f"已定位 SLAM {elapsed:.3f} s")
+                elif kind == "topics":
                     self.set_topics(*value)
                 elif kind == "preview":
                     frame, video, elapsed = value
                     self.frame = Image.fromarray(frame)
+                    self.elapsed = elapsed
                     self.video_frame = None if video is None else Image.fromarray(video)
                     self.preview_label.configure(text=f"画面预览  ·  {elapsed:.3f} s")
                     text = "预览已更新"
@@ -412,10 +508,12 @@ class RendererApp:
                     self.status.set(text)
                     self.draw_preview()
                 elif kind == "saved":
-                    self.status.set(f"已导出 {value}")
+                    destination, codec = value
+                    name = {"h264_nvenc": "NVIDIA NVENC", "libx264": "CPU H.264", None: "PNG"}[codec]
+                    self.status.set(f"已导出 {destination.name}  ·  {name}")
                 elif kind == "error":
                     self.status.set("任务失败")
-                    messagebox.showerror("任务失败", value, parent=self.root)
+                    messagebox.showerror("任务失败", value, parent=editor.window if editor else self.root)
                 else:
                     self.status.set("已取消")
         except Empty:

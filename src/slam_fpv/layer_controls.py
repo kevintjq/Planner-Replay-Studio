@@ -1,0 +1,292 @@
+"""Layer inspector for the desktop compositor."""
+
+from dataclasses import replace
+from math import isfinite
+from pathlib import Path
+import tkinter as tk
+from tkinter import colorchooser, filedialog, messagebox, ttk
+
+from .composition import TextLayer, VideoLayer
+
+
+class LayerControls:
+    def make_layer_panel(self, parent):
+        self.layer_panel = parent
+        parent.columnconfigure(0, weight=1)
+        ttk.Label(parent, text="叠加图层", style="PanelTitle.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
+        toolbar = ttk.Frame(parent)
+        toolbar.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 7))
+        ttk.Button(toolbar, text="+ 视频", command=self.add_videos).pack(side="left")
+        ttk.Button(toolbar, text="+ 文字", command=self.edit_text).pack(side="left", padx=4)
+        ttk.Button(toolbar, text="+ 速度表", command=self.edit_speed).pack(side="left")
+        table = ttk.Frame(parent)
+        table.grid(row=2, column=0, columnspan=2, sticky="ew")
+        self.layer_list = ttk.Treeview(table, show="tree", height=7, selectmode="browse", takefocus=True)
+        self.layer_list.column("#0", width=270, stretch=True)
+        self.layer_list.pack(side="left", fill="both", expand=True)
+        self.layer_scroll = ttk.Scrollbar(table, orient="vertical", command=self.layer_list.yview)
+        self.layer_list.configure(yscrollcommand=self.layer_scroll.set)
+        self.layer_list.bind("<<TreeviewSelect>>", self.read_selection)
+        self.layer_list.bind("<Double-1>", lambda _: self.edit_selected())
+        self.layer_info = tk.StringVar(value="选择一个图层，或在画面里直接拖动。")
+        ttk.Label(parent, textvariable=self.layer_info, style="Quiet.TLabel", wraplength=275).grid(
+            row=3, column=0, columnspan=2, sticky="w", pady=(9, 7))
+        tools = ttk.Frame(parent)
+        tools.grid(row=4, column=0, columnspan=2, sticky="w")
+        self.layer_settings = ttk.Button(tools, text="设置", command=self.edit_selected)
+        self.layer_settings.pack(side="left")
+        self.layer_align = ttk.Button(tools, text="裁剪 / 对齐", command=self.open_video_editor)
+        self.layer_align.pack(side="left", padx=4)
+        self.layer_remove = ttk.Button(tools, text="移除", command=self.remove_layer)
+        self.layer_remove.pack(side="left")
+
+    @staticmethod
+    def layer_id(key):
+        return f"{key[0]}-{key[1]}"
+
+    def layers(self, kind):
+        return self.project.videos if kind == "video" else self.project.texts
+
+    def replace_layer(self, kind, index, layer, *, redraw=True):
+        values = list(self.layers(kind))
+        values[index] = layer
+        self.project = replace(self.project, **{("videos" if kind == "video" else "texts"): tuple(values)})
+        if redraw:
+            self.refresh_layers()
+
+    def invalidate_video(self, index):
+        frames = list(self.footages)
+        frames[index] = None
+        self.footages = tuple(frames)
+        self.draw_preview()
+
+    def refresh_layers(self):
+        listing = self.layer_list
+        listing.delete(*listing.get_children())
+        for i, layer in enumerate(self.project.videos):
+            listing.insert("", "end", iid=f"video-{i}", text=f"视频 {i+1}   {layer.path.name}")
+        for i, layer in enumerate(self.project.texts):
+            name = " ".join(layer.text.split())
+            listing.insert("", "end", iid=f"text-{i}", text=f"文字 {i+1}   {name}")
+        if self.project.show_speed:
+            listing.insert("", "end", iid="speed-0", text="速度表   m/s")
+        if len(listing.get_children()) > 7:
+            self.layer_scroll.pack(side="right", fill="y")
+        else:
+            self.layer_scroll.pack_forget()
+        if self.selection is not None and listing.exists(self.layer_id(self.selection)):
+            listing.selection_set(self.layer_id(self.selection))
+            listing.see(self.layer_id(self.selection))
+        else:
+            self.selection = None
+        self.show_layer()
+
+    def select_layer(self, key):
+        self.selection = key
+        self.layer_list.selection_set(self.layer_id(key))
+        self.layer_list.see(self.layer_id(key))
+        self.nav.select(self.layer_panel)
+        self.show_layer()
+
+    def read_selection(self, _event):
+        if self.busy:
+            return
+        selected = self.layer_list.selection()
+        if selected:
+            kind, index = selected[0].split("-")
+            self.selection = kind, int(index)
+            self.show_layer()
+
+    def show_layer(self):
+        selection = self.selection
+        kind, i = selection or ("", 0)
+        self.layer_settings.state(["!disabled" if selection else "disabled"])
+        self.layer_align.state(["!disabled" if kind == "video" else "disabled"])
+        self.layer_remove.state(["!disabled" if selection else "disabled"])
+        message = "选择一个图层，或直接拖动画面中的图层。"
+        if kind == "video":
+            layer = self.project.videos[i]
+            n = len(layer.edit.anchors)
+            message = f"宽 {layer.width:.0%}  ·  不透明度 {layer.opacity:.0%}  ·  " + (
+                f"{n} 个对齐锚点" if n else f"偏移 {layer.edit.offset:+.3f} s")
+        elif kind == "text":
+            layer = self.project.texts[i]
+            message = f"{layer.start:.3f} – {layer.end:.3f} s  ·  字号 {layer.size}"
+        elif kind == "speed":
+            message = "当前、最高、平均速度从导出起点累计，数据来自世界坐标系位姿。"
+        self.layer_info.set(message)
+        self.draw_preview()
+        self.update_timeline()
+
+    def add_videos(self):
+        paths = filedialog.askopenfilenames(parent=self.root, title="导入多路视频",
+                                            filetypes=(("视频", "*.mp4 *.mov *.mkv *.avi *.m4v"), ("所有文件", "*")))
+        if not paths:
+            return
+        spots = ((.05,.82), (.50,.82), (.95,.82), (.96,.44), (.05,.44))
+        start = len(self.project.videos)
+        layers = tuple(VideoLayer(Path(path), width=.27, position=spots[(start+i) % len(spots)])
+                       for i, path in enumerate(paths))
+        self.project = replace(self.project, videos=(*self.project.videos,*layers))
+        self.footages = (*self.footages, *(None for _ in layers))
+        self.selection = "video", start
+        self.refresh_layers()
+        if self.frame is not None:
+            self.start_render(True)
+
+    def remove_layer(self):
+        if not self.selection:
+            return
+        kind, index = self.selection
+        self.selection = None
+        if kind == "speed":
+            self.project = replace(self.project, show_speed=False)
+        elif kind == "video":
+            self.project = replace(self.project, videos=self.project.videos[:index]+self.project.videos[index+1:])
+            self.footages = self.footages[:index]+self.footages[index+1:]
+        else:
+            self.project = replace(self.project, texts=self.project.texts[:index]+self.project.texts[index+1:])
+        self.refresh_layers()
+
+    def edit_selected(self):
+        if not self.selection:
+            return
+        kind, index = self.selection
+        if kind == "text":
+            self.edit_text(index)
+        elif kind == "speed":
+            self.edit_speed()
+        else:
+            layer = self.project.videos[index]
+            def save(values):
+                edit = replace(layer.edit, offset=float(values["offset"]))
+                result = replace(layer, width=float(values["width"])/100, opacity=float(values["opacity"])/100, edit=edit)
+                self.replace_layer(kind, index, result)
+                if edit != layer.edit:
+                    self.invalidate_video(index)
+                    if self.frame is not None:
+                        self.root.after_idle(lambda: self.start_render(True))
+            self.layer_dialog("视频图层设置", (
+                ("width", "画面宽度 (%)", f"{layer.width*100:g}"),
+                ("opacity", "不透明度 (%)", f"{layer.opacity*100:g}"),
+                ("offset", "手动偏移 (s)", str(layer.edit.offset)),
+            ), save, note="有对齐锚点时优先使用锚点。")
+
+    def edit_text(self, index=None):
+        if index is None:
+            start, duration = self.timeline_range()
+            begin = self.elapsed if self.elapsed is not None else start
+            layer = TextLayer("实验场景", begin, max(begin+.1, min(begin+3, start+duration)))
+        else:
+            layer = self.project.texts[index]
+
+        def save(values):
+            new = replace(layer, text=values["text"], start=float(values["start"]), end=float(values["end"]),
+                          size=int(values["size"]), color=values["color"])
+            if index is None:
+                self.selection = "text", len(self.project.texts)
+                self.project = replace(self.project, texts=(*self.project.texts, new))
+                self.refresh_layers()
+            else:
+                self.replace_layer("text", index, new)
+
+        self.layer_dialog("文字图层", (
+            ("text", "文字", "" if index is None else layer.text),
+            ("start", "开始时间 (s)", f"{layer.start:.3f}"),
+            ("end", "结束时间 (s)", f"{layer.end:.3f}"),
+            ("size", "字号", str(layer.size)),
+            ("color", "颜色", layer.color),
+        ), save)
+
+    def edit_speed(self):
+        p = self.project
+        def save(values):
+            self.project = replace(p, show_speed=True, speed_limit=float(values["limit"]),
+                                   speed_start=float(values["start"]),
+                                   speed_end=float(values["end"]) if values["end"] else None)
+            self.selection = "speed", 0
+            self.refresh_layers()
+        self.layer_dialog("飞行速度表", (
+            ("limit", "表盘上限 (m/s)", f"{p.speed_limit:g}"),
+            ("start", "开始时间 (s)", f"{p.speed_start:g}"),
+            ("end", "结束时间 (s)", "" if p.speed_end is None else f"{p.speed_end:g}"),
+        ), save, note="结束时间留空时显示至片段结束。")
+
+    def layer_dialog(self, title, fields, save, *, note=""):
+        modal = tk.Toplevel(self.root)
+        modal.title(title)
+        modal.transient(self.root)
+        modal.resizable(False, False)
+        box = ttk.Frame(modal, padding=18)
+        box.pack(fill="both", expand=True)
+        variables = {}
+        first = None
+        for row, (name, label, default, *options) in enumerate(fields):
+            var = variables[name] = tk.StringVar(value=default)
+            ttk.Label(box, text=label).grid(row=row, column=0, sticky="w", padx=(0, 10), pady=4)
+            if options:
+                entry = ttk.Combobox(box, textvariable=var, values=options[0], width=26, state="readonly")
+            else:
+                entry = ttk.Entry(box, textvariable=var, width=28)
+            entry.grid(row=row, column=1, sticky="ew")
+            if first is None:
+                first = entry
+            if name == "color":
+                def choose():
+                    _, chosen = colorchooser.askcolor(variables["color"].get(), parent=modal)
+                    if chosen:
+                        variables["color"].set(chosen)
+                ttk.Button(box, text="选色", command=choose).grid(row=row, column=2, padx=(6,0))
+        def confirm(_event=None):
+            try:
+                save({key: var.get().strip() for key,var in variables.items()})
+            except ValueError as error:
+                messagebox.showerror("检查图层设置", str(error), parent=modal)
+                return
+            modal.destroy()
+        if note:
+            ttk.Label(box, text=note, style="Quiet.TLabel").grid(row=len(fields), column=0, columnspan=3, sticky="w", pady=7)
+        ttk.Button(box, text="应用", style="Primary.TButton", command=confirm).grid(
+            row=len(fields)+1, column=1, sticky="e", pady=(12,0))
+        modal.bind("<Return>", confirm)
+        modal.bind("<Escape>", lambda _: modal.destroy())
+        modal.wait_visibility()
+        modal.grab_set()
+        first.focus_set()
+
+    def timeline_range(self):
+        try:
+            start, duration = (float(self.values[key].get()) for key in ("start","seconds"))
+            if start >= 0 and duration > 0 and isfinite(start) and isfinite(duration):
+                return start,duration
+        except ValueError:
+            pass
+        return 0., 6.
+
+    def update_timeline(self):
+        start, duration = self.timeline_range()
+        selection = self.selection
+        clip = None
+        if selection and selection[0] == "text":
+            layer = self.project.texts[selection[1]]
+            clip = layer.start,layer.end," ".join(layer.text.split())
+        elif selection and selection[0] == "speed":
+            clip = self.project.speed_start, self.project.speed_end or start+duration, "速度表"
+        self.timeline.update_view(start, duration, self.elapsed if self.elapsed is not None else start,
+                                  clip, int(self.values["fps"].get()))
+
+    def seek_timeline(self, seconds):
+        start, _ = self.timeline_range()
+        self.values["preview_offset"].set(f"{max(0, seconds-start):.6f}")
+        self.start_render(True)
+
+    def apply_interval(self, value):
+        if not self.selection:
+            return
+        start,end = value
+        kind, index = self.selection
+        if kind == "text":
+            self.replace_layer(kind, index, replace(self.project.texts[index], start=max(0.,start), end=end))
+        elif kind == "speed":
+            self.project = replace(self.project, speed_start=max(0.,start), speed_end=end)
+            self.refresh_layers()

@@ -4,7 +4,6 @@ from argparse import ArgumentParser
 from dataclasses import replace
 import json
 import os
-import sys
 from math import isfinite
 from pathlib import Path
 from queue import Empty, Queue
@@ -17,7 +16,10 @@ from tkinter import colorchooser, filedialog, messagebox, ttk
 from PIL import Image, ImageTk
 
 from .cli import open_source, parser, render, validate
-from .footage import FULL_FRAME, VideoEdit, video_rect
+from .composition import Composition, compose, rounded_mask
+from .desktop_style import INK, desktop_style
+from .timeline import Timeline
+from .layer_controls import LayerControls
 from .video_editor import VideoEditor
 from .sources import inspect_bag
 
@@ -32,7 +34,7 @@ class Cancelled(Exception):
         return "Rendering cancelled"
 
 
-class RendererApp:
+class RendererApp(LayerControls):
     def __init__(self, root):
         # The POSIX FFmpeg pre-exec callback can deadlock after OpenGL creates threads.
         if os.name != "nt":
@@ -43,44 +45,53 @@ class RendererApp:
         self.busy = False
         self.closing = False
         self.values = {}
-        self.position = (.035, .87)
-        self.frame = self.video_frame = self.elapsed = None
-        self.video_edit = VideoEdit()
-        self.video_editor = None
+        self.project = Composition()
+        self.frame = self.elapsed = self.speed = None
+        self.footages = ()
+        self.selection = None
         self.drag_offset = None
-        self.layer_bounds = None
+        self.base_cache = None
+        self.video_editor = None
+        self.layer_bounds = {}
         self.view_bounds = None
         self.bag_path = None
         self.demo_selected = False
         self.disabled_controls = []
 
         root.title("SLAM FPV Renderer")
-        root.geometry("1200x750")
-        root.minsize(920, 620)
+        root.geometry("1290x835")
+        root.minsize(1000, 720)
         root.protocol("WM_DELETE_WINDOW", self.close)
-        self.configure_style()
+        self.font, self.style_photos = desktop_style(root)
 
         workspace = ttk.Frame(root, padding=18, style="Shell.TFrame")
         workspace.pack(fill="both", expand=True)
         workspace.columnconfigure(1, weight=1)
         workspace.rowconfigure(1, weight=1)
-        ttk.Label(workspace, text="SLAM FPV Renderer", style="Title.TLabel").grid(
-            row=0, column=0, columnspan=2, sticky="w", pady=(0, 14))
+        header = ttk.Frame(workspace, style="Shell.TFrame")
+        header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 15))
+        ttk.Label(header, text="SLAM FPV", style="Title.TLabel").pack(side="left")
+        ttk.Label(header, text="合成工作台", style="Subtitle.TLabel").pack(side="left", padx=14)
 
         self.form = ttk.Frame(workspace, style="Shell.TFrame")
         self.form.grid(row=1, column=0, sticky="nsew", padx=(0, 16))
         self.make_form()
 
-        viewer = ttk.Frame(workspace, padding=12)
+        viewer = ttk.Frame(workspace, padding=14, style="Workspace.TFrame")
         viewer.grid(row=1, column=1, sticky="nsew")
         self.preview_label = ttk.Label(viewer, text="画面预览", style="PanelTitle.TLabel")
         self.preview_label.pack(anchor="w", pady=(0, 8))
-        self.canvas = tk.Canvas(viewer, bg="#0b1321", highlightthickness=0, width=460, height=400)
+        self.canvas = tk.Canvas(viewer, bg="#FFFFFF", highlightthickness=0, width=460, height=365)
         self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Configure>", lambda _: self.draw_preview())
         self.canvas.bind("<ButtonPress-1>", self.start_drag)
-        self.canvas.bind("<B1-Motion>", self.move_video)
+        self.canvas.bind("<B1-Motion>", self.move_layer)
         self.canvas.bind("<ButtonRelease-1>", lambda _: self.end_drag())
+
+        self.timeline = Timeline(viewer, self.seek_timeline, self.apply_interval, self.font)
+        self.timeline.pack(fill="x", pady=(7, 0))
+        for key in ("start", "seconds"):
+            self.values[key].trace_add("write", lambda *_: self.update_timeline())
 
         bar = ttk.Frame(workspace, style="Shell.TFrame")
         bar.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
@@ -90,34 +101,17 @@ class RendererApp:
             row=0, column=0, sticky="w")
         self.progress = ttk.Progressbar(bar, length=130, maximum=100)
         self.progress.grid(row=0, column=1, padx=12)
-        self.cancel_button = ttk.Button(bar, text="取消", command=self.cancel, state="disabled")
+        self.cancel_button = ttk.Button(bar, text="取消", command=self.cancel, state="disabled", style="Shell.TButton")
         self.cancel_button.grid(row=0, column=2)
+        self.refresh_layers()
         root.after(60, self.poll)
-
-    def configure_style(self):
-        style = ttk.Style(self.root)
-        style.theme_use("clam")
-        font = "Microsoft YaHei UI" if sys.platform == "win32" else "Noto Sans CJK SC"
-        style.configure(".", font=(font, 10), background="#ffffff", foreground="#18263b")
-        style.configure("Shell.TFrame", background="#edf1f6")
-        style.configure("Shell.TLabel", background="#edf1f6", foreground="#46566c")
-        style.configure("Title.TLabel", background="#edf1f6", font=(font, 20, "bold"))
-        style.configure("PanelTitle.TLabel", font=(font, 11, "bold"))
-        style.configure("TButton", padding=(9, 6), background="#e7edf6", borderwidth=0)
-        style.configure("Primary.TButton", background="#2558a6", foreground="white")
-        style.map("Primary.TButton", background=[("disabled", "#8194ad"), ("active", "#1b4689")])
-        style.configure("TNotebook", background="#edf1f6", borderwidth=0)
-        style.configure("TNotebook.Tab", padding=(10, 7), background="#dce5f0")
-        style.map("TNotebook.Tab", background=[("selected", "#ffffff")])
-        style.configure("TEntry", padding=4)
-        style.configure("TCombobox", padding=4)
-        style.configure("TProgressbar", background="#2558a6")
 
     def make_form(self):
         nav = ttk.Notebook(self.form)
         nav.pack(fill="both", expand=True)
+        self.nav = nav
         source, quality, camera, footage = (ttk.Frame(nav, padding=12) for _ in range(4))
-        for panel, name in zip((source, quality, camera, footage), ("数据源", "画质与颜色", "相机", "实拍视频")):
+        for panel, name in zip((source, quality, camera, footage), ("数据", "画质", "相机", "图层")):
             nav.add(panel, text=name)
             panel.columnconfigure(1, weight=1)
 
@@ -171,25 +165,12 @@ class RendererApp:
         )):
             self.field(camera, row, label, key, value)
 
-        self.file_row(footage, 0, "实拍视频", "video",
-                      (("视频", "*.mp4 *.mov *.mkv *.avi *.m4v"), ("所有文件", "*")), "可选")
-        self.field(footage, 1, "视频起点偏移 (s)", "video_offset", "0")
-        self.field(footage, 2, "画中画宽度 (%)", "video_width", "30")
-        self.values["video_width"].trace_add("write", lambda *_: self.draw_preview())
-        ttk.Button(footage, text="裁剪与时间对齐", command=self.open_video_editor,
-                   style="Primary.TButton").grid(row=3, column=0, columnspan=2, sticky="ew", pady=(14, 6))
-        self.edit_summary = tk.StringVar(value="全片 · 原画幅 · 手动偏移")
-        ttk.Label(footage, textvariable=self.edit_summary, wraplength=300).grid(
-            row=4, column=0, columnspan=2, sticky="w", pady=(0, 8))
-        ttk.Button(footage, text="重置视频位置", command=self.reset_position).grid(
-            row=5, column=0, columnspan=2, sticky="w", pady=5)
-        ttk.Label(footage, text="生成预览后，可直接拖动视频小窗。", wraplength=290).grid(
-            row=6, column=0, columnspan=2, sticky="w")
+        self.make_layer_panel(footage)
 
         actions = ttk.Frame(self.form, style="Shell.TFrame")
         actions.pack(fill="x", pady=(10, 0))
-        ttk.Button(actions, text="生成预览", command=lambda: self.start_render(True)).pack(side="left")
-        ttk.Button(actions, text="导出 MP4 / PNG", style="Primary.TButton",
+        ttk.Button(actions, text="生成预览", style="Shell.TButton", command=lambda: self.start_render(True)).pack(side="left")
+        ttk.Button(actions, text="导出 MP4 / PNG", style="Shell.Primary.TButton",
                    command=lambda: self.start_render(False)).pack(side="right")
         self.sync_odometry()
 
@@ -208,11 +189,6 @@ class RendererApp:
         def set_path(path):
             self.values[name].set(path)
             display.set(Path(path).name if path else placeholder)
-            if name == "video":
-                self.apply_video_edit(VideoEdit())
-                self.values["video_offset"].set("0")
-                if path:
-                    self.status.set("已导入视频，可裁剪并与 SLAM 对齐")
 
         def browse():
             path = filedialog.askopenfilename(parent=self.root, title=label, filetypes=filetypes)
@@ -277,32 +253,28 @@ class RendererApp:
         self.status.set(f"已读取 {len(clouds)} 个点云话题，{len(odometry)} 个里程计话题")
 
     def reset_alignment(self, _event=None):
-        self.frame = self.elapsed = None
+        self.frame = self.elapsed = self.speed = self.base_cache = None
+        self.footages = (None,) * len(self.project.videos)
+        videos = tuple(replace(layer, edit=replace(layer.edit, anchors=())) for layer in self.project.videos)
+        self.project = replace(self.project, videos=videos)
         self.preview_label.configure(text="画面预览")
-        self.apply_video_edit(replace(self.video_edit, anchors=()))
-
-    def apply_video_edit(self, edit):
-        self.video_edit = edit
-        clip = "全片"
-        if edit.trim_in or edit.trim_out is not None:
-            end = "片尾" if edit.trim_out is None else f"{edit.trim_out:.3f} s"
-            clip = f"{edit.trim_in:.3f} s – {end}"
-        crop = "原画幅" if edit.crop == FULL_FRAME else "已裁剪画幅"
-        align = f"{len(edit.anchors)} 个锚点" if edit.anchors else "手动偏移"
-        self.edit_summary.set(f"{clip}  ·  {crop}  ·  {align}")
-        self.video_frame = None
         self.draw_preview()
-        self.status.set("视频设置已更新，生成预览确认效果")
 
     def open_video_editor(self):
-        path = self.values["video"].get().strip()
-        if not path:
-            messagebox.showinfo("实拍视频", "请先打开实拍视频文件。", parent=self.root)
+        if self.selection is None or self.selection[0] != "video":
             return
+        index = self.selection[1]
+        layer = self.project.videos[index]
+
+        def apply(edit):
+            self.replace_layer("video", index, replace(layer, edit=edit))
+            self.invalidate_video(index)
+            if self.frame is not None and not self.busy:
+                self.root.after_idle(lambda: self.start_render(True))
+
         try:
-            edit = replace(self.video_edit, offset=float(self.values["video_offset"].get()))
-            self.video_editor = VideoEditor(self.root, path, edit, self.frame, self.elapsed,
-                                            self.request_alignment_frame, self.apply_video_edit)
+            self.video_editor = VideoEditor(self.root, layer.path, layer.edit, self.frame, self.elapsed,
+                                            self.request_alignment_frame, apply)
         except (ValueError, OSError, av.FFmpegError) as error:
             messagebox.showerror("无法打开视频", str(error), parent=self.root)
 
@@ -310,7 +282,6 @@ class RendererApp:
         if self.busy:
             raise ValueError("请等待当前预览完成")
         args = self.build_args(Path("preview.png"))
-        args.video = None
         args.start = 0
         args.seconds = max(args.seconds, seconds + 1 / args.fps)
         args.width, args.height, args.supersample = 960, 540, 1
@@ -333,7 +304,7 @@ class RendererApp:
         args += ["--output", str(destination), "--width", width, "--height", height]
         keys = ("start", "seconds", "fps", "supersample", "crf", "voxel", "max_points", "point_size",
                 "cloud_color", "trajectory_color", "trajectory_width", "distance", "camera_height",
-                "side", "fov", "inset_distance", "inset_height", "axis", "axis_pixels", "video_offset")
+                "side", "fov", "inset_distance", "inset_height", "axis", "axis_pixels")
         if self.bag_path is not None:
             if not values["cloud_topic"] or not values["world"] or not values["body"]:
                 raise ValueError("请选择点云话题并填写世界、机体坐标系。")
@@ -343,23 +314,12 @@ class RendererApp:
             args += ["--pose-source", "odom" if values["pose_source"] == "Odometry" else "tf"]
             if values["extrinsics"]:
                 keys += ("extrinsics",)
-        if values["video"]:
-            keys += ("video",)
         for key in keys:
             args += ["--" + key.replace("_", "-") + "=" + values[key]]
         color = {"原始 RGB": "rgb", "按高度": "height", "自选纯色": "solid"}[values["color"]]
         mode = "accumulate" if values["cloud_mode"] == "累积扫描" else "replace"
         encoder = {"自动": "auto", "CPU": "cpu", "NVIDIA NVENC": "nvenc"}[values["encoder"]]
         args += ["--color", color, "--cloud-mode", mode, "--encoder", encoder]
-        if values["video"]:
-            edit = self.video_edit
-            args += ["--video-in", str(edit.trim_in), "--video-crop", *map(str, edit.crop)]
-            if edit.trim_out is not None:
-                args += ["--video-out", str(edit.trim_out)]
-            for pair in edit.anchors:
-                args += ["--sync-anchor", *map(str, pair)]
-        args += ["--video-width", str(float(values["video_width"]) / 100),
-                 "--video-position", *map(str, self.position)]
         if not self.edl.get():
             args.append("--no-edl")
         settings = parser(FormParser).parse_args(args)
@@ -367,6 +327,8 @@ class RendererApp:
         return settings
 
     def start_render(self, preview):
+        if self.busy:
+            return
         destination = Path("preview.png")
         if not preview:
             path = filedialog.asksaveasfilename(parent=self.root, defaultextension=".mp4", initialfile="slam-fpv",
@@ -379,6 +341,12 @@ class RendererApp:
                 return
         try:
             args = self.build_args(destination)
+            project = self.project
+            if any(layer.path.resolve() == destination.resolve() for layer in project.videos) and not preview:
+                raise ValueError("导出位置不能覆盖已导入的素材。")
+            if preview and args.width > 1440:
+                args.height = round(args.height * 1440 / args.width / 2) * 2
+                args.width, args.supersample = 1440, 1
             offset = float(self.values["preview_offset"].get()) if preview else 0
             if not isfinite(offset) or offset < 0:
                 raise ValueError("片段内预览位置须为非负有限数值。")
@@ -391,12 +359,12 @@ class RendererApp:
             if preview:
                 result = []
                 render(args, source, preview=lambda *frame: result.append(frame),
-                       preview_offset=offset, check_cancel=self.check_cancel)
+                       preview_offset=offset, check_cancel=self.check_cancel, project=project)
                 return "preview", result[0]
             destination.parent.mkdir(parents=True, exist_ok=True)
             with TemporaryDirectory(prefix=".slam-fpv-", dir=destination.parent) as staging:
                 temporary_output = Path(staging) / destination.name
-                render(args, source, staging=temporary_output,
+                render(args, source, staging=temporary_output, project=project,
                        progress=lambda done, total: self.events.put(("progress", (done, total))),
                        check_cancel=self.check_cancel)
                 self.check_cancel()
@@ -419,6 +387,7 @@ class RendererApp:
         self.busy = True
         self.cancel_event.clear()
         self.disable_form(self.form)
+        self.timeline.busy = True
         self.cancel_button.state(["!disabled"])
         self.status.set(text)
         self.progress.configure(mode="indeterminate")
@@ -473,6 +442,7 @@ class RendererApp:
                     self.status.set(f"正在导出 {done} / {total} 帧")
                     continue
                 self.busy = False
+                self.timeline.busy = False
                 if self.closing:
                     self.root.destroy()
                     return
@@ -495,18 +465,15 @@ class RendererApp:
                 elif kind == "topics":
                     self.set_topics(*value)
                 elif kind == "preview":
-                    frame, video, elapsed = value
+                    frame, videos, elapsed, self.speed = value
                     self.frame = Image.fromarray(frame)
                     self.elapsed = elapsed
-                    self.video_frame = None if video is None else Image.fromarray(video)
-                    self.preview_label.configure(text=f"画面预览  ·  {elapsed:.3f} s")
-                    text = "预览已更新"
-                    if video is not None:
-                        text += "，拖动实拍画面可调整位置"
-                    elif self.values["video"].get():
-                        text += "，此时刻没有实拍画面，请检查偏移和预览位置"
-                    self.status.set(text)
+                    self.base_cache = None
+                    self.footages = tuple(None if video is None else Image.fromarray(video) for video in videos)
+                    self.preview_label.configure(text=f"画面预览    {elapsed:.3f} s")
+                    self.status.set("预览已更新。拖动画面中的视频、文字或速度表可调整位置。")
                     self.draw_preview()
+                    self.update_timeline()
                 elif kind == "saved":
                     destination, codec = value
                     name = {"h264_nvenc": "NVIDIA NVENC", "libx264": "CPU H.264", None: "PNG"}[codec]
@@ -522,66 +489,59 @@ class RendererApp:
 
     def draw_preview(self):
         self.canvas.delete("all")
-        self.layer_bounds = None
+        self.layer_bounds = {}
         width, height = self.canvas.winfo_width(), self.canvas.winfo_height()
         if self.frame is None:
-            self.canvas.create_text(width / 2, height / 2, text="选择 bag 后生成预览",
-                                    fill="#a6b5c9", font=("Segoe UI", 13))
+            self.canvas.create_rectangle(14, 18, width-14, height-18, fill="#F3F6FB", width=0)
+            self.canvas.create_text(width / 2, height / 2, text="打开 bag 或使用模拟数据",
+                                    fill=INK, font=(self.font, 12))
             return
         scale = min(width / self.frame.width, height / self.frame.height)
         size = (max(1, round(self.frame.width * scale)), max(1, round(self.frame.height * scale)))
         x, y = (width - size[0]) // 2, (height - size[1]) // 2
         self.view_bounds = x, y, *size
-        self.base_photo = ImageTk.PhotoImage(self.frame.resize(size, Image.Resampling.LANCZOS))
+        if self.base_cache is None or self.base_cache.size != size:
+            self.base_cache = self.frame.resize(size, Image.Resampling.LANCZOS)
+        image, bounds = compose(self.base_cache, self.project, self.footages, self.elapsed, self.speed)
+        image.putalpha(rounded_mask(image.size, 16))
+        self.base_photo = ImageTk.PhotoImage(image)
         self.canvas.create_image(x, y, image=self.base_photo, anchor="nw")
-        self.draw_layer()
-
-    def draw_layer(self):
-        self.canvas.delete("footage")
-        self.layer_bounds = None
-        if self.video_frame is None or self.view_bounds is None:
-            return
-        try:
-            fraction = float(self.values["video_width"].get()) / 100
-        except ValueError:
-            return
-        if not .05 <= fraction <= .90:
-            return
-        x, y, fw, fh = self.view_bounds
-        left, top, w, h = video_rect((fw, fh), self.video_frame.size, fraction, self.position)
-        self.layer_bounds = x + left, y + top, w, h
-        self.layer_photo = ImageTk.PhotoImage(self.video_frame.resize((w, h), Image.Resampling.LANCZOS))
-        self.canvas.create_image(x + left, y + top, image=self.layer_photo, anchor="nw", tags="footage")
-        self.canvas.create_rectangle(x + left, y + top, x + left + w - 1, y + top + h - 1,
-                                     outline="#8cc9fa", tags="footage")
+        self.layer_bounds = {key: (x+left, y+top, w, h) for key, (left, top, w, h) in bounds.items()}
+        selected = self.layer_bounds.get(self.selection)
+        if selected is not None:
+            x, y, w, h = selected
+            self.canvas.create_rectangle(x+1, y+1, x+w-1, y+h-1, outline="#90C4FF", dash=(5, 4))
 
     def start_drag(self, event):
-        if self.busy or self.layer_bounds is None:
+        if self.busy:
             return
-        left, top, w, h = self.layer_bounds
-        dx, dy = event.x - left, event.y - top
-        if 0 <= dx < w and 0 <= dy < h:
-            self.drag_offset = dx, dy
-            self.canvas.configure(cursor="fleur")
+        for key, (left, top, w, h) in reversed(tuple(self.layer_bounds.items())):
+            dx, dy = event.x-left, event.y-top
+            if 0 <= dx < w and 0 <= dy < h:
+                self.select_layer(key)
+                self.drag_offset = dx, dy
+                self.canvas.configure(cursor="fleur")
+                break
 
-    def move_video(self, event):
-        if self.drag_offset is None or self.layer_bounds is None:
+    def move_layer(self, event):
+        if self.drag_offset is None or self.selection not in self.layer_bounds:
             return
         x, y, fw, fh = self.view_bounds
-        _, _, w, h = self.layer_bounds
+        _, _, w, h = self.layer_bounds[self.selection]
         dx, dy = self.drag_offset
-        px = min(1, max(0, (event.x - dx - x) / max(1, fw - w)))
-        py = min(1, max(0, (event.y - dy - y) / max(1, fh - h)))
-        self.position = px, py
-        self.draw_layer()
+        position = tuple(min(1, max(0, p / max(1, gap)))
+                         for p, gap in ((event.x-dx-x, fw-w), (event.y-dy-y, fh-h)))
+        kind, index = self.selection
+        if kind == "speed":
+            self.project = replace(self.project, speed_position=position)
+        else:
+            layer = self.layers(kind)[index]
+            self.replace_layer(kind, index, replace(layer, position=position), redraw=False)
+        self.draw_preview()
 
     def end_drag(self):
         self.drag_offset = None
         self.canvas.configure(cursor="")
-
-    def reset_position(self):
-        self.position = (.035, .87)
-        self.draw_layer()
 
 
 def main():

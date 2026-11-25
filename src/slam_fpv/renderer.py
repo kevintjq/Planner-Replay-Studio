@@ -4,6 +4,7 @@ from PIL import Image
 import vtk
 from vtk.util.numpy_support import numpy_to_vtk, numpy_to_vtkIdTypeArray, vtk_to_numpy
 from .geometry import camera
+from .composition import rounded_mask
 
 
 # Lift EDL midtones while preserving the dark background and white overlays.
@@ -54,10 +55,11 @@ def overlay_line(points,color,width):
 class Renderer:
     def __init__(self,width=1280,height=720,edl=True,axis=.48,axis_pixels=28,point_size=2,
                  distance=3.8,camera_height=1.35,side=0.,fov=65,inset_distance=10,inset_height=6.7,
-                 *, supersample=1, cloud_color=None, trajectory_color=(1,.73,.18), trajectory_width=3):
+                 *, supersample=1, cloud_color=None, trajectory_color=(1,.73,.18), trajectory_width=3, clean=False):
         self.output_size = (width, height)
         self.scale = supersample
         self.edl = edl
+        self.clean = clean
         self.width, self.height = width * supersample, height * supersample
         self.axis, self.axis_pixels = axis, axis_pixels * supersample
         self.point_size = point_size * supersample
@@ -107,7 +109,8 @@ class Renderer:
     def frame(self,pose,trajectory,label):
         for renderer,actor in self.dynamic: renderer.RemoveActor(actor)
         self.dynamic=[]
-        self.label.SetInput(label+'\nX red / Y green / Z blue | metres')
+        self.label.SetInput(('SIMULATION' if label.startswith('SYNTHETIC') else '') if self.clean
+                            else label+'\nX red / Y green / Z blue | metres')
         for index,(scene,overlay) in enumerate(self.views):
             args=self.camera_args if index==0 else self.inset_args
             position,target=camera(pose,*args,lookahead=1.5 if index==0 else 0.)
@@ -138,9 +141,13 @@ class Renderer:
         result,inset=images
         h,w=inset.shape[:2]; top=round(self.height*.04); left=round(self.width*.66)
         border = 2 * self.scale
-        result[max(0, top-border):top+h+border, max(0, left-border):left+w+border] = [75,92,115]
-        result[top:top+h,left:left+w]=inset
-        image = Image.fromarray(result)
+        if self.clean:
+            image = Image.fromarray(result)
+            image.paste(Image.fromarray(inset), (left, top), rounded_mask((w, h), 18 * self.scale, 236))
+        else:
+            result[max(0, top-border):top+h+border, max(0, left-border):left+w+border] = [75,92,115]
+            result[top:top+h,left:left+w]=inset
+            image = Image.fromarray(result)
         if self.scale > 1:
             image = image.resize(self.output_size, Image.Resampling.LANCZOS)
         if self.edl:

@@ -1,5 +1,6 @@
 import argparse
 from contextlib import ExitStack
+from dataclasses import asdict
 import re
 import json
 import sys
@@ -7,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import imageio.v2 as imageio
 from .cloud import CloudMap
+from .composition import SpeedHistory, compose, estimated_speed
 from .sources import BagSource, DemoSource, inspect_bag
 from .encoding import h264_encoder
 from .footage import FULL_FRAME, FlightVideo, VideoEdit, composite
@@ -87,7 +89,7 @@ def extrinsics(path):
     return [(v['parent'],v['child'],v['translation'],v['quaternion_xyzw']) for v in data]
 
 
-def make_renderer(a):
+def make_renderer(a, *, clean=False):
     from .renderer import Renderer
     solid = rgb_bytes(a.cloud_color) if a.color == 'solid' else None
     trajectory = ((1,.73,.18) if a.trajectory_color is None
@@ -95,7 +97,7 @@ def make_renderer(a):
     return Renderer(a.width,a.height,not a.no_edl,a.axis,a.axis_pixels,a.point_size,
                     a.distance,a.camera_height,a.side,a.fov,a.inset_distance,a.inset_height,
                     supersample=a.supersample,cloud_color=solid,trajectory_color=trajectory,
-                    trajectory_width=a.trajectory_width)
+                    trajectory_width=a.trajectory_width,clean=clean)
 
 
 class Export:
@@ -126,11 +128,12 @@ class Export:
         if self.writer: self.writer.close()
 
 
-def render(a, source, *, preview=None, preview_offset=0, progress=None, check_cancel=None, staging=None):
+def render(a, source, *, preview=None, preview_offset=0, progress=None, check_cancel=None, staging=None, project=None):
     """Render an export, or deliver one uncomposited preview and its optional footage."""
     destination = a.output if staging is None else staging
     cloud = CloudMap(a.voxel, a.max_points)
     trajectory = []
+    speed_history = SpeedHistory()
     dropped = transformed = count = 0
     dirty = False
     failure = codec = None
@@ -138,7 +141,8 @@ def render(a, source, *, preview=None, preview_offset=0, progress=None, check_ca
     try:
         with ExitStack() as stack:
             video = stack.enter_context(FlightVideo(a.video, video_edit(a)))
-            renderer = make_renderer(a)
+            layers = [stack.enter_context(FlightVideo(layer.path, layer.edit)) for layer in project.videos] if project else ()
+            renderer = make_renderer(a, clean=project is not None)
             stack.callback(renderer.close)
             output = None
             if preview is None:
@@ -177,19 +181,29 @@ def render(a, source, *, preview=None, preview_offset=0, progress=None, check_ca
                 if not len(cloud.xyz):
                     continue
                 trajectory.append(pose[:3, 3].copy())
+                elapsed = (t - source.first) / 1e9
+                speed = (speed_history.update(elapsed, estimated_speed(source, t, pose))
+                         if project is not None and (preview is not None or project.show_speed) else None)
                 if preview is not None and i < preview_index:
                     continue
                 if dirty:
                     renderer.update_cloud(cloud)
                     dirty = False
-                elapsed = (t - source.first) / 1e9
                 label = 'SYNTHETIC DEMO' if is_synthetic else 'RECORDED ROS1 DATA'
                 frame = renderer.frame(pose, trajectory, f'{label} | t={elapsed:.3f}s | REAR CHASE + OBLIQUE')
-                footage = video.frame_at(elapsed)
-                if preview is not None:
-                    preview(frame, footage, elapsed)
-                    return
-                output.append(composite(frame, footage, a.video_width, a.video_position))
+                if project is not None:
+                    footage = tuple(layer.frame_at(elapsed) for layer in layers)
+                    if preview is not None:
+                        preview(frame, footage, elapsed, speed)
+                        return
+                    combined, _ = compose(frame, project, footage, elapsed, speed)
+                    output.append(np.asarray(combined))
+                else:
+                    footage = video.frame_at(elapsed)
+                    if preview is not None:
+                        preview(frame, footage, elapsed)
+                        return
+                    output.append(composite(frame, footage, a.video_width, a.video_position))
                 count = output.count
                 if progress is not None:
                     progress(i + 1, frame_count)
@@ -208,8 +222,10 @@ def render(a, source, *, preview=None, preview_offset=0, progress=None, check_ca
                           retained_points=len(cloud.xyz),fps=a.fps,edl_requested=not a.no_edl,
                           complete=failure is None and count > 0,error=failure,encoder=codec,
                           config={k:str(v) if isinstance(v,Path) else v for k,v in vars(a).items() if k != 'bag'})
+            if project is not None:
+                report['composition'] = asdict(project)
             destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.with_suffix('.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
+            destination.with_suffix('.json').write_text(json.dumps(report,indent=2,default=str),encoding='utf-8')
             if progress is None:
                 print(json.dumps(report,indent=2))
 

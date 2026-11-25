@@ -18,10 +18,10 @@ py -m venv .venv
 .\.venv\Scripts\python.exe -m slam_fpv.gui
 ```
 
-1. Open a ROS1 `.bag`. Select a PointCloud2 topic and Odometry or recorded TF. Set the world and body frames to match the bag. The desktop labels are in Chinese.
-2. Set the export start and duration, then generate a preview. Adjust the camera, point density, point-cloud color and trajectory color in the settings tabs.
-3. Optionally open a flight video and use the editor to set in/out times and drag a crop rectangle. Find a matching event in both views, then mark an anchor. Mark a later matching event to correct clock drift, or enter a manual offset relative to the first cloud. Generate a preview to move the video layer.
-4. Export MP4 or PNG. The default is 1080p at 60 fps with EDL and 2× supersampling. Automatic encoding tests NVIDIA NVENC and falls back to CPU H.264 if hardware initialization fails. The flight overlay is exported without audio.
+1. Open a ROS1 `.bag`, select PointCloud2 and Odometry or TF, then set the export interval.
+2. Add multiple flight videos in the Layers tab. Edit the trim, crop, alignment, width and opacity of each video independently. Use matching events as anchors to align time and correct drift.
+3. Add timed captions or a speed gauge. Drag annotation handles to change their visible intervals and scrub the timeline to preview. Times are relative to the first cloud. The gauge estimates 3D speed in m/s from world-frame poses.
+4. Drag overlays directly in the preview. Export MP4 or PNG at 1080p and 60 fps by default. Automatic encoding tests NVENC and falls back to CPU H.264.
 
 ## CLI
 

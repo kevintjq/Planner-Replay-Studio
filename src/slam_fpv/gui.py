@@ -16,7 +16,7 @@ from tkinter import colorchooser, filedialog, messagebox, ttk
 from PIL import Image, ImageTk
 
 from .cli import open_source, parser, render, validate
-from .composition import Composition, compose, rounded_mask
+from .composition import Composition, compose, placement_axis, rounded_mask
 from .desktop_style import INK, desktop_style
 from .timeline import Timeline
 from .layer_controls import LayerControls
@@ -51,6 +51,8 @@ class RendererApp(LayerControls):
         self.cloud_views = {}
         self.selection = None
         self.drag_offset = None
+        self.resize_drag = None
+        self.resize_handle = None
         self.base_cache = None
         self.video_editor = None
         self.layer_bounds = {}
@@ -60,7 +62,7 @@ class RendererApp(LayerControls):
         self.disabled_controls = []
 
         root.title("SLAM FPV Renderer")
-        root.geometry("1290x835")
+        root.geometry("1310x850")
         root.minsize(1000, 720)
         root.protocol("WM_DELETE_WINDOW", self.close)
         self.font, self.style_photos = desktop_style(root)
@@ -72,7 +74,9 @@ class RendererApp(LayerControls):
         header = ttk.Frame(workspace, style="Shell.TFrame")
         header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 15))
         ttk.Label(header, text="SLAM FPV", style="Title.TLabel").pack(side="left")
-        ttk.Label(header, text="合成工作台", style="Subtitle.TLabel").pack(side="left", padx=14)
+        ttk.Label(header, text="合成工作台", style="Subtitle.TLabel").pack(side="left", padx=13)
+        ttk.Button(header, text="主视角", command=lambda: self.edit_cloud_view("main", 0),
+                   style="Shell.TButton").pack(side="right")
 
         self.form = ttk.Frame(workspace, style="Shell.TFrame")
         self.form.grid(row=1, column=0, sticky="nsew", padx=(0, 16))
@@ -82,7 +86,7 @@ class RendererApp(LayerControls):
         viewer.grid(row=1, column=1, sticky="nsew")
         self.preview_label = ttk.Label(viewer, text="画面预览", style="PanelTitle.TLabel")
         self.preview_label.pack(anchor="w", pady=(0, 8))
-        self.canvas = tk.Canvas(viewer, bg="#FFFFFF", highlightthickness=0, width=460, height=365)
+        self.canvas = tk.Canvas(viewer, bg="#F8F9FB", highlightthickness=0, width=460, height=365)
         self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Configure>", lambda _: self.draw_preview())
         self.canvas.bind("<ButtonPress-1>", self.start_drag)
@@ -506,6 +510,7 @@ class RendererApp(LayerControls):
     def draw_preview(self):
         self.canvas.delete("all")
         self.layer_bounds = {}
+        self.resize_handle = None
         width, height = self.canvas.winfo_width(), self.canvas.winfo_height()
         if self.frame is None:
             self.canvas.create_rectangle(14, 18, width-14, height-18, fill="#F3F6FB", width=0)
@@ -528,12 +533,33 @@ class RendererApp(LayerControls):
         selected = self.layer_bounds.get(self.selection)
         if selected is not None:
             x, y, w, h = selected
-            self.canvas.create_rectangle(x+1, y+1, x+w-1, y+h-1, outline="#90C4FF", dash=(5, 4))
+            vx, vy, vw, vh = self.view_bounds
+            left, top = max(x, vx), max(y, vy)
+            right, bottom = min(x+w, vx+vw)-2, min(y+h, vy+vh)-2
+            if right > left and bottom > top:
+                self.canvas.create_rectangle(left, top, right, bottom, outline="#0A84FF", width=1)
+                self.resize_handle = right-5, bottom-5
+                hx, hy = self.resize_handle
+                self.canvas.create_oval(hx-4, hy-4, hx+4, hy+4, fill="#FFFFFF", outline="#0A84FF", width=2)
 
     def start_drag(self, event):
         if self.busy:
             return
-        for key, (left, top, w, h) in reversed(tuple(self.layer_bounds.items())):
+        if self.resize_handle is not None:
+            hx, hy = self.resize_handle
+            if abs(event.x-hx) <= 9 and abs(event.y-hy) <= 9:
+                _, _, w, h = self.layer_bounds[self.selection]
+                self.resize_drag = event.x, event.y, w, h, self.layer_scale()
+                self.canvas.configure(cursor="sizing")
+                return
+        keys = list(reversed(self.layer_bounds))
+        if (self.selection in self.layer_bounds and self.selection[0] == "video"
+                and self.project.videos[self.selection[1]].backdrop):
+            # An explicitly selected bottom layer can be dragged through the layers above it.
+            keys.remove(self.selection)
+            keys.insert(0, self.selection)
+        for key in keys:
+            left, top, w, h = self.layer_bounds[key]
             dx, dy = event.x-left, event.y-top
             if 0 <= dx < w and 0 <= dy < h:
                 self.select_layer(key)
@@ -541,25 +567,65 @@ class RendererApp(LayerControls):
                 self.canvas.configure(cursor="fleur")
                 break
 
+    def layer_scale(self):
+        kind, index = self.selection
+        if kind == "speed":
+            return self.project.speed_scale
+        layer = self.layers(kind)[index]
+        if kind == "text":
+            return layer.size
+        return layer.backdrop_scale if kind == "video" and layer.backdrop else layer.width
+
+    def resize_selected(self, factor):
+        kind, index = self.selection
+        clamp = lambda value, low, high: min(high, max(low, value))
+        if kind == "speed":
+            self.project = replace(self.project, speed_scale=clamp(factor, .35, 2.5))
+        else:
+            layer = self.layers(kind)[index]
+            if kind == "text":
+                layer = replace(layer, size=clamp(round(factor), 12, 120))
+            elif kind == "video" and layer.backdrop:
+                layer = replace(layer, backdrop_scale=clamp(factor, .2, 2.))
+            else:
+                minimum, maximum = (.05, .9) if kind == "video" else (.12, 1.5)
+                layer = replace(layer, width=clamp(factor, minimum, maximum))
+            self.replace_layer(kind, index, layer, redraw=False)
+
     def move_layer(self, event):
+        if self.resize_drag is not None:
+            x, y, w, h, scale = self.resize_drag
+            factor = 1 + ((event.x-x)*w + (event.y-y)*h)/(w*w + h*h)
+            self.resize_selected(scale * factor)
+            self.draw_preview()
+            return
         if self.drag_offset is None or self.selection not in self.layer_bounds:
             return
         x, y, fw, fh = self.view_bounds
         _, _, w, h = self.layer_bounds[self.selection]
         dx, dy = self.drag_offset
-        position = tuple(min(1, max(0, p / max(1, gap)))
-                         for p, gap in ((event.x-dx-x, fw-w), (event.y-dy-y, fh-h)))
         kind, index = self.selection
+        layer = None if kind == "speed" else self.layers(kind)[index]
+        can_pan = kind in {"main", "view"} or (kind == "video" and layer.backdrop)
+        position = []
+        for p, space, size in ((event.x-dx-x, fw, w), (event.y-dy-y, fh, h)):
+            offset, travel = placement_axis(space, size) if can_pan else (0, max(1, space-size))
+            position.append(min(1, max(0, (p-offset)/travel)))
+        position = tuple(position)
         if kind == "speed":
             self.project = replace(self.project, speed_position=position)
+        elif kind == "video" and layer.backdrop:
+            self.replace_layer(kind, index, replace(layer, backdrop_position=position), redraw=False)
         else:
-            layer = self.layers(kind)[index]
             self.replace_layer(kind, index, replace(layer, position=position), redraw=False)
         self.draw_preview()
 
     def end_drag(self):
-        self.drag_offset = None
+        changed = self.drag_offset is not None or self.resize_drag is not None
+        self.drag_offset = self.resize_drag = None
         self.canvas.configure(cursor="")
+        if changed:
+            self.show_layer()
 
 
 def main():

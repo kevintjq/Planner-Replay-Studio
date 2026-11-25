@@ -1,9 +1,10 @@
+from dataclasses import replace
 from pathlib import Path
 
 from PIL import Image
 import numpy as np
 
-from slam_fpv.composition import Composition, SpeedHistory, TextLayer, VideoLayer, compose, estimated_speed
+from slam_fpv.composition import Composition, PointCloudView, SpeedHistory, TextLayer, VideoLayer, compose, estimated_speed
 from slam_fpv.sources import DemoSource
 
 
@@ -24,7 +25,7 @@ def test_layer_blend_bounds_and_intervals():
         assert np.max(np.abs(np.array(image.getpixel((x, y))) - base.getpixel((x, y)))) <= 2
     assert ("text", 0) in bounds and ("speed", 0) in bounds
     _, later = compose(base, project, (red, green), 2., (2., 2.5, 1.5))
-    assert set(later) == {("video", 0), ("video", 1)}
+    assert set(later) == {("main", 0), ("video", 0), ("video", 1)}
 
 
 def test_speed_uses_timestamps_and_treats_tracking_gaps_as_missing():
@@ -52,6 +53,22 @@ def test_video_backdrop_keeps_foreground_and_draws_insets_above_it():
     assert image.getpixel((0, 0)) == (55, 90, 130)
     assert image.getpixel((100, 50)) == (4, 6, 8)
     assert image.getpixel((175, 85)) == (240, 70, 50)
-    assert set(bounds) == {("video", 0)}
+    assert set(bounds) == {("main", 0), ("video", 0), ("video", 1)}
     gap, _ = compose(scene, project, (None, None), 5., None)
     assert gap.getpixel((0, 0)) == (10, 15, 20)
+
+
+
+def test_main_and_view_plate_geometry():
+    scene = Image.new("RGBA", (320, 180), (10, 15, 20, 0))
+    scene.putpixel((160, 90), (80, 210, 130, 255))
+    inset = Image.new("RGBA", (160, 90), (0, 0, 0, 0))
+    project = Composition(main_view=PointCloudView("fpv", .6, (0., 0.)),
+                          views=(PointCloudView("right", .30, (1., 1.), False),))
+    image, bounds = compose(scene, project, (), 1., None, {"right": inset})
+    assert bounds["main", 0] == (0, 0, 192, 108)
+    x, y, w, h = bounds["view", 0]
+    assert image.getpixel((x+w//2, y+h//2)) == (16, 22, 32)
+    transparent = replace(project, views=(replace(project.views[0], transparent=True),))
+    image, _ = compose(scene, transparent, (), 1., None, {"right": inset})
+    assert image.getpixel((x+w//2, y+h//2)) == (10, 15, 20)

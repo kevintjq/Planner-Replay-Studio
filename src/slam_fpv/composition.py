@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageColor, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageChops, ImageColor, ImageDraw, ImageFont, ImageOps
 
 from .footage import VideoEdit, video_rect
 
@@ -20,10 +20,15 @@ class VideoLayer:
     position: tuple = (.055, .84)
     opacity: float = .96
     backdrop: bool = False
+    backdrop_scale: float = 1.
+    backdrop_position: tuple = (.5, .5)
+    transparent: bool = True
 
     def __post_init__(self):
         if not .05 <= self.width <= .9 or not 0 < self.opacity <= 1:
             raise ValueError("宽度应为 5–90%，不透明度应为 1–100%。")
+        if not .2 <= self.backdrop_scale <= 2.:
+            raise ValueError("底片缩放应为 20–200%。")
 
 
 @dataclass(frozen=True)
@@ -34,6 +39,7 @@ class TextLayer:
     position: tuple = (.05, .08)
     size: int = 32
     color: str = "#F7FAFF"
+    transparent: bool = True
 
     def __post_init__(self):
         if not self.text.strip() or len(self.text) > 160:
@@ -46,37 +52,50 @@ class TextLayer:
 
 
 POINT_CLOUD_VIEWS = {
+    "rear": ("后方跟随", (.04, .88)),
     "oblique": ("高位斜视", (.97, .05)),
-    "left": ("左侧跟随", (.04, .9)),
-    "right": ("右侧跟随", (.96, .9)),
+    "fpv": ("机头 FPV", (.04, .05)),
+    "front": ("正前回望", (.50, .05)),
+    "left": ("左侧跟随", (.04, .88)),
+    "right": ("右侧跟随", (.96, .88)),
+    "rear_left": ("左后斜视", (.04, .47)),
+    "rear_right": ("右后斜视", (.96, .47)),
+    "high": ("高位近俯视", (.50, .88)),
+    "low": ("低位追踪", (.23, .88)),
+    "orbit": ("环绕观察", (.75, .88)),
 }
-
 
 @dataclass(frozen=True)
 class PointCloudView:
     kind: str = "oblique"
     width: float = .32
     position: tuple = (.97, .05)
+    transparent: bool = True
 
     def __post_init__(self):
         if self.kind not in POINT_CLOUD_VIEWS:
             raise ValueError("未知的点云视角。")
-        if not .12 <= self.width <= .75:
-            raise ValueError("视角宽度应为 12–75%。")
+        if not .12 <= self.width <= 1.5:
+            raise ValueError("视角宽度应为 12–150%。")
 
 
 @dataclass(frozen=True)
 class Composition:
     videos: tuple = ()
     views: tuple = (PointCloudView(),)
+    main_view: PointCloudView = PointCloudView("rear", 1., (.5, .5))
     texts: tuple = ()
     speed_position: tuple = (.05, .32)
     show_speed: bool = False
     speed_limit: float = 10.
+    speed_scale: float = 1.
+    speed_transparent: bool = True
     speed_start: float = 0.
     speed_end: float | None = None
 
     def __post_init__(self):
+        if not .35 <= self.speed_scale <= 2.5:
+            raise ValueError("速度表缩放应为 35–250%。")
         if len({view.kind for view in self.views}) != len(self.views):
             raise ValueError("每个附加视角只能添加一次。")
         if sum(layer.backdrop for layer in self.videos) > 1:
@@ -203,48 +222,107 @@ def position_tile(canvas, tile, position):
     return (round((canvas[0] - tile.width) * position[0]), round((canvas[1] - tile.height) * position[1]))
 
 
+MATTE = "#101620"
+
+
+def placement_axis(window, layer):
+    gap = window - layer
+    if gap == 0:
+        travel = max(1, round(window * .4))
+        return -travel / 2, travel
+    return 0, gap
+
+
+def scaled_rect(canvas, source, scale, position):
+    width = max(1, round(canvas[0] * scale))
+    height = max(1, round(width * source[1] / source[0]))
+    x, y = (round(offset + travel * origin) for (offset, travel), origin in
+            zip((placement_axis(space, size) for space, size in zip(canvas, (width, height))), position))
+    return x, y, width, height
+
+
+def rounded_tile(tile, transparent, radius):
+    if not transparent:
+        panel = Image.new("RGBA", tile.size, MATTE)
+        panel.alpha_composite(tile)
+        tile = panel
+    tile.putalpha(ImageChops.multiply(tile.getchannel("A"), rounded_mask(tile.size, radius)))
+    return tile
+
+
 def compose(base, project, videos, elapsed, speed, cloud_views=None):
-    """Return pixels and visible hit boxes in the same coordinates as the supplied frame."""
+    """Render a scene and return the draggable layer rectangles."""
     scene = base if isinstance(base, Image.Image) else Image.fromarray(base)
-    image = scene.convert("RGB")
-    alpha = scene.getchannel("A") if scene.mode == "RGBA" else None
-    for layer, footage in zip(project.videos, videos):
-        if layer.backdrop and footage is not None and alpha is not None:
-            source = footage if isinstance(footage, Image.Image) else Image.fromarray(footage)
-            video = ImageOps.fit(source.convert("RGB"), image.size, Image.Resampling.LANCZOS)
-            if layer.opacity < 1.:
-                video = Image.blend(image, video, layer.opacity)
-            video.paste(image, (0, 0), alpha)
-            image = video
-            break
+    color = scene.getpixel((0, 0)) if scene.mode == "RGBA" else None
+    fallback = color[:3] if color is not None and color[3] == 0 else MATTE
+    image = Image.new("RGB", scene.size, fallback)
     bounds = {}
+    radius = max(2, round(image.height * .016))
+
+    for index, (layer, footage) in enumerate(zip(project.videos, videos)):
+        if layer.backdrop and footage is not None:
+            source = footage if isinstance(footage, Image.Image) else Image.fromarray(footage)
+            x, y, w, h = scaled_rect(image.size, image.size, layer.backdrop_scale, layer.backdrop_position)
+            video = ImageOps.fit(source.convert("RGBA"), (w, h), Image.Resampling.LANCZOS)
+            if layer.backdrop_scale < 1.:
+                video = rounded_tile(video, layer.transparent, radius)
+            mask = video.getchannel("A").point(lambda alpha: round(alpha * layer.opacity))
+            image.paste(video, (x, y), mask)
+            bounds["video", index] = x, y, w, h
+            break
+
+    main = project.main_view
+    x, y, w, h = scaled_rect(image.size, scene.size, main.width, main.position)
+    tile = scene.convert("RGBA").resize((w, h), Image.Resampling.LANCZOS)
+    if main.width < 1.:
+        tile = rounded_tile(tile, main.transparent, radius)
+    elif not main.transparent:
+        panel = Image.new("RGBA", tile.size, MATTE)
+        panel.alpha_composite(tile)
+        tile = panel
+    image.paste(tile, (x, y), tile.getchannel("A"))
+    bounds["main", 0] = x, y, w, h
+
     for index, layer in enumerate(project.views):
         captured = None if cloud_views is None else cloud_views.get(layer.kind)
         if captured is None:
             continue
         inset = captured if isinstance(captured, Image.Image) else Image.fromarray(captured)
-        x, y, w, h = video_rect(image.size, inset.size, layer.width, layer.position)
-        tile = inset.resize((w, h), Image.Resampling.LANCZOS)
+        x, y, w, h = scaled_rect(image.size, inset.size, layer.width, layer.position)
+        tile = rounded_tile(inset.resize((w, h), Image.Resampling.LANCZOS), layer.transparent, radius)
         image.paste(tile, (x, y), tile.getchannel("A"))
         bounds["view", index] = x, y, w, h
+
     for index, (layer, footage) in enumerate(zip(project.videos, videos)):
         if footage is None or layer.backdrop:
             continue
         inset = footage if isinstance(footage, Image.Image) else Image.fromarray(footage)
         x, y, w, h = video_rect(image.size, inset.size, layer.width, layer.position)
-        tile = inset.resize((w, h), Image.Resampling.LANCZOS)
-        mask = rounded_mask((w, h), max(2, round(image.height * .016)), round(255 * layer.opacity))
+        if layer.transparent:
+            tile = inset.convert("RGBA").resize((w, h), Image.Resampling.LANCZOS)
+        else:
+            # Visible matte makes the opaque background option clear for RGB footage.
+            tile = Image.new("RGBA", (w, h), MATTE)
+            stroke = min(radius // 2, (min(w, h) - 1) // 2)
+            tile.paste(inset.resize((w - 2 * stroke, h - 2 * stroke), Image.Resampling.LANCZOS), (stroke, stroke))
+        tile = rounded_tile(tile, layer.transparent, radius)
+        mask = tile.getchannel("A").point(lambda alpha: round(alpha * layer.opacity))
         image.paste(tile, (x, y), mask)
         bounds["video", index] = x, y, w, h
+
     for index, layer in enumerate(project.texts):
         if layer.start <= elapsed < layer.end:
             tile = label_tile(layer.text, max(6, round(layer.size * image.height / 1080)), layer.color)
             x, y = position_tile(image.size, tile, layer.position)
+            if not layer.transparent:
+                tile = rounded_tile(tile, False, radius)
             image.paste(tile, (x, y), tile)
             bounds["text", index] = x, y, *tile.size
     if project.show_speed and elapsed >= project.speed_start and (project.speed_end is None or elapsed < project.speed_end):
-        tile = speed_tile(speed, project.speed_limit, image.height)
+        tile = speed_tile(speed, project.speed_limit, round(image.height * project.speed_scale))
         x, y = position_tile(image.size, tile, project.speed_position)
+        if not project.speed_transparent:
+            tile = rounded_tile(tile, False, radius)
         image.paste(tile, (x, y), tile)
         bounds["speed", 0] = x, y, *tile.size
     return image, bounds

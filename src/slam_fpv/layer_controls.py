@@ -10,6 +10,13 @@ from .composition import POINT_CLOUD_VIEWS, PointCloudView, TextLayer, VideoLaye
 from .footage import VideoEdit
 
 
+MATTE_OPTIONS = ("透明底", "深色底")
+
+
+def background_field(enabled):
+    return ("background", "图层底色", MATTE_OPTIONS[0 if enabled else 1], MATTE_OPTIONS)
+
+
 VIDEO_FILES = (("视频", "*.mp4 *.mov *.mkv *.avi *.m4v"), ("所有文件", "*"))
 
 
@@ -34,6 +41,7 @@ class LayerControls:
         self.layer_list.configure(yscrollcommand=self.layer_scroll.set)
         self.layer_list.bind("<<TreeviewSelect>>", self.read_selection)
         self.layer_list.bind("<Double-1>", lambda _: self.edit_selected())
+        self.layer_list.tag_configure("primary", foreground="#0066CC")
         self.layer_info = tk.StringVar(value="选择一个图层，或在画面里直接拖动。")
         ttk.Label(parent, textvariable=self.layer_info, style="Quiet.TLabel", wraplength=275).grid(
             row=3, column=0, columnspan=2, sticky="w", pady=(9, 7))
@@ -45,6 +53,8 @@ class LayerControls:
         self.layer_align.pack(side="left", padx=4)
         self.layer_remove = ttk.Button(tools, text="移除", command=self.remove_layer)
         self.layer_remove.pack(side="left")
+        self.layer_matte = ttk.Button(tools, text="设为深色底", command=self.toggle_layer_background)
+        self.layer_matte.pack(side="left", padx=(5, 0))
         video_tools = ttk.Frame(parent)
         video_tools.grid(row=5, column=0, columnspan=2, sticky="w", pady=(5,0))
         self.layer_replace = ttk.Button(video_tools, text="替换视频", command=self.replace_video)
@@ -61,13 +71,18 @@ class LayerControls:
         return f"{key[0]}-{key[1]}"
 
     def layers(self, kind):
+        if kind == "main":
+            return (self.project.main_view,)
         return getattr(self.project, {"video":"videos", "text":"texts", "view":"views"}[kind])
 
     def replace_layer(self, kind, index, layer, *, redraw=True):
-        values = list(self.layers(kind))
-        values[index] = layer
-        name = {"video":"videos", "text":"texts", "view":"views"}[kind]
-        self.project = replace(self.project, **{name:tuple(values)})
+        if kind == "main":
+            self.project = replace(self.project, main_view=layer)
+        else:
+            values = list(self.layers(kind))
+            values[index] = layer
+            name = {"video":"videos", "text":"texts", "view":"views"}[kind]
+            self.project = replace(self.project, **{name:tuple(values)})
         if redraw:
             self.refresh_layers()
 
@@ -80,6 +95,8 @@ class LayerControls:
     def refresh_layers(self):
         listing = self.layer_list
         listing.delete(*listing.get_children())
+        listing.insert("", "end", iid="main-0",
+                       text=f"主视角   {POINT_CLOUD_VIEWS[self.project.main_view.kind][0]}", tags=("primary",))
         for i, layer in enumerate(self.project.videos):
             role = "全屏底片" if layer.backdrop else f"视频 {i+1}"
             listing.insert("", "end", iid=f"video-{i}", text=f"{role}   {layer.path.name}")
@@ -123,7 +140,11 @@ class LayerControls:
         kind, i = selection or ("", 0)
         self.layer_settings.state(["!disabled" if selection else "disabled"])
         self.layer_align.state(["!disabled" if kind == "video" else "disabled"])
-        self.layer_remove.state(["!disabled" if selection else "disabled"])
+        self.layer_remove.state(["!disabled" if selection and kind != "main" else "disabled"])
+        self.layer_matte.state(["!disabled" if selection else "disabled"])
+        if selection:
+            transparent = self.project.speed_transparent if kind == "speed" else self.layers(kind)[i].transparent
+            self.layer_matte.configure(text="设为深色底" if transparent else "设为透明底")
         video_selected = kind == "video"
         for control in (self.layer_replace, self.layer_backdrop):
             control.state(["!disabled" if video_selected else "disabled"])
@@ -135,12 +156,13 @@ class LayerControls:
         if kind == "video":
             layer = self.project.videos[i]
             n = len(layer.edit.anchors)
-            placement = "全屏底片" if layer.backdrop else f"宽 {layer.width:.0%}"
+            placement = f"底片 {layer.backdrop_scale:.0%}" if layer.backdrop else f"宽 {layer.width:.0%}"
             message = f"{placement}  ·  不透明度 {layer.opacity:.0%}  ·  " + (
                 f"{n} 个对齐锚点" if n else f"偏移 {layer.edit.offset:+.3f} s")
-        elif kind == "view":
-            view = self.project.views[i]
-            message = f"{POINT_CLOUD_VIEWS[view.kind][0]}  ·  宽 {view.width:.0%}  ·  透明底"
+        elif kind in {"view", "main"}:
+            view = self.layers(kind)[i]
+            style = MATTE_OPTIONS[0 if view.transparent else 1]
+            message = f"{POINT_CLOUD_VIEWS[view.kind][0]}  ·  宽 {view.width:.0%}  ·  {style}"
         elif kind == "text":
             layer = self.project.texts[i]
             message = f"{layer.start:.3f} – {layer.end:.3f} s  ·  字号 {layer.size}"
@@ -149,6 +171,17 @@ class LayerControls:
         self.layer_info.set(message)
         self.draw_preview()
         self.update_timeline()
+
+    def toggle_layer_background(self):
+        if not self.selection:
+            return
+        kind, index = self.selection
+        if kind == "speed":
+            self.project = replace(self.project, speed_transparent=not self.project.speed_transparent)
+            self.refresh_layers()
+        else:
+            layer = self.layers(kind)[index]
+            self.replace_layer(kind, index, replace(layer, transparent=not layer.transparent))
 
     def choose_view(self):
         selected = {view.kind for view in self.project.views}
@@ -161,7 +194,7 @@ class LayerControls:
 
     def add_view(self, kind):
         order = len(self.project.views)
-        layer = PointCloudView(kind=kind, position=POINT_CLOUD_VIEWS[kind][1])
+        layer = PointCloudView(kind=kind, position=POINT_CLOUD_VIEWS[kind][1], width=.26)
         self.project = replace(self.project, views=(*self.project.views, layer))
         self.selection = "view", order
         self.refresh_layers()
@@ -223,7 +256,7 @@ class LayerControls:
         self.refresh_layers()
 
     def remove_layer(self):
-        if not self.selection:
+        if not self.selection or self.selection[0] == "main":
             return
         kind, index = self.selection
         self.selection = None
@@ -246,26 +279,48 @@ class LayerControls:
             self.edit_text(index)
         elif kind == "speed":
             self.edit_speed()
-        elif kind == "view":
-            layer = self.project.views[index]
-            self.layer_dialog("点云视角", (("width", "小窗宽度 (%)", f"{layer.width*100:g}"),),
-                              lambda values: self.replace_layer(kind, index, replace(layer, width=float(values["width"])/100)))
+        elif kind in {"view", "main"}:
+            self.edit_cloud_view(kind, index)
         else:
             layer = self.project.videos[index]
             def save(values):
                 edit = replace(layer.edit, offset=float(values["offset"]))
                 result = replace(layer, width=float(values.get("width", layer.width*100))/100,
-                                 opacity=float(values["opacity"])/100, edit=edit)
+                                 opacity=float(values["opacity"])/100, edit=edit,
+                                 backdrop_scale=float(values.get("scale", layer.backdrop_scale*100))/100,
+                                 transparent=values["background"] == MATTE_OPTIONS[0])
                 self.replace_layer(kind, index, result)
                 if edit != layer.edit:
                     self.invalidate_video(index)
                     if self.frame is not None:
                         self.root.after_idle(lambda: self.start_render(True))
-            width_field = () if layer.backdrop else (("width", "画面宽度 (%)", f"{layer.width*100:g}"),)
-            self.layer_dialog("视频图层设置", (*width_field,
+            size_field = (("scale", "底片缩放 (%)", f"{layer.backdrop_scale*100:g}") if layer.backdrop
+                          else ("width", "画面宽度 (%)", f"{layer.width*100:g}"))
+            self.layer_dialog("视频图层设置", (size_field, background_field(layer.transparent),
                 ("opacity", "不透明度 (%)", f"{layer.opacity*100:g}"),
                 ("offset", "手动偏移 (s)", str(layer.edit.offset)),
             ), save, note="有对齐锚点时优先使用锚点。")
+
+    def edit_cloud_view(self, kind, index):
+        if self.busy:
+            return
+        layer = self.layers(kind)[index]
+        occupied = {view.kind for i, view in enumerate(self.project.views) if i != index} if kind == "view" else set()
+        choices = {title: mode for mode, (title, _) in POINT_CLOUD_VIEWS.items() if mode not in occupied}
+
+        def save(values):
+            mode = choices[values["camera"]]
+            change = replace(layer, kind=mode, width=float(values["width"])/100,
+                             transparent=values["background"] == MATTE_OPTIONS[0])
+            self.replace_layer(kind, index, change)
+            if self.frame is not None and mode != layer.kind:
+                self.root.after_idle(lambda: self.start_render(True))
+
+        self.layer_dialog("主视角设置" if kind == "main" else "点云小窗设置", (
+            ("camera", "机位", POINT_CLOUD_VIEWS[layer.kind][0], tuple(choices)),
+            ("width", "宽度 (%)", f"{layer.width*100:g}"),
+            background_field(layer.transparent),
+        ), save)
 
     def edit_text(self, index=None):
         if index is None:
@@ -277,7 +332,8 @@ class LayerControls:
 
         def save(values):
             new = replace(layer, text=values["text"], start=float(values["start"]), end=float(values["end"]),
-                          size=int(values["size"]), color=values["color"])
+                          size=int(values["size"]), color=values["color"],
+                          transparent=values["background"] == MATTE_OPTIONS[0])
             if index is None:
                 self.selection = "text", len(self.project.texts)
                 self.project = replace(self.project, texts=(*self.project.texts, new))
@@ -291,6 +347,7 @@ class LayerControls:
             ("end", "结束时间 (s)", f"{layer.end:.3f}"),
             ("size", "字号", str(layer.size)),
             ("color", "颜色", layer.color),
+            background_field(layer.transparent),
         ), save)
 
     def edit_speed(self):
@@ -298,11 +355,15 @@ class LayerControls:
         def save(values):
             self.project = replace(p, show_speed=True, speed_limit=float(values["limit"]),
                                    speed_start=float(values["start"]),
+                                   speed_scale=float(values["scale"])/100,
+                                   speed_transparent=values["background"] == MATTE_OPTIONS[0],
                                    speed_end=float(values["end"]) if values["end"] else None)
             self.selection = "speed", 0
             self.refresh_layers()
         self.layer_dialog("飞行速度表", (
             ("limit", "表盘上限 (m/s)", f"{p.speed_limit:g}"),
+            ("scale", "缩放 (%)", f"{p.speed_scale*100:g}"),
+            background_field(p.speed_transparent),
             ("start", "开始时间 (s)", f"{p.speed_start:g}"),
             ("end", "结束时间 (s)", "" if p.speed_end is None else f"{p.speed_end:g}"),
         ), save, note="结束时间留空时显示至片段结束。")

@@ -1,4 +1,6 @@
 """Synchronized VTK viewports with foreground body RGB axes."""
+from math import cos, sin, tau
+
 import numpy as np
 from PIL import Image, ImageChops
 import vtk
@@ -52,10 +54,36 @@ def overlay_line(points,color,width):
     return actor
 
 
+def view_camera(pose, mode, rear, oblique, elapsed):
+    distance, height, side = oblique
+    if mode == "fpv":
+        forward, _, up = pose[:3, :3].T
+        position = pose[:3, 3] + forward * .12
+        return position, position + forward * 8., up
+    if mode == "orbit":
+        phase = elapsed * tau / 9.
+        geometry = (cos(phase) * distance, height * .58, sin(phase) * distance)
+    else:
+        geometry = {
+            "main": rear,
+            "rear": rear,
+            "oblique": oblique,
+            "front": (-distance, height * .44, 0.),
+            "left": (0., height * .32, distance),
+            "right": (0., height * .32, -distance),
+            "rear_left": (distance * .66, height * .59, distance * .65),
+            "rear_right": (distance * .66, height * .59, -distance * .65),
+            "high": (distance * .30, height * 2.1, side),
+            "low": (distance * .63, height * .12, side),
+        }[mode]
+    position, target = camera(pose, *geometry, lookahead=1.5 if mode in {"main", "rear"} else 0.)
+    return position, target, (0., 0., 1.)
+
+
 class Renderer:
     def __init__(self,width=1280,height=720,edl=True,axis=.48,axis_pixels=28,point_size=2,
                  distance=3.8,camera_height=1.35,side=0.,fov=65,inset_distance=10,inset_height=6.7,
-                 *, supersample=1, cloud_color=None, trajectory_color=(1,.73,.18), trajectory_width=3, clean=False, slam_view=False, view_modes=None):
+                 *, supersample=1, cloud_color=None, trajectory_color=(1,.73,.18), trajectory_width=3, clean=False, slam_view=False, view_modes=None, main_mode="rear", view_widths=None):
         self.output_size = (width, height)
         self.scale = supersample
         self.edl = edl
@@ -74,11 +102,12 @@ class Renderer:
         self.cloud_actors=[]
         self.dynamic=[]
         self.view_modes = view_modes
-        self.modes = ("main", *(("oblique",) if view_modes is None else view_modes))
+        self.modes = (main_mode, *(("oblique",) if view_modes is None else view_modes))
+        view_widths = (.32,) * (len(self.modes)-1) if view_widths is None else view_widths
         for index in range(len(self.modes)):
             window=vtk.vtkRenderWindow()
-            window.SetSize(self.width if index == 0 else round(self.width * .32),
-                           self.height if index == 0 else round(self.height * .33))
+            factor = 1. if index == 0 else min(1., max(.32, view_widths[index-1]))
+            window.SetSize(max(2, round(self.width * factor)), max(2, round(self.height * factor)))
             window.SetOffScreenRendering(1); window.SetMultiSamples(0); window.SetNumberOfLayers(2)
             window.SetAlphaBitPlanes(1)
             self.windows.append(window)
@@ -111,23 +140,16 @@ class Renderer:
             scene.AddActor(actor)
             self.cloud_actors.append((scene, actor))
 
-    def frame(self,pose,trajectory,label):
+    def frame(self,pose,trajectory,label,elapsed=0.):
         for renderer,actor in self.dynamic: renderer.RemoveActor(actor)
         self.dynamic=[]
         self.label.SetInput(('SIMULATION' if label.startswith('SYNTHETIC') else '') if self.clean
                             else label+'\nX red / Y green / Z blue | metres')
         for index,(scene,overlay) in enumerate(self.views):
             mode = self.modes[index]
-            if mode == "main":
-                args = self.camera_args
-            elif mode == "oblique":
-                args = self.inset_args
-            else:
-                distance, height, _ = self.inset_args
-                args = (0., height * .32, distance if mode == "left" else -distance)
-            position,target=camera(pose,*args,lookahead=1.5 if index==0 else 0.)
+            position,target,up = view_camera(pose, mode, self.camera_args, self.inset_args, elapsed)
             cam=scene.GetActiveCamera(); cam.SetPosition(*position); cam.SetFocalPoint(*target)
-            cam.SetViewUp(0,0,1); cam.SetClippingRange(.03,1000)
+            cam.SetViewUp(*up); cam.SetClippingRange(.035,1000)
             if len(trajectory)>1:
                 if self.slam_view:
                     for color, width in (((.09, .085, .065), self.trajectory_width + 2 * self.scale),
@@ -138,11 +160,14 @@ class Renderer:
                 else:
                     actor=line_actor(trajectory,self.trajectory_color,self.trajectory_width)
                     scene.AddActor(actor); self.dynamic.append((scene,actor))
-            viewport_height=self.height*(1 if index==0 else .33)
+            viewport_height = self.windows[index].GetSize()[1]
             distance=np.linalg.norm(position-pose[:3,3])
             min_length=self.axis_pixels*2*distance*np.tan(np.deg2rad(cam.GetViewAngle()/2))/viewport_height
             length=max(self.axis,min_length)
             origin=pose[:3,3]
+            if mode == "fpv":
+                forward, left, up = pose[:3, :3].T
+                origin = position + 1.4 * forward + .72 * left - .47 * up
             for j,color in reversed(list(enumerate([(1,.13,.12),(.15,1,.27),(.15,.43,1)]))):
                 points=np.array([origin,origin+pose[:3,j]*length])
                 for c,w in [((.01,.015,.025),7),(color,3.5)]:

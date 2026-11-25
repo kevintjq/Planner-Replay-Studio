@@ -4,7 +4,7 @@ import sys
 import imageio.v2 as imageio
 import numpy as np
 import vtk
-from slam_fpv.renderer import Renderer
+from slam_fpv.renderer import Renderer, view_camera
 from slam_fpv.cloud import CloudMap
 from slam_fpv.sources import DemoSource
 
@@ -86,3 +86,16 @@ def test_configurable_point_cloud_cameras_are_separate_and_unlabelled():
                     assert actor.GetInput() != "TF"
     finally:
         renderer.close()
+
+
+
+def test_fpv_camera_tracks_body_pitch_and_roll_and_orbit_moves():
+    from slam_fpv.geometry import matrix
+
+    pose = matrix([3., 4., 5.], [0.12, .16, .3, .93])
+    rear, high = (4., 2., 0.), (7., 4., 0.)
+    position, target, up = view_camera(pose, "fpv", rear, high, 0.)
+    np.testing.assert_allclose((target-position)/8, pose[:3, 0])
+    np.testing.assert_allclose(up, pose[:3, 2])
+    assert not np.allclose(view_camera(pose,"orbit",rear,high,0.)[0],
+                           view_camera(pose,"orbit",rear,high,2.)[0])

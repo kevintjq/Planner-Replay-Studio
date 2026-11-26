@@ -6,6 +6,10 @@
 
 ## 快速开始
 
+[下载完整工作台 Windows EXE](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.2.0/PlannerReplayStudio-Setup.exe)，安装后从开始菜单打开 **Planner Replay Studio Full**。
+
+从源码启动时，使用下列步骤。
+
 1. 安装带 Tcl/Tk 的 64 位 Python 3.10 或更高版本。
 2. 克隆仓库，双击 [Start_Planner_Replay.cmd](../Start_Planner_Replay.cmd)。首次启动会下载依赖。
 3. 在「数据」打开 ROS1 `.bag`，或点「使用模拟数据」查看效果。选择机位和图层后点「生成预览」。

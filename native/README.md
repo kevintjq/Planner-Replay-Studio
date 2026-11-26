@@ -1,6 +1,6 @@
 # Planner Replay 原生预览
 
-下载 [PlannerReplayNative-Setup.exe](https://github.com/kevintjq/Planner-Replay-Studio/releases/latest/download/PlannerReplayNative-Setup.exe) 并双击安装。
+下载 [PlannerReplayNative-Setup.exe](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/native-v0.1.1/PlannerReplayNative-Setup.exe) 并双击安装。
 安装完成后可立即启动，以后也可从开始菜单打开 **Planner Replay Studio**。
 安装包包含运行依赖，支持 Windows x64 和 OpenGL 3.3 显卡驱动。
 

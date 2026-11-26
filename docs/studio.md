@@ -6,6 +6,10 @@
 
 ## Quick start
 
+[Download the complete Windows setup EXE](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.2.0/PlannerReplayStudio-Setup.exe) and open **Planner Replay Studio Full** from the Start menu.
+
+To run from source, follow the steps below.
+
 1. Install 64-bit Python 3.10 or newer with Tcl/Tk.
 2. Clone the repository and double-click [Start_Planner_Replay.cmd](../Start_Planner_Replay.cmd). The first launch downloads dependencies.
 3. Open a ROS1 `.bag` under **Data** or choose **Use simulated data**. Pick views and layers, then generate a preview.

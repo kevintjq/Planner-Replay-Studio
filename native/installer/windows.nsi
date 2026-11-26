@@ -3,19 +3,27 @@ RequestExecutionLevel user
 SetCompressor /SOLID lzma
 
 !include "MUI2.nsh"
+!ifndef PRODUCT
 !define PRODUCT "Planner Replay Studio"
-!define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\PlannerReplayNative"
+!endif
+!ifndef PRODUCT_ID
+!define PRODUCT_ID "PlannerReplayNative"
+!endif
+!ifndef APP_EXE
+!define APP_EXE "PlannerReplayNative.exe"
+!endif
+!define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_ID}"
 
 Name "${PRODUCT}"
 OutFile "${SETUP_FILE}"
-InstallDir "$LOCALAPPDATA\Programs\Planner Replay Studio"
+InstallDir "$LOCALAPPDATA\Programs\${PRODUCT}"
 VIProductVersion "${VERSION}.0"
 VIAddVersionKey "ProductName" "${PRODUCT}"
 VIAddVersionKey "FileDescription" "Planner Replay Studio Windows installer"
 VIAddVersionKey "FileVersion" "${VERSION}"
 VIAddVersionKey "LegalCopyright" "Planner Replay Studio contributors"
 
-!define MUI_FINISHPAGE_RUN "$INSTDIR\app\PlannerReplayNative.exe"
+!define MUI_FINISHPAGE_RUN "$INSTDIR\app\${APP_EXE}"
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM
@@ -45,12 +53,12 @@ Section
     IfErrors InstallFailed
     WriteUninstaller "$INSTDIR\Uninstall.exe"
     IfErrors InstallFailed
-    CreateShortcut "$SMPROGRAMS\${PRODUCT}.lnk" "$INSTDIR\app\PlannerReplayNative.exe"
+    CreateShortcut "$SMPROGRAMS\${PRODUCT}.lnk" "$INSTDIR\app\${APP_EXE}"
     IfErrors InstallFailed
     WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "${PRODUCT}"
     WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayVersion" "${VERSION}"
     WriteRegStr HKCU "${UNINSTALL_KEY}" "Publisher" "Planner Replay Studio"
-    WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayIcon" "$INSTDIR\app\PlannerReplayNative.exe"
+    WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayIcon" "$INSTDIR\app\${APP_EXE}"
     WriteRegStr HKCU "${UNINSTALL_KEY}" "InstallLocation" "$INSTDIR"
     WriteRegStr HKCU "${UNINSTALL_KEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
     WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoModify" 1

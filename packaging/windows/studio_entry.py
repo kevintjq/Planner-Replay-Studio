@@ -1,0 +1,64 @@
+"""Windows bundle entry point. Normal startup uses the composition workspace."""
+
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import sys
+import traceback
+
+from slam_fpv.gui import main
+
+
+def smoke():
+    import tkinter as tk
+
+    import av
+    import cv2
+    import imageio.v2 as imageio
+    import numpy as np
+    import rosbags.highlevel
+    import vtk
+    from PIL import Image
+    from slam_fpv.composition import Composition, TextLayer, compose
+    from slam_fpv.gui import RendererApp
+    from slam_fpv.project_file import ProjectFile, load_project, save_project
+
+    assert vtk.vtkVersion.GetVTKMajorVersion() >= 9
+    assert callable(rosbags.highlevel.AnyReader) and cv2.TrackerCSRT_create() is not None
+    root = tk.Tk()
+    try:
+        root.withdraw()
+        app = RendererApp(root)
+        root.update_idletasks()
+        assert app.timeline is not None and app.spatial_topics["plan"] is not None
+    finally:
+        root.destroy()
+
+    with TemporaryDirectory() as folder:
+        folder = Path(folder)
+        project = Composition(show_speed=True, texts=(TextLayer("Smoke", 0., 1.),))
+        project_path = folder / "smoke.slamfpv"
+        save_project(project_path, ProjectFile(project, {}, {}, "demo"))
+        restored = load_project(project_path).composition
+        frame, layers = compose(Image.new("RGB", (320, 180)), restored, (), .25, (3., 4., 2.))
+        assert restored == project and ("speed", 0) in layers and ("text", 0) in layers
+        path = folder / "smoke.mp4"
+        with imageio.get_writer(path, fps=60, codec="libx264", macro_block_size=2) as writer:
+            writer.append_data(np.asarray(frame.convert("RGB")))
+        with av.open(str(path)) as video:
+            assert video.streams.video[0].average_rate == 60 and next(video.decode(video=0)) is not None
+
+
+if __name__ == "__main__":
+    if sys.argv[1:2] == ["--smoke"]:
+        log = Path(sys.argv[2]) if len(sys.argv) > 2 else None
+        try:
+            smoke()
+        except Exception:
+            if log is not None:
+                log.write_text(traceback.format_exc(), encoding="utf-8")
+            raise SystemExit(1)
+        if log is not None:
+            log.write_text("Workspace, project round-trip, overlays and 60 fps encode/decode passed.\n",
+                           encoding="utf-8")
+    else:
+        main()

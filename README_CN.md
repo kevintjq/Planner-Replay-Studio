@@ -4,9 +4,17 @@
 
 [English](README.md) · 简体中文
 
-## Windows 原生预览版
+## Windows 完整工作台
 
-1. [下载 PlannerReplayNative-Setup.exe](https://github.com/kevintjq/Planner-Replay-Studio/releases/latest/download/PlannerReplayNative-Setup.exe)。
+[下载完整工作台 Windows 安装包](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.2.0/PlannerReplayStudio-Setup.exe)，双击安装后，从开始菜单打开 **Planner Replay Studio Full**。
+
+安装包含 Python 和 Tk 运行库，无需克隆仓库或手动安装依赖。保留视频对齐、规划叠加、拖影图、现有 `.slamfpv` 项目及 1080p/60 fps 导出。
+
+操作说明见 [视频合成工作台指南](docs/studio.zh-CN.md)。
+
+## C++ 原生预览版
+
+1. [下载 PlannerReplayNative-Setup.exe](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/native-v0.1.1/PlannerReplayNative-Setup.exe)。
 2. 双击安装。安装完成后可直接启动，以后也可从 Windows 开始菜单打开 **Planner Replay Studio**。
 3. 打开 ROS1 `.bag` 或使用内置模拟数据。
 
@@ -18,11 +26,11 @@
 
 | | 原生预览版 | 视频合成工作台 |
 | --- | --- | --- |
-| 启动方式 | 安装 EXE，之后从开始菜单启动 | 双击 [`Start_Planner_Replay.cmd`](Start_Planner_Replay.cmd)，需要带 Tcl/Tk 的 Python 3.10+ |
+| 启动方式 | 安装 EXE，之后从开始菜单启动 | [安装完整工作台](#windows-完整工作台) |
 | 点云回放 | `PointCloud2`、累积或整图替换、机体距离着色、已飞轨迹和 `Odometry` 速度 | 多机位、TF 及 EGO / SUPER 可选规划图层 |
 | 剪辑与导出 | 播放、拖动时间轴、查看点云 | 实拍对齐、定时叠加、固定机位拖影图、1080p/60 fps 导出 |
 
-需要制作演示视频时，见 [视频合成工作台指南](docs/studio.zh-CN.md)。
+[原生功能对齐清单](docs/NATIVE_PARITY.md)
 
 ## 仓库目录
 

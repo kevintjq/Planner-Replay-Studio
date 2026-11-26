@@ -2,6 +2,7 @@
 from bisect import bisect_right
 from dataclasses import dataclass
 from math import isfinite
+from hashlib import blake2b
 
 import numpy as np
 
@@ -148,6 +149,7 @@ class GeometryTimeline:
         self.native_goal = native_goal
         self.plan_frame = plan_frame
         self.events = []
+        self.updates = []
         self.times = []
         self.active = {}
         self.cursor = 0
@@ -158,6 +160,7 @@ class GeometryTimeline:
             if shape is not None:
                 t = stamp_ns(message.start_time) or recorded
                 self.events.append((t, "", 0, "path", self.plan_frame, shape, False, 0, False))
+                self.record_update(t, [(self.plan_frame, shape)])
             return
         if typename in (PATH, POSE_STAMPED, POINT_STAMPED):
             t = stamp_ns(message.header.stamp) or recorded
@@ -169,6 +172,7 @@ class GeometryTimeline:
                 points = coordinates((point,))
                 shape = Geometry(goals=(points,)) if np.isfinite(points).all() else None
             self.events.append((t, "", 0, "path", message.header.frame_id, shape, False, 0, False))
+            self.record_update(t, [(message.header.frame_id, shape)])
             return
         markers = message.markers if typename == MARKERS else (message,)
         native_goal = self.native_goal or (self.goal and any(marker.ns == "goal_line" for marker in markers))
@@ -177,6 +181,7 @@ class GeometryTimeline:
             target = next((marker for marker in markers if marker.action == 0 and marker.type == 2
                            and marker.ns == "goal"), None)
             markers = [marker for marker in markers if marker.action != 0] + ([target] if target else [])
+        updates = []
         for marker in markers:
             header_time = stamp_ns(marker.header.stamp)
             shape = marker_shape(marker, goal=self.goal) if marker.action == 0 else None
@@ -185,6 +190,30 @@ class GeometryTimeline:
             self.events.append((header_time or recorded, namespace, identity, action,
                                 marker.header.frame_id, shape, marker.frame_locked,
                                 stamp_ns(marker.lifetime), not header_time and marker.action in (2, 3)))
+            if shape is not None:
+                updates.append((header_time or recorded, marker.header.frame_id, shape))
+        if updates:
+            self.record_update(max(stamp for stamp, _, _ in updates), [(frame, shape) for _, frame, shape in updates])
+
+    def record_update(self, stamp, shapes):
+        digest = blake2b(digest_size=12)
+        count = 0
+        for frame, shape in shapes:
+            if shape is None:
+                continue
+            for group in (*shape.lines, *shape.segments, *shape.goals):
+                digest.update(frame.encode())
+                digest.update(np.round(group, 3).tobytes())
+                count += len(group)
+        if count:
+            self.updates.append((stamp, digest.digest()))
+
+    def change_times(self):
+        previous = None
+        for stamp, digest in sorted(self.updates, key=lambda entry: entry[0]):
+            if digest != previous:
+                yield stamp
+            previous = digest
 
     def prepare(self):
         # A zero-stamped delete sent just before a replacement may be recorded after
@@ -259,6 +288,7 @@ class SpatialFrame:
     camera: np.ndarray | None
     scan: np.ndarray | None
     goal: tuple = ()
+    previous_plan: tuple = ()
 
 
 def camera_settings(args):
@@ -270,7 +300,7 @@ def camera_settings(args):
 
 
 class SpatialOverlays:
-    def __init__(self, args, source, stack):
+    def __init__(self, args, source, stack, *, compare_plans=False):
         self.source = source
         self.demo = args.command == "demo"
         self.plan = getattr(args, "plan_topic", None) or getattr(args, "show_plan", False)
@@ -287,6 +317,9 @@ class SpatialOverlays:
         self.scans = None
         self.pending = None
         self.latest = (0, None)
+        self.plan_updates = tuple(source.mission_times("plan")) if compare_plans and not self.demo else ()
+        self.comparison_stamp = None
+        self.previous_plan = ()
         if not self.demo and source.scan_topic and source.scan_topic != source.cloud_topic:
             self.scans = source.scans()
             stack.callback(self.scans.close)
@@ -316,11 +349,21 @@ class SpatialOverlays:
             corridor = (demo_corridor(path),) if self.corridor else ()
             goal = (Geometry(goals=(self.source.pose(self.source.last)[:3, 3][None, :],)),) if self.goal else ()
         else:
+            self.update_comparison(stamp)
             plan = self.source.mission_shapes("plan", stamp) if self.plan else ()
             corridor = self.source.mission_shapes("corridor", stamp) if self.corridor else ()
             goal = self.source.mission_shapes("goal", stamp) if self.goal else ()
 
-        return SpatialFrame(plan, corridor, self.camera_frame(stamp, body_pose), scan, goal)
+        return SpatialFrame(plan, corridor, self.camera_frame(stamp, body_pose), scan, goal, self.previous_plan)
+
+    def update_comparison(self, stamp):
+        index = bisect_right(self.plan_updates, stamp) - 1
+        event = self.plan_updates[index] if index > 0 else None
+        if event is not None and stamp-event > 1_500_000_000:
+            event = None
+        if event != self.comparison_stamp:
+            self.comparison_stamp = event
+            self.previous_plan = self.source.mission_shapes("plan", event-1) if event is not None else ()
 
     def status(self, stamp, frame):
         lines = []

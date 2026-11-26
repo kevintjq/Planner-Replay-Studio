@@ -85,3 +85,20 @@ def test_transparent_canvas_keeps_real_alpha_and_can_flatten_for_mp4():
     flattened, _ = compose(scene, project, (), 1., None, alpha=False)
     assert flattened.mode == "RGB"
     assert flattened.getpixel((0, 0)) == (10, 15, 20)
+
+
+def test_layout_cues_switch_at_source_time_and_retain_video_identity():
+    from slam_fpv.composition import LayoutCue
+
+    base = Image.new("RGB", (160, 90), (40, 75, 120))
+    first, second = VideoLayer(Path("left.mp4")), VideoLayer(Path("right.mp4"))
+    red = Image.new("RGB", (160, 90), (210, 30, 40))
+    green = Image.new("RGB", (160, 90), (30, 210, 40))
+    project = Composition(videos=(second, first), views=(),
+                          layouts=(LayoutCue(1., "video", first.id), LayoutCue(2., "cloud"), LayoutCue(3., "mix")))
+    full, bounds = compose(base, project, (green, red), 1., None)
+    assert full.getpixel((0, 0)) == (210, 30, 40) and not bounds
+    _, cloud = compose(base, project, (green, red), 2., None)
+    assert set(cloud) == {("main", 0)}
+    _, mix = compose(base, project, (green, red), 3., None)
+    assert set(mix) == {("main", 0), ("video", 0), ("video", 1)}

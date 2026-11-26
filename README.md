@@ -15,6 +15,7 @@
   <a href="#quick-start">Quick start</a> ·
   <a href="#multi-video-alignment">Multi-video alignment</a> ·
   <a href="#inputs-and-overlays">Inputs and overlays</a> ·
+  <a href="#timeline">Timeline</a> ·
   <a href="#save-and-export">Save and export</a>
 </p>
 
@@ -59,13 +60,20 @@ Topics and frames are detected automatically and can be changed in the dropdowns
 
 SUPER defaults to `visualization/exp_traj` and `visualization/exp_sfc` when present. EGO prefers `planning/bspline` and can also use `optimal_list`. EGO B-splines default to `world`, which can be changed below the trajectory topic. Goals and trajectories switch independently.
 
+## Timeline
+
+- Select a planning event to jump to a replan or goal update. Enable the previous-plan overlay to compare with a dashed grey path.
+- Set a layout marker at the playhead to switch between the composition, full-screen point cloud, and full-screen footage. Click a purple marker to jump back to it.
+
 ## Save and export
 
 | Format | Description |
 | --- | --- |
-| `.slamfpv` | Stores media paths, trims, anchors, layer layout and export settings. Moved media can be relinked. |
-| MP4 | Defaults to 1080p at 60 fps with automatic NVIDIA NVENC or CPU H.264 encoding |
+| `.slamfpv` | Stores media paths, trims, anchors, layout markers and export settings. Moved media can be relinked. |
+| MP4 | Defaults to 1080p at 60 fps with automatic NVIDIA NVENC or CPU H.264 encoding; optional single-track source audio and 0.5× / 0.25× playback |
 | PNG | Enable **Transparent canvas** to export an alpha channel |
+
+Export checks sample pose, TF, planner layers and clip coverage. Source audio follows the selected clip’s alignment and trim.
 
 <details>
 <summary>Command line</summary>

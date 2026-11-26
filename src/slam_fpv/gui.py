@@ -4,7 +4,7 @@ from argparse import ArgumentParser
 from dataclasses import replace
 import json
 import os
-from math import isfinite
+from math import ceil, isfinite
 from pathlib import Path
 from queue import Empty, Queue
 from tempfile import TemporaryDirectory
@@ -16,13 +16,14 @@ from tkinter import colorchooser, filedialog, messagebox, ttk
 from PIL import Image, ImageDraw, ImageTk
 
 from .cli import extrinsics, open_source, parser, render, validate
-from .composition import Composition, compose, placement_axis, rounded_mask
+from .composition import LAYOUT_NAMES, Composition, LayoutCue, compose, placement_axis, rounded_mask
 from .desktop_style import INK, desktop_style
 from .timeline import Timeline
 from .layer_controls import LayerControls
 from .video_editor import VideoEditor
 from .sources import inspect_bag
 from .project_file import ProjectFile, load_project, save_project
+from .export_media import inspect_export
 from .spatial import CORRIDOR_TYPES, EGO_SPLINES, GOAL_TYPES, PLAN_TYPES
 from .sensor_topics import SCAN_TYPES, camera_choices, connected_frames, pose_frames, suggested_topic
 
@@ -52,6 +53,7 @@ class RendererApp(LayerControls):
         self.frame = self.elapsed = self.speed = self.source_duration = self.checkerboard = None
         self.footages = ()
         self.cloud_views = {}
+        self.timeline_events = ()
         self.selection = None
         self.drag_offset = None
         self.resize_drag = None
@@ -108,8 +110,24 @@ class RendererApp(LayerControls):
         self.canvas.bind("<B1-Motion>", self.move_layer)
         self.canvas.bind("<ButtonRelease-1>", lambda _: self.end_drag())
 
-        self.timeline = Timeline(viewer, self.seek_timeline, self.apply_interval, self.font)
+        self.timeline = Timeline(viewer, self.seek_timeline, self.apply_interval, self.font, self.jump_cue)
         self.timeline.pack(fill="x", pady=(7, 0))
+        transport = ttk.Frame(viewer)
+        transport.pack(fill="x")
+        self.event_choice = tk.StringVar(value="事件跳转")
+        self.event_picker = ttk.Combobox(transport, width=20, state="readonly", textvariable=self.event_choice)
+        self.event_picker.pack(side="left", padx=(2, 8))
+        self.event_picker.bind("<<ComboboxSelected>>", self.choose_event)
+        self.compare_plans = tk.BooleanVar(value=False)
+        ttk.Checkbutton(transport, text="对比上一条规划", variable=self.compare_plans,
+                        command=self.toggle_plan_comparison).pack(side="left")
+        self.layout_button = ttk.Menubutton(transport, text="添加布局标记")
+        self.layout_menu = tk.Menu(self.layout_button, tearoff=False, postcommand=self.make_layout_menu)
+        self.layout_video_menu = tk.Menu(self.layout_menu, tearoff=False)
+        self.layout_button.configure(menu=self.layout_menu)
+        self.layout_button.pack(side="right")
+        self.layout_status = tk.StringVar(value="当前合成")
+        ttk.Label(transport, textvariable=self.layout_status, style="Quiet.TLabel").pack(side="right", padx=8)
         for key in ("start", "seconds"):
             self.values[key].trace_add("write", lambda *_: self.update_timeline())
 
@@ -431,6 +449,7 @@ class RendererApp(LayerControls):
         self.reset_alignment()
         self.project = saved.composition
         self.transparent_canvas.set(self.project.transparent_canvas)
+        self.compare_plans.set(self.project.compare_plans)
         self.footages = (None,) * len(self.project.videos)
         self.refresh_layers()
         self.sync_spatial()
@@ -438,6 +457,65 @@ class RendererApp(LayerControls):
         self.status.set(f"已打开项目 {path.name}")
         if self.bag_path or self.demo_selected:
             self.root.after_idle(lambda: self.start_render(True))
+
+    def update_event_choices(self, start, duration):
+        labels = {f"{stamp:.4f} s · {label}": stamp for stamp, label in self.timeline_events
+                  if start <= stamp <= start + duration}
+        self.event_times = labels
+        self.event_picker.configure(values=tuple(labels), state="readonly" if labels else "disabled")
+        if self.event_choice.get() not in labels:
+            self.event_choice.set("事件跳转" if labels else "暂无规划事件")
+        cue = self.project.layout_at(self.elapsed if self.elapsed is not None else start)
+        self.layout_status.set(LAYOUT_NAMES[cue.mode] if cue else LAYOUT_NAMES["mix"])
+
+    def choose_event(self, _event):
+        stamp = self.event_times.get(self.event_choice.get())
+        if stamp is not None:
+            self.jump_cue(stamp)
+
+    def jump_cue(self, stamp):
+        if self.busy:
+            return
+        start, _ = self.timeline_range()
+        fps = int(self.values["fps"].get())
+        self.seek_timeline(start + max(0, ceil((stamp-start)*fps - 1e-7))/fps)
+
+    def toggle_plan_comparison(self):
+        if self.busy:
+            self.compare_plans.set(self.project.compare_plans)
+            return
+        self.project = replace(self.project, compare_plans=self.compare_plans.get())
+        if self.frame is not None:
+            self.start_render(True)
+
+    def make_layout_menu(self):
+        self.layout_menu.delete(0, "end")
+        state = "normal" if self.elapsed is not None and not self.busy else "disabled"
+        for mode in ("mix", "cloud"):
+            self.layout_menu.add_command(label=LAYOUT_NAMES[mode], state=state,
+                                         command=lambda key=mode: self.set_layout(key))
+        if self.project.videos:
+            self.layout_video_menu.delete(0, "end")
+            for i, layer in enumerate(self.project.videos, 1):
+                self.layout_video_menu.add_command(label=f"{i}. {layer.path.name}",
+                                                   command=lambda id=layer.id: self.set_layout("video", id))
+            self.layout_menu.add_cascade(label=LAYOUT_NAMES["video"], menu=self.layout_video_menu, state=state)
+        self.layout_menu.add_separator()
+        self.layout_menu.add_command(label="移除当前时刻的标记", state=state, command=lambda: self.set_layout(None))
+
+    def set_layout(self, mode, video_id=None):
+        if self.busy or self.elapsed is None:
+            return
+        epsilon = 1. / int(self.values["fps"].get()) + 1e-7
+        current = min(self.project.layouts, key=lambda cue: abs(cue.time-self.elapsed), default=None)
+        match = current if current and abs(current.time-self.elapsed) <= epsilon else None
+        cues = [cue for cue in self.project.layouts if cue != match]
+        if mode is not None:
+            cues.append(LayoutCue(match.time if match else self.elapsed, mode, video_id))
+        self.project = replace(self.project, layouts=tuple(sorted(cues, key=lambda cue: cue.time)))
+        self.draw_preview()
+        self.update_timeline()
+        self.status.set("已更新布局标记。紫色标记可跳转。")
 
     def resize_preview(self, event):
         self.overlay_label.configure(wraplength=max(200, event.width - 12))
@@ -512,6 +590,7 @@ class RendererApp(LayerControls):
     def reset_alignment(self, _event=None):
         self.frame = self.elapsed = self.speed = self.base_cache = self.source_duration = None
         self.overlay_status.set("")
+        self.timeline_events = ()
         self.footages = (None,) * len(self.project.videos)
         self.cloud_views = {}
         videos = tuple(replace(layer, edit=replace(layer.edit, anchors=())) for layer in self.project.videos)
@@ -550,7 +629,7 @@ class RendererApp(LayerControls):
         args.seconds = max(args.seconds, seconds + 1 / args.fps)
         args.width, args.height, args.supersample = 960, 540, 1
 
-        project = replace(self.project, videos=(), views=(), texts=(), show_speed=False)
+        project = replace(self.project, videos=(), layouts=(), audio_id=None, views=(), texts=(), show_speed=False)
         metadata = self.bag_metadata
 
         def work():
@@ -615,7 +694,8 @@ class RendererApp(LayerControls):
         try:
             args = self.build_args(destination)
             project = self.project
-            if any(layer.path.resolve() == destination.resolve() for layer in project.videos) and not preview:
+            outputs = {destination.resolve(), destination.with_suffix(".json").resolve()}
+            if not preview and any(layer.path.resolve() in outputs for layer in project.videos):
                 raise ValueError("导出位置不能覆盖已导入的素材。")
             if preview and args.width > 1440:
                 args.height = round(args.height * 1440 / args.width / 2) * 2
@@ -627,14 +707,67 @@ class RendererApp(LayerControls):
             messagebox.showerror("检查输入", str(error), parent=self.root)
             return
 
+        metadata = self.bag_metadata
+
         def work():
-            source = open_source(args, self.check_cancel, self.bag_metadata)
+            source = open_source(args, self.check_cancel, metadata)
             if preview:
-                result, data = [], []
+                result, data, events = [], [], []
                 render(args, source, preview=lambda *frame: result.append(frame),
-                       preview_data=lambda *status: data.append(status),
+                       preview_data=lambda *status: data.append(status), event_data=events.extend,
                        preview_offset=offset, check_cancel=self.check_cancel, project=project)
-                return "preview", (result[0], *data[0])
+                return "preview", (result[0], *data[0], tuple(events))
+            checks, blocked, audio_ids = inspect_export(args, source, project, self.check_cancel)
+            return "export_check", (args, source, project, destination, checks, blocked, audio_ids)
+
+        self.run_job(work, "正在准备预览…" if preview else "正在检查导出区间…")
+
+    def export_check(self, args, source, project, destination, checks, blocked, audio_ids):
+        modal = tk.Toplevel(self.root)
+        modal.title("导出检查")
+        modal.transient(self.root)
+        box = ttk.Frame(modal, padding=18)
+        box.pack(fill="both", expand=True)
+        ttk.Label(box, text=f"{args.width} × {args.height}  ·  {args.fps} fps",
+                  style="PanelTitle.TLabel").pack(anchor="w")
+        details = tk.Text(box, width=66, height=min(13, max(4, len(checks)+len(blocked)+1)),
+                          font=(self.font, 10), wrap="word", relief="flat", padx=8, pady=8)
+        details.pack(fill="both", expand=True, pady=8)
+        details.insert("end", "\n".join((*blocked, *checks)))
+        details.configure(state="disabled")
+        video = destination.suffix.lower() == ".mp4"
+        options = {"静音": None}
+        options.update((f"{i}. {layer.path.name}", layer.id) for i, layer in enumerate(project.videos, 1)
+                       if layer.id in audio_ids)
+        initial = next((label for label, ident in options.items() if ident == project.audio_id), "静音")
+        audio = tk.StringVar(value=initial)
+        rates = {"1× 原速": 1., "0.5× 慢放": .5, "0.25× 慢放": .25}
+        pace = tk.StringVar(value=next(label for label, rate in rates.items() if rate == project.play_rate))
+        if video:
+            row = ttk.Frame(box)
+            row.pack(fill="x", pady=(0, 8))
+            ttk.Label(row, text="原声").pack(side="left", padx=(0, 5))
+            ttk.Combobox(row, textvariable=audio, values=tuple(options), state="readonly", width=25).pack(side="left")
+            ttk.Label(row, text="速度").pack(side="left", padx=(12, 5))
+            ttk.Combobox(row, textvariable=pace, values=tuple(rates), state="readonly", width=11).pack(side="left")
+            ttk.Label(box, text="缺帧统计按原速计算。", style="Quiet.TLabel").pack(anchor="w")
+
+        def proceed():
+            prepared = replace(project, audio_id=options[audio.get()], play_rate=rates[pace.get()]) if video else project
+            self.project = prepared
+            modal.destroy()
+            self.execute_export(args, source, prepared, destination)
+
+        buttons = ttk.Frame(box)
+        buttons.pack(fill="x", pady=(8, 0))
+        ttk.Button(buttons, text="返回", command=modal.destroy).pack(side="right")
+        ttk.Button(buttons, text="开始导出", command=proceed, style="Primary.TButton",
+                   state="disabled" if blocked else "normal").pack(side="right", padx=6)
+        modal.wait_visibility()
+        modal.grab_set()
+
+    def execute_export(self, args, source, project, destination):
+        def work():
             destination.parent.mkdir(parents=True, exist_ok=True)
             with TemporaryDirectory(prefix=".slam-fpv-", dir=destination.parent) as staging:
                 temporary_output = Path(staging) / destination.name
@@ -643,7 +776,7 @@ class RendererApp(LayerControls):
                        check_cancel=self.check_cancel)
                 self.check_cancel()
                 if not temporary_output.is_file() or not temporary_output.stat().st_size:
-                    raise ValueError("编码器未写入成品，请检查 FFmpeg 或改用较低分辨率。")
+                    raise ValueError("编码器未写入成品，请检查 FFmpeg 或降低分辨率。")
                 report = temporary_output.with_suffix(".json")
                 summary = json.loads(report.read_text(encoding="utf-8"))
                 codec = summary["encoder"]
@@ -654,8 +787,7 @@ class RendererApp(LayerControls):
                 temporary_output.replace(destination)
                 report.replace(destination.with_suffix(".json"))
             return "saved", (destination, codec)
-
-        self.run_job(work, "正在准备预览…" if preview else "正在准备导出…")
+        self.run_job(work, "正在准备导出…")
 
     def run_job(self, action, text):
         self.busy = True
@@ -740,8 +872,11 @@ class RendererApp(LayerControls):
                     self.set_topics(*value)
                 elif kind == "project":
                     self.restore_workspace(*value)
+                elif kind == "export_check":
+                    self.status.set("导出检查完成")
+                    self.export_check(*value)
                 elif kind == "preview":
-                    (frame, videos, elapsed, self.speed, self.cloud_views), self.source_duration, diagnostics = value
+                    (frame, videos, elapsed, self.speed, self.cloud_views), self.source_duration, diagnostics, self.timeline_events = value
                     self.overlay_status.set("\n".join(diagnostics))
                     self.frame = Image.fromarray(frame)
                     self.elapsed = elapsed

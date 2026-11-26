@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from .composition import Composition, PointCloudView, TextLayer, VideoLayer
+from .composition import Composition, LayoutCue, PointCloudView, TextLayer, VideoLayer
 from .footage import VideoEdit
 
 
@@ -102,6 +102,7 @@ def load_project(path):
             item.update(path=video_path, edit=VideoEdit(**edit))
             videos.append(VideoLayer(**vectors(item, "position", "backdrop_position")))
         composition["videos"] = tuple(videos)
+        composition["layouts"] = tuple(LayoutCue(**item) for item in composition.get("layouts", ()))
         return ProjectFile(Composition(**composition), values, enabled, source, bag, media(data.get("extrinsics")))
     except (AttributeError, KeyError, TypeError) as error:
         raise ValueError("项目文件格式无效。") from error

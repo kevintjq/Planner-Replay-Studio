@@ -15,6 +15,7 @@ from .spatial import SpatialOverlays, camera_settings
 from .sensor_topics import suggested_topic
 from .encoding import h264_encoder
 from .footage import FULL_FRAME, FlightVideo, VideoEdit, composite
+from .export_media import mux_audio
 
 
 def parser(parser_class=argparse.ArgumentParser):
@@ -154,7 +155,7 @@ class Export:
         if self.writer: self.writer.close()
 
 
-def render(a, source, *, preview=None, preview_offset=0, preview_data=None, progress=None, check_cancel=None, staging=None, project=None):
+def render(a, source, *, preview=None, preview_offset=0, preview_data=None, event_data=None, progress=None, check_cancel=None, staging=None, project=None):
     """Render an export, or deliver one uncomposited preview and its optional footage."""
     destination = a.output if staging is None else staging
     cloud = CloudMap(a.voxel, a.max_points, scan_height=a.color == "scan", height_limits=a.height_range)
@@ -162,7 +163,10 @@ def render(a, source, *, preview=None, preview_offset=0, preview_data=None, prog
     speed_history = SpeedHistory()
     dropped = transformed = count = 0
     dirty = False
-    failure = codec = None
+    failure = codec = first_elapsed = None
+    video_export = preview is None and a.output.suffix.lower() == ".mp4"
+    playback = project.play_rate if video_export and project else 1.
+    audio = next((layer for layer in project.videos if layer.id == project.audio_id), None) if video_export and project else None
     is_synthetic = isinstance(source, DemoSource)
     try:
         with ExitStack() as stack:
@@ -180,7 +184,7 @@ def render(a, source, *, preview=None, preview_offset=0, preview_data=None, prog
                 output = Export(a, destination)
                 codec = output.codec
                 stack.callback(output.close)
-            spatial = SpatialOverlays(a, source, stack)
+            spatial = SpatialOverlays(a, source, stack, compare_plans=bool(project and project.compare_plans))
             iterator = iter(source.clouds())
             stack.callback(iterator.close)
 
@@ -188,13 +192,13 @@ def render(a, source, *, preview=None, preview_offset=0, preview_data=None, prog
             end = min(source.last, start + round(a.seconds * 1e9))
             if start > end:
                 raise ValueError('--start beyond data')
-            frame_count = int((end - start) * a.fps / 1e9) + 1
+            frame_count = int((end - start) * a.fps / (1e9 * playback)) + 1
             preview_index = min(frame_count - 1, round(preview_offset * a.fps))
             pending = next(iterator, None)
             for i in range(frame_count):
                 if check_cancel is not None:
                     check_cancel()
-                t = start + round(i * 1e9 / a.fps)
+                t = min(end, start + round(i * 1e9 * playback / a.fps))
                 while pending is not None and pending[0] <= t:
                     cloud_stamp, xyz, rgb = pending
                     spatial.update_map_scan(cloud_stamp, xyz)
@@ -227,8 +231,13 @@ def render(a, source, *, preview=None, preview_offset=0, preview_data=None, prog
                 spatial_frame = spatial.frame(t, pose, check_cancel) if spatial else None
                 frame = renderer.frame(pose, trajectory, f'{label} | t={elapsed:.3f}s | REAR CHASE + OBLIQUE',
                                        elapsed=elapsed, fpv_pose=camera_pose, spatial=spatial_frame)
-                if preview is not None and preview_data is not None:
-                    preview_data((source.last - source.first) / 1e9, spatial.status(t, spatial_frame))
+                if preview is not None:
+                    if preview_data is not None:
+                        preview_data((source.last - source.first) / 1e9, spatial.status(t, spatial_frame))
+                    if event_data is not None:
+                        event_data(() if is_synthetic else source.timeline_events())
+                if first_elapsed is None:
+                    first_elapsed = elapsed
                 if project is not None:
                     frame, cloud_views = frame
                     footage = tuple(layer.frame_at(elapsed) for layer in layers)
@@ -251,6 +260,8 @@ def render(a, source, *, preview=None, preview_offset=0, preview_data=None, prog
                     break
             if not count:
                 raise ValueError('No synchronized frames rendered')
+        if audio is not None:
+            mux_audio(destination, audio, first_elapsed, count/a.fps, playback, check_cancel)
     except Exception as error:
         failure = str(error)
         raise

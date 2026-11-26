@@ -263,7 +263,10 @@ class LayerControls:
         if kind == "speed":
             self.project = replace(self.project, show_speed=False)
         elif kind == "video":
-            self.project = replace(self.project, videos=self.project.videos[:index]+self.project.videos[index+1:])
+            removed = self.project.videos[index].id
+            self.project = replace(self.project, videos=self.project.videos[:index]+self.project.videos[index+1:],
+                                   layouts=tuple(cue for cue in self.project.layouts if cue.video_id != removed),
+                                   audio_id=None if self.project.audio_id == removed else self.project.audio_id)
             self.footages = self.footages[:index]+self.footages[index+1:]
         elif kind == "view":
             self.project = replace(self.project, views=self.project.views[:index]+self.project.views[index+1:])
@@ -446,7 +449,8 @@ class LayerControls:
         elif selection and selection[0] == "speed":
             clip = self.project.speed_start, self.project.speed_end or start+duration, "速度表"
         self.timeline.update_view(start, duration, self.elapsed if self.elapsed is not None else start,
-                                  clip, int(self.values["fps"].get()))
+                                  clip, int(self.values["fps"].get()), self.timeline_events, self.project.layouts)
+        self.update_event_choices(start, duration)
 
     def seek_timeline(self, seconds):
         start, _ = self.timeline_range()

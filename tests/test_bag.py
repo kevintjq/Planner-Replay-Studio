@@ -178,6 +178,7 @@ def test_super_trajectory_color_and_native_goal_replace_per_replan(bag):
     assert goal == "/super/visualization/goal"
     source = BagSource(bag, '/points', '/odom', 'map', 'body', plan_topic=plan, goal_topic=goal).index()
     assert not source.mission_shapes("goal", source.first)
+    assert source.timeline_events() == ((.1, "目标更新"), (.1, "首次规划"), (.2, "目标更新"), (.2, "重规划"))
     for i in (1, 2):
         at = source.first + i*100_000_000
         line, = source.mission_shapes("plan", at)

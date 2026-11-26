@@ -239,6 +239,18 @@ class Renderer:
                 segment for shape in shapes for group in shape.segments for segment in group)
 
         if "plan" in visible:
+            old = []
+            for line in lines(frame.previous_plan):
+                for first, last in zip(line[:-1], line[1:]):
+                    count = max(1, min(120, int(np.linalg.norm(last-first)/.22)+1))
+                    for i in range(count):
+                        ends = np.array([i, i+.55])[:, None] / count
+                        old.append(first + ends * (last-first))
+            if old:
+                actor = overlay_lines(old, (.72, .77, .84), max(1., self.plan_width * .55))
+                actor.GetProperty().SetOpacity(.8)
+                overlay.AddViewProp(actor)
+                self.dynamic.append((overlay, actor))
             planned, colors = [], []
             for shape in frame.plan:
                 groups = lines((shape,))

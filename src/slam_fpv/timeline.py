@@ -4,9 +4,12 @@ import tkinter as tk
 
 
 class Timeline(tk.Canvas):
-    def __init__(self, parent, seek, apply_interval, font):
+    def __init__(self, parent, seek, apply_interval, font, jump=None):
         super().__init__(parent, height=91, bg="#FFFFFF", highlightthickness=0)
         self.seek = seek
+        self.jump = jump or seek
+        self.events = ()
+        self.layouts = ()
         self.apply_interval = apply_interval
         self.face = font
         self.start = self.time = 0.
@@ -23,8 +26,9 @@ class Timeline(tk.Canvas):
         self.bind("<Right>", lambda _: self.keyboard(1))
         self.busy = False
 
-    def update_view(self, start, duration, time, clip, fps):
+    def update_view(self, start, duration, time, clip, fps, events=(), layouts=()):
         self.start, self.duration, self.time, self.clip, self.fps = start, duration, time, clip, fps
+        self.events, self.layouts = events, layouts
         self.draw()
 
     def x(self, time):
@@ -47,6 +51,15 @@ class Timeline(tk.Canvas):
             self.create_text(self.x(value), 30, text=f"{value:.2f}", font=(self.face, 8), fill="#61758E")
         cx = self.x(play)
         self.create_oval(cx - 6, 38, cx + 6, 50, fill="#2165D9", outline="#FFFFFF", width=2)
+        for time, label in self.events:
+            if self.start <= time <= self.start+self.duration:
+                x = self.x(time)
+                color = "#CB7A22" if label == "目标更新" else "#217E79"
+                self.create_polygon(x-4, 54, x+4, 54, x, 61, fill=color)
+        for cue in self.layouts:
+            if self.start <= cue.time <= self.start+self.duration:
+                x = self.x(cue.time)
+                self.create_polygon(x-4, 55, x, 51, x+4, 55, x, 59, fill="#8866BF")
         if self.clip is not None:
             start, end, label = self.clip
             if self.drag in ("start", "end"):
@@ -68,6 +81,13 @@ class Timeline(tk.Canvas):
         if self.busy:
             return
         self.focus_set()
+        if 51 <= event.y <= 62:
+            marks = [t for t, _ in self.events] + [cue.time for cue in self.layouts]
+            near = [t for t in marks if self.start <= t <= self.start+self.duration
+                    and abs(event.x-self.x(t)) <= 7]
+            if near:
+                self.jump(min(near, key=lambda t: abs(event.x-self.x(t))))
+                return
         self.drag = "play"
         if self.clip is not None and 59 <= event.y <= 84:
             start, end, _ = self.clip

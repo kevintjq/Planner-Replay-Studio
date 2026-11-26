@@ -60,6 +60,7 @@ class BagSource:
         self.first = self.last = None
         self.count = 0
         self.leading_cloud_skips = 0
+        self.cloud_frame_ranges = {}
 
     def index(self, check_cancel=None):
         odom_count = 0
@@ -92,6 +93,9 @@ class BagSource:
                     if previous is not None and t < previous:
                         raise ValueError("Cloud header time moved backwards; split/sort bag first")
                     previous = t
+                    frame = msg.header.frame_id
+                    first_frame, _ = self.cloud_frame_ranges.get(frame, (t, t))
+                    self.cloud_frame_ranges[frame] = first_frame, t
                     self.first = t if self.first is None else min(self.first, t)
                     self.last = t if self.last is None else max(self.last, t)
                     self.count += 1
@@ -130,6 +134,19 @@ class BagSource:
                 self.camera_topic = item["topic"]
                 break
             self.camera_issue = f"{item['topic']} 缺少到 {view.frame} 的 TF"
+
+    def mission_times(self, name):
+        layer = self.mission.get(name)
+        return tuple(dict.fromkeys(layer[2].change_times())) if layer else ()
+
+    def timeline_events(self):
+        plan = self.mission_times("plan")
+        return tuple(sorted(
+            [((stamp-self.first)/1e9, "首次规划" if index == 0 else "重规划")
+             for index, stamp in enumerate(plan) if self.first <= stamp <= self.last] +
+            [((stamp-self.first)/1e9, "目标更新") for stamp in self.mission_times("goal")
+             if self.first <= stamp <= self.last]
+        ))
 
     def mission_shapes(self, name, t):
         layer = self.mission.get(name)

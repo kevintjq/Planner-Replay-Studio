@@ -1,7 +1,8 @@
 """Render the same editable overlays in the preview and finished video."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
+from uuid import uuid4
 from math import cos, isfinite, radians, sin
 import os
 from pathlib import Path
@@ -23,6 +24,7 @@ class VideoLayer:
     backdrop_scale: float = 1.
     backdrop_position: tuple = (.5, .5)
     transparent: bool = True
+    id: str = field(default_factory=lambda: uuid4().hex)
 
     def __post_init__(self):
         if not .05 <= self.width <= .9 or not 0 < self.opacity <= 1:
@@ -101,6 +103,22 @@ class PointCloudView:
             raise ValueError("视角宽度应为 12–150%。")
 
 
+LAYOUT_NAMES = {"mix": "当前合成", "video": "实拍全屏", "cloud": "点云全屏"}
+
+
+@dataclass(frozen=True)
+class LayoutCue:
+    time: float
+    mode: str
+    video_id: str | None = None
+
+    def __post_init__(self):
+        if not isfinite(self.time) or self.time < 0 or self.mode not in LAYOUT_NAMES:
+            raise ValueError("布局标记无效。")
+        if (self.mode == "video") != bool(self.video_id):
+            raise ValueError("实拍全屏须选一路视频。")
+
+
 @dataclass(frozen=True)
 class Composition:
     videos: tuple = ()
@@ -115,8 +133,20 @@ class Composition:
     speed_start: float = 0.
     speed_end: float | None = None
     transparent_canvas: bool = False
+    layouts: tuple = ()
+    audio_id: str | None = None
+    play_rate: float = 1.
+    compare_plans: bool = False
 
     def __post_init__(self):
+        ids = {layer.id for layer in self.videos}
+        if len(ids) != len(self.videos) or (self.audio_id is not None and self.audio_id not in ids):
+            raise ValueError("视频图层引用无效。")
+        if (any(cue.video_id and cue.video_id not in ids for cue in self.layouts) or
+                any(a.time >= b.time for a, b in zip(self.layouts, self.layouts[1:]))):
+            raise ValueError("布局标记须按时间递增，并引用项目内的视频。")
+        if self.play_rate not in (1., .5, .25):
+            raise ValueError("导出速度须为 1×、0.5× 或 0.25×。")
         if not .35 <= self.speed_scale <= 2.5:
             raise ValueError("速度表缩放应为 35–250%。")
         if len({view.kind for view in self.views}) != len(self.views):
@@ -129,6 +159,10 @@ class Composition:
             raise ValueError("速度表开始时间须为非负数。")
         if self.speed_end is not None and (not isfinite(self.speed_end) or self.speed_end <= self.speed_start):
             raise ValueError("速度表结束时间须晚于开始时间。")
+
+
+    def layout_at(self, elapsed):
+        return next((cue for cue in reversed(self.layouts) if cue.time <= elapsed), None)
 
 
 class SpeedHistory:
@@ -279,6 +313,16 @@ def compose(base, project, videos, elapsed, speed, cloud_views=None, *, alpha=No
     color = scene.getpixel((0, 0)) if scene.mode == "RGBA" else None
     fallback = color[:3] if color is not None and color[3] == 0 else MATTE
     alpha = project.transparent_canvas if alpha is None else alpha
+    cue = project.layout_at(elapsed)
+    if cue and cue.mode == "video":
+        footage = next((frame for layer, frame in zip(project.videos, videos)
+                        if layer.id == cue.video_id), None)
+        if footage is not None:
+            image = footage if isinstance(footage, Image.Image) else Image.fromarray(footage)
+            return ImageOps.fit(image.convert("RGBA" if alpha else "RGB"), scene.size, Image.Resampling.LANCZOS), {}
+    if cue and cue.mode == "cloud":
+        project = replace(project, videos=(), layouts=(), audio_id=None, views=(), texts=(), show_speed=False,
+                          main_view=replace(project.main_view, width=1., position=(.5, .5)))
     image = Image.new("RGBA" if alpha else "RGB", scene.size, (0, 0, 0, 0) if alpha else fallback)
 
     def paste(tile, position, opacity=1.):

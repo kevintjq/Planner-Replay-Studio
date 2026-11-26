@@ -216,8 +216,10 @@ class LayerControls:
         self.footages = (*self.footages, *(None for _ in layers))
         self.selection = "video", start
         self.refresh_layers()
-        if self.frame is not None:
-            self.start_render(True)
+        if self.bag_path or self.demo_selected:
+            self.open_video_editor()
+        else:
+            self.status.set("视频已导入。打开 bag 后，在图层面板选择「裁剪 / 对齐」。")
 
     def replace_video(self):
         if self.busy or not self.selection or self.selection[0] != "video":

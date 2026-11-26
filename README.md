@@ -39,11 +39,9 @@ A Windows workspace for composing multi-view videos from ROS1 SLAM point clouds,
 
 ## Multi-video alignment
 
-1. Use **Layers → + Video** to select multiple clips. Select a clip and open **Trim / Align**.
-2. Find a recognizable event on the SLAM timeline, step through the footage to match it, then record an anchor and apply.
-3. For noticeable clock drift, add a second matching event near the end. Use **Check midpoint** to verify the result.
-
-Step either pane independently. Motion candidates highlight likely turns, climbs, and braking in the selected SLAM interval for you to confirm in the footage. Use the short synchronized loop to check the current alignment.
+1. With a bag open, import flight footage to open the first clip's alignment window.
+2. Find the same action in both panes and select **Align these frames**.
+3. Open **Fine tune** for the second anchor, motion candidates, loop review and midpoint check.
 
 All clips use the same bag timeline and keep their own trim ranges and anchors. One anchor sets the time offset. Two also correct linear clock drift.
 
@@ -69,7 +67,7 @@ Scroll over a point-cloud view to zoom it. Each view also has a camera zoom perc
 - Use **Play** for continuous proxy preview. With timeline focus, Space pauses or plays and arrow keys step one frame. Drag the playhead to scrub. Export retains the configured resolution and frame rate.
 - Select a video and press S to split or Delete to remove the segment at the playhead. The clip menu offers the same actions. Cuts preserve the bag-time alignment and mute the selected source audio in removed ranges. Use Ctrl+Z / Ctrl+Y to undo or redo, and **Snap** to align to markers and segment edges.
 - Click a purple layout marker to jump or drag it to change its time. Right-click a **Footage inset** marker to adjust its own size, position and 0–5 second transition.
-- Select any layer and arrange its final size and position. Use **Shrink layer** to set when it enlarges and when it eases back. Multiple layers can animate together. Drag a green marker to move the animation, or right-click to edit or delete it.
+- Select a layer, move the playhead and use **Shrink here** to start a 0.4-second transition. Drag the small window after the transition or right-click the green marker to set its destination and fine-tune the timing.
 - Add a marker at the playhead with **+ Event**. Right-click it to rename or delete it. Click a marker or pick an event from the list to jump.
 - Video, captions and the speed gauge have separate tracks. Drag an edge to trim, or drag the body of a video segment to move its visibility window on the aligned bag timeline. Enable previous-plan comparison to show a dashed grey path.
 - Set a layout marker at the playhead to switch between the composition, full-screen point cloud, and full-screen footage. Click a purple marker to jump back to it.
@@ -83,7 +81,7 @@ Scroll over a point-cloud view to zoom it. Each view also has a camera zoom perc
 | MP4 | Defaults to 1080p at 60 fps with automatic NVIDIA NVENC or CPU H.264 encoding; optional single-track source audio and 0.5× / 0.25× playback |
 | PNG | Enable **Transparent canvas** to export an alpha channel |
 
-Export checks sample pose, TF, planner layers and clip coverage. Source audio follows the selected clip’s alignment and trim.
+Choose **Export 1080p · 60 fps** for the default preset. Open **More settings** to export PNG or choose resolution, frame rate, encoder, source audio and slow motion.
 
 <details>
 <summary>Command line</summary>

@@ -13,7 +13,7 @@ from .footage import FULL_FRAME, VideoEdit, VideoReader
 
 
 class VideoEditor:
-    def __init__(self, root, path, edit, slam_frame, slam_time, request_slam, apply, *, duration, fps, request_loop, request_candidates):
+    def __init__(self, root, path, edit, slam_frame, slam_time, request_slam, apply, *, duration, fps, request_loop, request_candidates, on_close):
         self.reader = VideoReader(path)
         self.edit = edit
         self.request_slam = request_slam
@@ -22,6 +22,7 @@ class VideoEditor:
         self.loop_job = None
         self.loop_origin = None
         self.apply = apply
+        self.on_close = on_close
         self.slam_frame, self.slam_time = slam_frame, slam_time
         self.clip_frame = None
         self.clip_time = 0.
@@ -65,7 +66,9 @@ class VideoEditor:
         left.grid(row=3, column=0, padx=(0, 5), sticky="nsew")
         self.bag_entry = tk.StringVar(value=f"{slam_time or 0:.3f}")
         ttk.Label(left, text="SLAM 秒").pack(side="left")
-        ttk.Entry(left, textvariable=self.bag_entry, width=9).pack(side="left", padx=5)
+        bag_entry = ttk.Entry(left, textvariable=self.bag_entry, width=9)
+        bag_entry.pack(side="left", padx=5)
+        bag_entry.bind("<Return>", lambda _: self.seek_slam())
         self.render_button = ttk.Button(left, text="定位", command=self.seek_slam)
         self.render_button.pack(side="left")
         for label, direction in (("上一帧", -1), ("下一帧", 1)):
@@ -100,10 +103,14 @@ class VideoEditor:
             ttk.Entry(trim, textvariable=variable, width=9).pack(side="left", padx=(0, 6))
         ttk.Button(trim, text="还原画幅", width=8, command=self.reset_crop).pack(side="right")
 
-        align = ttk.Frame(content, padding=8)
-        align.grid(row=4, column=0, sticky="ew", padx=(0, 5), pady=(6, 0))
+        self.advanced = ttk.Frame(content, padding=(8, 4))
+        self.advanced.grid(row=6, column=0, columnspan=2, sticky="ew")
+        self.advanced.grid_remove()
+        align = ttk.Frame(self.advanced)
+        align.pack(fill="x", pady=(0, 6))
         for index in range(2):
-            ttk.Button(align, text=f"记录锚点 {index + 1}", width=9, command=lambda i=index: self.mark(i)).pack(side="left", padx=(0, 4))
+            ttk.Button(align, text=f"记录锚点 {index + 1}", width=9,
+                       command=lambda i=index: self.mark(i)).pack(side="left", padx=(0, 4))
         ttk.Button(align, text="清除锚点", width=8, command=self.clear_anchors).pack(side="left")
         self.mid_button = ttk.Button(align, text="检查中段", width=8, command=self.seek_middle)
         self.mid_button.pack(side="left", padx=(4, 0))
@@ -113,8 +120,8 @@ class VideoEditor:
         self.sync_label = tk.StringVar()
         ttk.Label(content, textvariable=self.sync_label,
                   style="Shell.TLabel").grid(row=5, column=1, sticky="w", padx=5)
-        review = ttk.Frame(content, padding=(8, 4))
-        review.grid(row=6, column=0, columnspan=2, sticky="ew")
+        review = ttk.Frame(self.advanced)
+        review.pack(fill="x")
         self.loop_button = ttk.Button(review, text="循环核对 ±0.6 s", command=self.toggle_loop)
         self.loop_button.pack(side="left", padx=(0, 8))
         ttk.Button(review, text="找对齐候选", command=self.find_candidates).pack(side="left", padx=(0, 8))
@@ -127,14 +134,27 @@ class VideoEditor:
         ttk.Label(review, textvariable=self.review_status, style="Quiet.TLabel").pack(side="left")
         footer = ttk.Frame(content, style="Shell.TFrame")
         footer.grid(row=7, column=0, columnspan=2, sticky="ew")
-        ttk.Label(footer, text="拖框裁剪画幅；实拍可逐帧微调。记录起止两个锚点后，用「检查中段」核对转弯等动作。",
-                  style="Shell.TLabel").pack(side="left")
-        ttk.Button(footer, text="应用", style="Primary.TButton", command=self.save).pack(side="right")
+        self.show_advanced = tk.BooleanVar(value=False)
+        ttk.Checkbutton(footer, text="精调", variable=self.show_advanced, command=self.toggle_advanced).pack(side="left")
+        ttk.Label(footer, text="左右选中同一个动作，再对齐这两帧。", style="Shell.TLabel").pack(side="left", padx=8)
+        ttk.Button(footer, text="对齐这两帧", style="Primary.TButton", command=self.confirm_pair).pack(side="right")
+        ttk.Button(footer, text="应用", command=self.save).pack(side="right", padx=5)
         ttk.Button(footer, text="关闭", command=self.close).pack(side="right", padx=5)
         self.refresh_anchors()
         self.set_slam(slam_frame, slam_time)
-        if slam_time is None:
+        if self.clip_frame is None:
             self.seek_clip(edit.trim_in)
+
+    def toggle_advanced(self):
+        if self.show_advanced.get():
+            self.advanced.grid()
+        else:
+            self.stop_loop()
+            self.advanced.grid_remove()
+
+    def confirm_pair(self):
+        if self.mark(0):
+            self.save()
 
     def make_canvas(self, content, column):
         canvas = tk.Canvas(content, bg="#0b1321", highlightthickness=0, width=320, height=240)
@@ -282,6 +302,7 @@ class VideoEditor:
 
     def manual_clip_seek(self, seconds=None):
         self.stop_loop()
+        self.linked.set(False)
         self.seek_clip(seconds)
 
     def seek_clip(self, seconds=None):
@@ -310,6 +331,7 @@ class VideoEditor:
 
     def step(self, direction):
         self.stop_loop()
+        self.linked.set(False)
         if self.clip_frame is None:
             self.seek_clip(self.edit.trim_in)
         elif direction > 0:
@@ -343,6 +365,7 @@ class VideoEditor:
                 raise ValueError("请先记录第一个锚点")
             self.edit = replace(self.edit, anchors=tuple(anchors))
             self.refresh_anchors()
+            return True
         except ValueError as error:
             messagebox.showerror("检查锚点", str(error), parent=self.window)
 
@@ -412,3 +435,4 @@ class VideoEditor:
             self.window.after_cancel(self.loop_job)
         self.reader.close()
         self.window.destroy()
+        self.on_close()

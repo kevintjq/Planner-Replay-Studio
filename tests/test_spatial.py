@@ -32,3 +32,16 @@ def test_sensor_geometry_and_scan_expiry():
         frame = spatial.frame(t, source.pose(t))
         assert frame.scan is None
         assert frame.plan and frame.corridor
+
+
+def test_raw_cloud_estimate_crosses_azimuth_wrap_and_ignores_map():
+    from slam_fpv.sensor_topics import cloud_view, sensor_choices
+    from slam_fpv.spatial import CLOUD
+    theta = np.deg2rad(np.linspace(-17, 23, 300))
+    xyz = np.column_stack((np.cos(theta), np.sin(theta), np.linspace(-.15, .22, len(theta))))
+    sensor = cloud_view("livox", [xyz])
+    assert sensor.angles[0] == pytest.approx(42)
+    assert 0 <= sensor.azimuth <= 6
+    assert sensor.elevation > 0
+    assert sensor_choices([{"type": CLOUD, "topic": "/cloud_registered", "frame": "map",
+                            "view": sensor}], "lidar", "map", "body") == []

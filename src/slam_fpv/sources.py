@@ -5,12 +5,14 @@ from rosbags.highlevel import AnyReader
 from .geometry import TransformTree, transform_points
 from .cloud import decode
 from .spatial import CLOUD, CORRIDOR_TYPES, PLAN_TYPES, GeometryTimeline
+from .sensor_topics import SCAN_TYPES, connected_frames, inspect_metadata, scan_points, sensor_choices
 
 
-def inspect_bag(path):
+def inspect_bag(path, check_cancel=None):
     with AnyReader([path]) as reader:
+        topics, pairs = inspect_metadata(reader, check_cancel)
         return dict(storage_start_ns=reader.start_time, storage_end_ns=reader.end_time,
-                    topics=[dict(topic=c.topic,type=c.msgtype,count=c.msgcount) for c in reader.connections])
+                    topics=topics, tf_pairs=pairs)
 
 
 def stamp(msg):
@@ -45,6 +47,7 @@ class BagSource:
         self.odom_topic = odom_topic
         self.extrinsics = extrinsics
         self.scan_topic = scan_topic
+        self.detected_sensors = {}
         self.mission = {key: (topic, types, GeometryTimeline()) for key, topic, types in
                         (("plan", plan_topic, PLAN_TYPES), ("corridor", corridor_topic, CORRIDOR_TYPES))
                         if topic}
@@ -59,7 +62,7 @@ class BagSource:
                 raise ValueError("Expected a ROS1 .bag")
             specifications = [(topic, types) for topic, types, _ in self.mission.values()]
             if self.scan_topic:
-                specifications.append((self.scan_topic, (CLOUD,)))
+                specifications.append((self.scan_topic, SCAN_TYPES))
             for topic, types in specifications:
                 connections = [c for c in reader.connections if c.topic == topic]
                 if not connections or any(c.msgtype not in types for c in connections):
@@ -110,6 +113,20 @@ class BagSource:
             timeline.prepare()
         return self
 
+    def detect_sensors(self, requests, check_cancel=None, metadata=None):
+        if not requests:
+            return
+        if metadata is None:
+            metadata = inspect_bag(self.path, check_cancel)
+        frames = connected_frames(self.world, self.tree.edges)
+        for name, topic in requests.items():
+            choices = sensor_choices(metadata["topics"], name, self.world, self.body)
+            for item in choices:
+                view = item["view"]
+                if (not topic or topic == item["topic"]) and view.frame in frames:
+                    self.detected_sensors[name] = view
+                    break
+
     def mission_shapes(self, name, t):
         layer = self.mission.get(name)
         return tuple(layer[2].shapes(self.tree, self.world, t)) if layer else ()
@@ -132,8 +149,7 @@ class BagSource:
                 except LookupError:
                     yield t, None
                     continue
-                xyz, _ = decode(msg)
-                yield t, transform_points(transform, xyz)
+                yield t, transform_points(transform, scan_points(msg))
 
     def clouds(self):
         started = False

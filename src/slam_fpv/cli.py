@@ -66,12 +66,16 @@ def parser(parser_class=argparse.ArgumentParser):
         if name == 'bag':
             x.add_argument('--plan-topic', help='Planned nav_msgs/Path, Marker or MarkerArray')
             x.add_argument('--corridor-topic', help='Safety corridor Marker or MarkerArray')
-            x.add_argument('--scan-topic', help='Separate PointCloud2 topic for the latest scan')
+            x.add_argument('--scan-topic', help='Separate PointCloud2, LaserScan or Livox CustomMsg topic for the latest scan')
+            x.add_argument('--camera-info-topic', help='Override the automatically selected CameraInfo topic')
+            x.add_argument('--lidar-fov-topic', help='Override the automatically selected LiDAR topic')
         if name == 'demo':
             x.add_argument('--show-plan', action='store_true')
             x.add_argument('--show-corridor', action='store_true')
         if name != 'listen':
             x.add_argument('--show-scan', action='store_true', help='Highlight the latest map input frame')
+            x.add_argument('--show-camera-fov', action='store_true', help='Show the FOV detected from CameraInfo')
+            x.add_argument('--show-lidar-fov', action='store_true', help='Show the detected LiDAR scan envelope')
             x.add_argument('--scan-max-age', type=float, default=.5, help='Hide scans older than this many seconds')
             x.add_argument('--camera-fov', nargs=4, metavar=('FRAME','HFOV','VFOV','DEPTH'))
             x.add_argument('--lidar-fov', nargs=5, metavar=('FRAME','HFOV','VFOV','RADIUS','ELEVATION'))
@@ -256,13 +260,18 @@ def render(a, source, *, preview=None, preview_offset=0, progress=None, check_ca
                 print(json.dumps(report,indent=2))
 
 
-def open_source(a, check_cancel=None):
+def open_source(a, check_cancel=None, metadata=None):
     if a.command == 'demo':
         return (TrailDemoSource if a.demo_scene == "trail" else DemoSource)(a.seconds)
-    return BagSource(a.bag,a.cloud_topic,a.odom_topic,a.world,a.body,a.pose_source,
-                     a.max_gap,extrinsics(a.extrinsics), plan_topic=getattr(a, 'plan_topic', None),
-                     corridor_topic=getattr(a, 'corridor_topic', None),
-                     scan_topic=getattr(a, 'scan_topic', None)).index(check_cancel)
+    source = BagSource(a.bag, a.cloud_topic, a.odom_topic, a.world, a.body, a.pose_source,
+                       a.max_gap, extrinsics(a.extrinsics), plan_topic=getattr(a, 'plan_topic', None),
+                       corridor_topic=getattr(a, 'corridor_topic', None),
+                       scan_topic=getattr(a, 'scan_topic', None)).index(check_cancel)
+    requests = {name: getattr(a, field, None) for name, field in
+                (("camera", "camera_info_topic"), ("lidar", "lidar_fov_topic"))
+                if getattr(a, "show_" + name + "_fov", False) and sensor_settings(a, name) is None}
+    source.detect_sensors(requests, check_cancel, metadata)
+    return source
 
 
 def video_edit(a):
@@ -306,7 +315,7 @@ def main():
     a=parser().parse_args()
     try:
         if a.command=='inspect':
-            print(json.dumps(inspect_bag(a.bag),indent=2))
+            print(json.dumps(inspect_bag(a.bag), indent=2, default=asdict))
             return
         validate(a)
         if a.command=='listen':

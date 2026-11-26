@@ -15,14 +15,15 @@ from tkinter import colorchooser, filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
 
-from .cli import open_source, parser, render, validate
+from .cli import extrinsics, open_source, parser, render, validate
 from .composition import Composition, compose, placement_axis, rounded_mask
 from .desktop_style import INK, desktop_style
 from .timeline import Timeline
 from .layer_controls import LayerControls
 from .video_editor import VideoEditor
 from .sources import inspect_bag
-from .spatial import CLOUD, CORRIDOR_TYPES, PLAN_TYPES
+from .spatial import CORRIDOR_TYPES, PLAN_TYPES
+from .sensor_topics import CAMERA_INFO, LASER_SCAN, SCAN_TYPES, connected_frames, pose_frames, sensor_choices, suggested_topic
 
 
 class FormParser(ArgumentParser):
@@ -59,6 +60,7 @@ class RendererApp(LayerControls):
         self.layer_bounds = {}
         self.view_bounds = None
         self.bag_path = None
+        self.bag_metadata = None
         self.demo_selected = False
         self.disabled_controls = []
 
@@ -129,18 +131,22 @@ class RendererApp(LayerControls):
         ttk.Label(source, textvariable=self.bag_name, wraplength=310).grid(
             row=1, column=0, columnspan=2, sticky="w", pady=(0, 12))
         self.cloud_topics = self.field(source, 2, "点云话题", "cloud_topic", "", ())
-        self.cloud_topics.bind("<<ComboboxSelected>>", self.reset_alignment)
+        self.cloud_topics.bind("<<ComboboxSelected>>", self.change_source_frames)
         self.field(source, 3, "位姿来源", "pose_source", "Odometry", ("Odometry", "TF"))
         self.odom_topics = self.field(source, 4, "里程计话题", "odom_topic", "", ())
-        self.field(source, 5, "世界坐标系", "world", "camera_init")
-        self.field(source, 6, "机体坐标系", "body", "body")
+        self.odom_topics.bind("<<ComboboxSelected>>", self.change_source_frames)
+        self.world_frames = self.field(source, 5, "世界坐标系", "world", "", ())
+        self.body_frames = self.field(source, 6, "机体坐标系", "body", "", ())
         self.field(source, 7, "最大插值间隔 (s)", "max_gap", ".5")
         self.field(source, 8, "点云更新方式", "cloud_mode", "累积扫描", ("累积扫描", "替换整图"))
         self.file_row(source, 9, "外参 JSON", "extrinsics", (("JSON", "*.json"),), "可选")
+        self.values["extrinsics"].trace_add("write", lambda *_: self.sync_spatial())
         self.field(source, 10, "导出起点 (s)", "start", "0")
         self.field(source, 11, "导出时长 (s)", "seconds", "6")
         self.field(source, 12, "片段内预览位置 (s)", "preview_offset", "1")
-        self.values["pose_source"].trace_add("write", lambda *_: self.sync_odometry())
+        self.values["pose_source"].trace_add("write", self.change_source_frames)
+        for widget in (self.world_frames, self.body_frames):
+            widget.bind("<<ComboboxSelected>>", lambda _: self.sync_spatial())
 
         self.field(quality, 0, "分辨率", "resolution", "1920 × 1080",
                    ("1280 × 720", "1920 × 1080", "2560 × 1440", "3840 × 2160"))
@@ -194,71 +200,92 @@ class RendererApp(LayerControls):
         self.spatial_panel = panel
         self.spatial_toggles = {}
         self.spatial_topics = {}
-        self.spatial_demo_labels = {}
-
-        def toggle(row, name, label, color):
+        self.spatial_details = {}
+        for index, (name, label, color) in enumerate((
+            ("plan", "规划轨迹", "#33EB80"), ("corridor", "飞行安全走廊", "#4DB3FF"),
+            ("scan", "当前扫描点云", "#76F6FF"), ("camera", "相机 FOV", "#C787FF"),
+            ("lidar", "雷达 FOV", "#FA9942"),
+        )):
+            row = index * 3
             flag = self.spatial_toggles[name] = tk.BooleanVar(value=False)
             ttk.Checkbutton(panel, text=label, variable=flag, command=self.sync_spatial).grid(
-                row=row, column=0, sticky="w", pady=5)
-            group = ttk.Frame(panel)
-            group.grid(row=row, column=1, sticky="e")
-            tk.Label(group, width=3, height=1, bg=color).pack(side="right", padx=3)
-
-        for row, name, label, color in ((0, "plan", "规划轨迹", "#33EB80"),
-                                         (2, "corridor", "飞行安全走廊", "#4DB3FF"),
-                                         (4, "scan", "当前扫描点云", "#76F6FF")):
-            toggle(row, name, label, color)
-            self.spatial_topics[name] = self.field(panel, row+1, "ROS 话题", name + "_topic", "", ("",))
-            demo = ttk.Label(panel, text="内置模拟数据", style="Quiet.TLabel")
-            demo.grid(row=row+1, column=1, sticky="w")
-            self.spatial_demo_labels[name] = demo
-        toggle(6, "camera", "相机 FOV", "#C787FF")
-        self.field(panel, 7, "光学坐标系", "camera_frame", "camera_optical_frame")
-        self.field(panel, 8, "水平° 垂直° 深度m", "camera_fov", "82 53 3.5")
-        toggle(9, "lidar", "雷达 FOV", "#FA9942")
-        self.field(panel, 10, "雷达坐标系", "lidar_frame", "lidar")
-        self.field(panel, 11, "水平° 垂直° 半径m 仰角°", "lidar_fov", "360 40 5 0")
+                row=row, column=0, sticky="w", pady=(9, 3))
+            tk.Label(panel, width=3, height=1, bg=color).grid(row=row, column=1, sticky="e")
+            widget = self.field(panel, row+1, "话题来源", name + "_topic", "自动识别", ("自动识别",))
+            widget.bind("<<ComboboxSelected>>", lambda _: self.sync_spatial())
+            self.spatial_topics[name] = widget
+            detail = self.spatial_details[name] = tk.StringVar()
+            ttk.Label(panel, textvariable=detail, style="Quiet.TLabel", wraplength=300).grid(
+                row=row+2, column=0, columnspan=2, sticky="w", pady=(1, 3))
         self.spatial_hint = tk.StringVar()
-        ttk.Label(panel, textvariable=self.spatial_hint, style="Quiet.TLabel", wraplength=295).grid(
-            row=12, column=0, columnspan=2, sticky="w", pady=(12, 2))
+        ttk.Label(panel, textvariable=self.spatial_hint, style="Quiet.TLabel", wraplength=300).grid(
+            row=15, column=0, columnspan=2, sticky="w", pady=(12, 2))
         self.sync_spatial()
+
+    def spatial_source(self, name):
+        if not self.bag_metadata or self.demo_selected:
+            return "", None
+        topics = self.bag_metadata["topics"]
+        world, body = self.values["world"].get(), self.values["body"].get()
+        picked = self.values[name+"_topic"].get()
+        topic = "" if picked == "自动识别" else picked
+        if name in ("camera", "lidar"):
+            candidates = sensor_choices(topics, name, world, body)
+            pairs = list(self.bag_metadata["tf_pairs"])
+            if self.values["pose_source"].get() == "Odometry":
+                odom = self.values["odom_topic"].get()
+                pairs.extend((row["frame"], row["child"]) for row in topics
+                             if row["topic"] == odom and row.get("child"))
+            path = self.values["extrinsics"].get()
+            if path:
+                try:
+                    pairs.extend((parent.strip("/"), child.strip("/")) for parent, child, _, _ in extrinsics(Path(path)))
+                except (OSError, ValueError, TypeError, KeyError, AttributeError):
+                    pass
+            frames = connected_frames(world, pairs)
+            row = next((row for row in candidates if (not topic or row["topic"] == topic)
+                        and row["view"].frame in frames), None)
+            return (row["topic"], row) if row else ("", None)
+        topic = topic or suggested_topic(topics, name, world, body)
+        return topic, next((row for row in topics if row["topic"] == topic), None)
 
     def sync_spatial(self):
         for name, widget in self.spatial_topics.items():
-            demo = self.spatial_demo_labels[name]
+            enabled = self.bag_path is not None and self.spatial_toggles[name].get()
+            widget.configure(state="readonly" if enabled else "disabled")
+            topic, row = self.spatial_source(name)
             if self.demo_selected:
-                widget.grid_remove()
-                demo.grid()
+                detail = "内置模拟数据"
+            elif self.bag_path is None:
+                detail = "打开 ROS1 bag 后识别"
+            elif row and "view" in row and name in ("camera", "lidar"):
+                view = row["view"]
+                info = {CAMERA_INFO: "标定", LASER_SCAN: "平面扫描"}.get(row["type"], "观测范围估计")
+                detail = f"{topic} · {view.frame} · {view.angles[0]:.0f}° × {view.angles[1]:.0f}° · {info}"
+            elif topic:
+                frame = row.get("frame") if row else None
+                detail = f"{topic} · {frame}" if frame else topic
+            elif name == "scan":
+                detail = "使用主点云的最新一帧"
             else:
-                demo.grid_remove()
-                widget.grid()
-                enabled = self.bag_path is not None and self.spatial_toggles[name].get()
-                widget.configure(state="readonly" if enabled else "disabled")
-        if self.demo_selected:
-            self.spatial_hint.set("模拟模式使用内置规划与传感器数据。勾选图层后重新生成预览。")
-        else:
-            self.spatial_hint.set("配置后重新生成预览。当前扫描留空时使用主点云话题的最新一帧。")
+                detail = "没有可用话题或 TF，此图层将跳过" if name in ("camera", "lidar") else "未匹配话题，可从列表选择"
+            self.spatial_details[name].set(detail)
+        self.spatial_hint.set("勾选图层后重新生成预览。传感器坐标系读取自消息和 TF。")
 
     def add_spatial_args(self, args, values):
-        for name in ("plan", "corridor", "scan"):
-            if not self.spatial_toggles[name].get():
+        for name, enabled in self.spatial_toggles.items():
+            if not enabled.get():
                 continue
-            topic = values[name + "_topic"]
-            if self.bag_path is None or (name == "scan" and not topic):
-                args.append("--show-" + name)
+            topic, _ = self.spatial_source(name)
+            if name in ("camera", "lidar"):
+                args.append("--show-" + name + "-fov")
+                if self.bag_path and values[name+"_topic"] != "自动识别":
+                    option = "--camera-info-topic" if name == "camera" else "--lidar-fov-topic"
+                    args.extend((option, values[name+"_topic"]))
             elif topic:
                 args.extend(("--" + name + "-topic", topic))
-            else:
-                label = "规划轨迹" if name == "plan" else "飞行安全走廊"
-                raise ValueError(f"请选择{label}话题，或取消勾选。")
-        for name, total in (("camera", 3), ("lidar", 4)):
-            if not self.spatial_toggles[name].get():
-                continue
-            angles = values[name+"_fov"].replace("，", " ").replace(",", " ").split()
-            frame = values[name+"_frame"]
-            if len(angles) != total or not frame:
-                raise ValueError("请填写传感器坐标系及对应数量的 FOV 参数。")
-            args.extend(("--" + name + "-fov", frame, *angles))
+            elif self.bag_path is None or name == "scan":
+                args.append("--show-" + name)
 
     def field(self, panel, row, label, name, value, choices=None):
         variable = self.values[name] = tk.StringVar(value=value)
@@ -309,7 +336,7 @@ class RendererApp(LayerControls):
         path = filedialog.askopenfilename(parent=self.root, filetypes=(("ROS1 bag", "*.bag"),))
         if path:
             path = Path(path)
-            self.run_job(lambda: ("topics", (path, inspect_bag(path))), "正在读取 bag 话题…")
+            self.run_job(lambda: ("topics", (path, inspect_bag(path, self.check_cancel))), "正在读取 bag 话题…")
 
     def use_demo(self):
         if not self.demo_selected:
@@ -327,6 +354,7 @@ class RendererApp(LayerControls):
     def set_topics(self, path, data):
         self.reset_alignment()
         self.bag_path = path
+        self.bag_metadata = data
         self.demo_selected = False
         self.bag_name.set(path.name)
         topics = data["topics"]
@@ -336,15 +364,32 @@ class RendererApp(LayerControls):
                                           (self.odom_topics, odometry, "/Odometry")):
             widget.configure(values=choices)
             widget.set(fallback if fallback in choices else (choices[0] if choices else ""))
-        for name, types in (("plan", PLAN_TYPES), ("corridor", CORRIDOR_TYPES), ("scan", (CLOUD,))):
-            widget = self.spatial_topics[name]
-            choices = sorted({row["topic"] for row in topics if row["type"] in types})
-            widget.configure(values=("", *choices))
-            if self.values[name + "_topic"].get() not in choices:
-                widget.set("")
-        self.sync_spatial()
         self.values["pose_source"].set("Odometry" if odometry else "TF")
+        for name, types in (("plan", PLAN_TYPES), ("corridor", CORRIDOR_TYPES), ("scan", SCAN_TYPES)):
+            choices = sorted({row["topic"] for row in topics if row["type"] in types})
+            self.spatial_topics[name].configure(values=("自动识别", *choices))
+            self.spatial_topics[name].set("自动识别")
+        for name in ("camera", "lidar"):
+            choices = tuple(dict.fromkeys(row["topic"] for row in sensor_choices(topics, name)))
+            self.spatial_topics[name].configure(values=("自动识别", *choices))
+            self.spatial_topics[name].set("自动识别")
+        self.sync_spatial()
         self.status.set(f"已读取 {len(clouds)} 个点云话题，{len(odometry)} 个里程计话题")
+
+    def change_source_frames(self, *_):
+        self.sync_odometry()
+        if self.bag_path is None:
+            return
+        data = self.bag_metadata
+        odometry = self.values["odom_topic"].get() if self.values["pose_source"].get() == "Odometry" else ""
+        world, body = pose_frames(data["topics"], data["tf_pairs"], odometry, self.values["cloud_topic"].get())
+        frames = {frame for pair in data["tf_pairs"] for frame in pair}
+        frames.update(row[key] for row in data["topics"] for key in ("frame", "child") if row.get(key))
+        for widget, frame in ((self.world_frames, world), (self.body_frames, body)):
+            widget.configure(values=tuple(sorted(frames)))
+            widget.set(frame)
+        self.reset_alignment()
+        self.sync_spatial()
 
     def reset_alignment(self, _event=None):
         self.frame = self.elapsed = self.speed = self.base_cache = None
@@ -383,7 +428,7 @@ class RendererApp(LayerControls):
 
         def work():
             result = []
-            source = open_source(args, self.check_cancel)
+            source = open_source(args, self.check_cancel, self.bag_metadata)
             render(args, source, preview=lambda *frame: result.append(frame),
                    preview_offset=seconds, check_cancel=self.check_cancel)
             return "alignment", result[0]
@@ -402,7 +447,7 @@ class RendererApp(LayerControls):
                 "side", "fov", "inset_distance", "inset_height", "axis", "axis_pixels")
         if self.bag_path is not None:
             if not values["cloud_topic"] or not values["world"] or not values["body"]:
-                raise ValueError("请选择点云话题并填写世界、机体坐标系。")
+                raise ValueError("缺少点云话题或无法自动确定坐标系。请检查 bag，或从列表选择世界、机体坐标系。")
             if values["pose_source"] == "Odometry" and not values["odom_topic"]:
                 raise ValueError("请选择里程计话题，或将位姿来源改为 TF。")
             keys += ("cloud_topic", "odom_topic", "world", "body", "max_gap")
@@ -456,7 +501,7 @@ class RendererApp(LayerControls):
             return
 
         def work():
-            source = open_source(args, self.check_cancel)
+            source = open_source(args, self.check_cancel, self.bag_metadata)
             if preview:
                 result = []
                 render(args, source, preview=lambda *frame: result.append(frame),

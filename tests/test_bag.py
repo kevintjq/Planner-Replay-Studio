@@ -19,7 +19,8 @@ def bag(tmp_path):
             [('/points','sensor_msgs/msg/PointCloud2'),('/odom','nav_msgs/msg/Odometry'),
              ('/tf','tf2_msgs/msg/TFMessage'),('/tf_static','tf2_msgs/msg/TFMessage'),
              ('/plan','nav_msgs/msg/Path'),('/corridor','visualization_msgs/msg/MarkerArray'),
-             ('/scan','sensor_msgs/msg/PointCloud2')]}
+             ('/scan','sensor_msgs/msg/PointCloud2'), ('/camera/info','sensor_msgs/msg/CameraInfo'),
+             ('/laser','sensor_msgs/msg/LaserScan')]}
         for i in range(4):
             p=make('geometry_msgs/msg/Point',float(i),0.,0.)
             q=make('geometry_msgs/msg/Quaternion',0.,0.,0.,1.)
@@ -48,9 +49,17 @@ def bag(tmp_path):
                                 make('builtin_interfaces/msg/Duration', 0, 0), False, [], [], '', '', False)
                 messages.append(('/corridor', make('visualization_msgs/msg/MarkerArray', [corridor])))
             if i==0:
+                camera = make('sensor_msgs/msg/CameraInfo', header(i,'camera_optical'), 480, 640, 'plumb_bob',
+                              np.zeros(5), np.array([400.,0.,280.,0.,400.,240.,0.,0.,1.]),
+                              np.eye(3).ravel(), np.zeros(12), 0, 0,
+                              make('sensor_msgs/msg/RegionOfInterest', 0, 0, 0, 0, False))
+                laser = make('sensor_msgs/msg/LaserScan', header(i,'lidar'), -1., 2., 1., 0., .1, .1, 10.,
+                             np.array([1., np.inf, 2., 20.], dtype=np.float32), np.empty(0, dtype=np.float32))
+                messages.extend([('/camera/info',camera), ('/laser',laser)])
                 transform=make('geometry_msgs/msg/Transform',make('geometry_msgs/msg/Vector3',.5,0.,0.),q)
                 messages.insert(0,('/tf_static',make('tf2_msgs/msg/TFMessage',[
-                    make('geometry_msgs/msg/TransformStamped',header(i,'body'),'lidar',transform)])))
+                    make('geometry_msgs/msg/TransformStamped',header(i,'body'),'lidar',transform),
+                    make('geometry_msgs/msg/TransformStamped',header(i,'body'),'camera_optical',transform)])))
             for topic,msg in messages:
                 # Storage time deliberately unrelated to sensor header time.
                 writer.write(cs[topic],9_000_000_000+i*100000000,ts.serialize_ros1(msg,msg.__msgtype__))
@@ -100,3 +109,29 @@ def test_mission_topics_obey_headers_tf_deletes_and_separate_scans(bag):
     np.testing.assert_allclose(scan, [[2.5, 0, 0]])
     with pytest.raises(ValueError, match='/missing'):
         BagSource(bag, '/points', '/odom', 'map', 'body', scan_topic='/missing').index()
+
+
+def test_detect_sensor_topics_and_frames(bag):
+    from slam_fpv.cli import open_source, parser
+    from slam_fpv.sources import inspect_bag
+    from slam_fpv.sensor_topics import pose_frames
+    from slam_fpv.spatial import sensor_edges
+
+    metadata = inspect_bag(bag)
+    assert pose_frames(metadata["topics"], metadata["tf_pairs"], "/odom", "/points") == ("map", "body")
+    args = parser().parse_args(["bag", str(bag), "--cloud-topic", "/points", "--odom-topic", "/odom",
+                               "--world", "map", "--body", "body", "--output", "preview.png",
+                               "--show-camera-fov", "--show-lidar-fov", "--scan-topic", "/laser"])
+    source = open_source(args, metadata=metadata)
+    camera = source.detected_sensors["camera"]
+    assert camera.frame == "camera_optical"
+    assert camera.angles[0] == pytest.approx(np.degrees(np.arctan(360/400)+np.arctan(280/400)))
+    assert sensor_edges(camera)[:, :, 0].max() == pytest.approx(4.5)
+    lidar = source.detected_sensors["lidar"]
+    assert lidar.frame == "lidar"
+    assert lidar.angles == pytest.approx((np.rad2deg(3.), 0))
+    assert lidar.azimuth == pytest.approx(np.rad2deg(.5))
+    (stamp, points), = list(source.scans())
+    assert stamp == source.first
+    assert len(points) == 2 and np.allclose(points[:, 2], 0)
+    np.testing.assert_allclose(source.sensor_pose(camera, stamp)[:3, 3], [.5, 0, 0])

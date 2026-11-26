@@ -22,14 +22,16 @@ class SensorView:
     distance: float
     camera: bool
     elevation: float = 0.
+    azimuth: float = 0.
+    image_bounds: tuple | None = None
 
     def __post_init__(self):
-        if not self.frame.strip("/") or not all(isfinite(v) for v in (*self.angles, self.distance, self.elevation)):
+        if not self.frame.strip("/") or not all(isfinite(v) for v in (*self.angles, self.distance, self.elevation, self.azimuth)):
             raise ValueError("传感器坐标系、视场角、距离必须有效。")
         horizontal, vertical = self.angles
-        if not (0 < horizontal <= 360 and 0 < vertical < 180 and self.distance > 0):
-            raise ValueError("水平视场须在 (0, 360]°，垂直视场须在 (0, 180)°，距离须大于 0。")
-        if self.camera and (horizontal >= 180 or vertical >= 180):
+        if not (0 < horizontal <= 360 and 0 <= vertical <= 180 and self.distance > 0):
+            raise ValueError("水平视场须在 (0, 360]°，垂直视场须在 [0, 180]°，距离须大于 0。")
+        if self.camera and (horizontal >= 180 or not 0 < vertical < 180):
             raise ValueError("相机的两个视场角均须小于 180°。")
         if not self.camera and abs(self.elevation) + vertical / 2 > 90:
             raise ValueError("雷达中心仰角 ± 半个垂直视场须在 [-90, 90]° 内。")
@@ -39,12 +41,13 @@ def sensor_edges(sensor):
     """Return local line segments in optical (+Z) or LiDAR (+X) convention."""
     h, v = np.deg2rad(np.array(sensor.angles) / 2)
     if sensor.camera:
-        x, y = np.tan([h, v]) * sensor.distance
-        ring = np.array([[-x,-y], [x,-y], [x,y], [-x,y]])
+        x, y = np.tan([h, v])
+        left, right, top, bottom = sensor.image_bounds or (-x, x, -y, y)
+        ring = np.array([[left,top], [right,top], [right,bottom], [left,bottom]]) * sensor.distance
         ring = np.column_stack((ring, np.full(4, sensor.distance)))
         return np.concatenate((np.stack((ring, np.roll(ring, 1, axis=0)), axis=1),
                                np.stack((np.zeros_like(ring), ring), axis=1)))
-    azimuth = np.linspace(-h, h, max(3, int(np.ceil(sensor.angles[0] / 10)) + 1))
+    azimuth = np.deg2rad(sensor.azimuth) + np.linspace(-h, h, max(3, int(np.ceil(sensor.angles[0] / 10)) + 1))
     low, high = np.deg2rad(sensor.elevation) + np.array([-v, v])
     rims = np.array([np.column_stack((np.cos(azimuth)*np.cos(e),
                                     np.sin(azimuth)*np.cos(e),
@@ -52,6 +55,12 @@ def sensor_edges(sensor):
                      for e in (low, high)]) * sensor.distance
     segments = [np.stack((row[:-1], row[1:]), axis=1) for row in rims]
     full = sensor.angles[0] == 360
+    if not v:
+        ring = rims[0]
+        if full:
+            return segments[0]
+        boundary = ring[[0, -1]]
+        return np.concatenate((segments[0], np.stack((np.zeros_like(boundary), boundary), axis=1)))
     ribs = np.linspace(0, len(azimuth)-1, 9 if full else 5, dtype=int)
     segments.append(rims[:, ribs[:-1] if full else ribs].transpose(1, 0, 2))
     if not full:
@@ -211,8 +220,17 @@ class SpatialOverlays:
         self.corridor = getattr(args, "corridor_topic", None) or getattr(args, "show_corridor", False)
         self.show_scan = getattr(args, "show_scan", False) or getattr(args, "scan_topic", None)
         self.scan_age = round(getattr(args, "scan_max_age", .5) * 1e9)
-        self.sensors = {name: (sensor, sensor_edges(sensor).reshape(-1, 3))
-                        for name in ("camera", "lidar") if (sensor := sensor_settings(args, name))}
+        self.sensors = {}
+        for name in ("camera", "lidar"):
+            sensor = sensor_settings(args, name)
+            if sensor is None and getattr(args, "show_" + name + "_fov", False):
+                if self.demo:
+                    sensor = (SensorView("camera_optical_frame", (82, 53), 6., True) if name == "camera"
+                              else SensorView("lidar", (360, 40), 4., False))
+                else:
+                    sensor = source.detected_sensors.get(name)
+            if sensor is not None:
+                self.sensors[name] = sensor, sensor_edges(sensor).reshape(-1, 3)
         self.scans = None
         self.pending = None
         self.latest = (0, None)

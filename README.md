@@ -14,24 +14,24 @@ Install 64-bit Python 3.10 or newer with Tcl/Tk. Clone the repository, then doub
 
 ## Make a composition
 
-1. Open a ROS1 `.bag` under **Data**. Select a PointCloud2 topic, choose Odometry or TF, and set the export interval.
+1. Open a ROS1 `.bag` under **Data**. The app selects point-cloud and odometry topics and reads their frame IDs. Adjust the dropdowns or export interval as needed.
 2. Choose the main camera and add secondary views in **Layers → + View**. Pick from 12 presets, including stabilized FPV, raw FPV, oblique, side, chase and orbit. Both FPV modes hide the actual and planned flight paths and show the original body attitude on the corner triad.
 3. Add flight footage as a backdrop or an inset. Align clips using matching events, then add timed captions or a speed gauge. Drag layers, resize them by the corner, and choose a transparent or dark background.
 4. Export MP4 or PNG. The default video settings are 1080p at 60 fps, with automatic NVIDIA NVENC or CPU H.264 encoding.
 
 ## Spatial overlays
 
-Enable any layer under **Spatial overlays**, then refresh the preview. The same settings apply to PNG and MP4.
+Enable any layer under **Spatial overlays** and refresh the preview. Topics and sensor frames are detected automatically, and the dropdowns let you choose another recorded source.
 
 | Layer | Input |
 | --- | --- |
 | Planned trajectory | `nav_msgs/Path` or `visualization_msgs/Marker[Array]` |
 | Safety corridor | `visualization_msgs/Marker[Array]` with line strips, line lists, triangle lists or cubes |
-| Camera FOV | Optical TF frame (+Z forward), horizontal and vertical angles (°), depth (m) |
-| LiDAR FOV | LiDAR TF frame (+X forward, +Z up), horizontal and vertical angles (°), radius (m), center elevation (°). Use 360° for a full sweep. |
-| Current scan | Latest `sensor_msgs/PointCloud2` frame, highlighted separately from the accumulated map |
+| Camera FOV | `CameraInfo` intrinsics and optical frame (+Z forward) |
+| LiDAR FOV | Sensor-local PointCloud2 or Livox CustomMsg observed envelope, or the planar angles in `LaserScan` |
+| Current scan | Latest PointCloud2, Livox CustomMsg or LaserScan, highlighted separately from the accumulated map |
 
-Record the planner visualization topics together with the bag. Use the TF tree or the extrinsics JSON to connect sensor frames to the world frame. FOV outlines describe configurable viewing envelopes. Current scan returns come from the recorded point-cloud topic. Leaving that topic empty highlights the latest frame from the main point-cloud input, so select a dedicated scan topic if the main input is a full map. Convert Livox CustomMsg to PointCloud2 before importing.
+Record the planner visualization topics together with the bag. Use the TF tree or the extrinsics JSON to connect sensor frames to the world frame. FOV outlines use a short display range. An envelope estimated from point returns depends on the recorded scene. Layers without matching data or TF are skipped. If a dedicated scan is unavailable, the latest main input frame is highlighted.
 
 ## CLI
 

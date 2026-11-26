@@ -39,6 +39,29 @@ def desktop_style(root):
 
     photos = []
 
+    def checkbox(border, fill, mark=False):
+        image = Image.new("RGBA", (64, 64))
+        draw = ImageDraw.Draw(image)
+        draw.rounded_rectangle((4, 4, 59, 59), radius=12, fill=fill, outline=border, width=5)
+        if mark:
+            draw.line(((16, 32), (27, 43), (47, 21)), fill="#FFFFFF", width=8, joint="curve")
+        photos.append(ImageTk.PhotoImage(image.resize((16, 16), Image.Resampling.LANCZOS), master=root))
+        return str(photos[-1])
+
+    empty = checkbox("#9299A5", PANEL)
+    checked = checkbox(BLUE, BLUE, True)
+    disabled = checkbox("#CDD1D7", "#F2F3F6")
+    disabled_checked = checkbox("#9CB7D9", "#9CB7D9", True)
+    style.element_create("Workspace.check", "image", empty,
+                         ("disabled", "selected", disabled_checked),
+                         ("disabled", disabled), ("selected", checked), width=21, sticky="w")
+    style.layout("TCheckbutton", [("Checkbutton.padding", {"sticky": "nswe", "children": [
+        ("Workspace.check", {"side": "left", "sticky": "w"}),
+        ("Checkbutton.focus", {"side": "left", "sticky": "w", "children": [
+            ("Checkbutton.label", {"sticky": "nswe"}),
+        ]}),
+    ]})])
+
     def chip(fill, size=24):
         image = Image.new("RGBA", (64, 64))
         ImageDraw.Draw(image).rounded_rectangle((1, 1, 62, 62), radius=23, fill=fill)

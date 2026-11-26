@@ -31,7 +31,11 @@ from .sources import inspect_bag
 from .project_file import ProjectFile, load_project, save_project
 from .export_media import inspect_export
 from .spatial import CORRIDOR_TYPES, EGO_SPLINES, GOAL_TYPES, PLAN_TYPES, LayerStatus
-from .sensor_topics import SCAN_TYPES, camera_choices, connected_frames, planner_map_topic, pose_frames, suggested_topic
+from .sensor_topics import CAMERA_INFO, SCAN_TYPES, camera_choices, connected_frames, planner_map_topic, pose_frames, suggested_topic
+
+
+SPATIAL_TOPIC_TYPES = {"plan": PLAN_TYPES, "goal": GOAL_TYPES, "corridor": CORRIDOR_TYPES,
+                       "scan": SCAN_TYPES, "camera": (CAMERA_INFO,)}
 
 
 class FormParser(ArgumentParser):
@@ -95,12 +99,6 @@ class RendererApp(LayerControls):
         header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 15))
         ttk.Label(header, text="Planner Replay", style="Title.TLabel").pack(side="left")
         ttk.Label(header, text="无人机规划回放与视频合成", style="Subtitle.TLabel").pack(side="left", padx=13)
-        ttk.Button(header, text="固定机位轨迹图", command=self.open_trajectory_tool,
-                   style="Shell.TButton").pack(side="right", padx=(6, 0))
-        ttk.Button(header, text="主视角", command=lambda: self.edit_cloud_view("main", 0),
-                   style="Shell.TButton").pack(side="right")
-        ttk.Button(header, text="线条与标记", command=self.edit_render_marks,
-                   style="Shell.TButton").pack(side="right", padx=(6, 0))
         ttk.Button(header, text="保存项目", command=self.save_workspace, style="Shell.TButton").pack(side="right", padx=6)
         ttk.Button(header, text="打开项目", command=self.open_workspace, style="Shell.TButton").pack(side="right")
 
@@ -471,12 +469,27 @@ class RendererApp(LayerControls):
         ), save)
 
     def make_form(self):
+        shortcuts = ttk.Frame(self.form, style="Shell.TFrame")
+        shortcuts.pack(fill="x", pady=(0, 8))
+        for label, command in (("线条与标记", self.edit_render_marks),
+                               ("主视角", lambda: self.edit_cloud_view("main", 0)),
+                               ("固定机位轨迹图", self.open_trajectory_tool)):
+            ttk.Button(shortcuts, text=label, command=command,
+                       style="Shell.TButton").pack(side="left", padx=(0, 5))
+
         nav = ttk.Notebook(self.form)
         nav.pack(fill="both", expand=True)
         self.nav = nav
-        source, quality, camera, footage, spatial = (ttk.Frame(nav, padding=12) for _ in range(5))
-        for panel, name in zip((source, quality, camera, footage, spatial), ("数据", "画质", "相机", "图层", "空间叠加")):
+        data = ttk.Frame(nav, padding=(6, 8))
+        quality, camera, footage = (ttk.Frame(nav, padding=12) for _ in range(3))
+        for panel, name in zip((data, quality, camera, footage), ("数据", "画质", "相机", "图层")):
             nav.add(panel, text=name)
+            panel.columnconfigure(1, weight=1)
+        self.data_nav = ttk.Notebook(data)
+        self.data_nav.pack(fill="both", expand=True)
+        source, spatial = (ttk.Frame(self.data_nav, padding=(8, 5)) for _ in range(2))
+        for panel, label in ((source, "数据来源"), (spatial, "空间叠加")):
+            self.data_nav.add(panel, text=label)
             panel.columnconfigure(1, weight=1)
 
         self.bag_name = tk.StringVar(value="未选择 ROS1 bag")
@@ -574,7 +587,7 @@ class RendererApp(LayerControls):
             row = index * 3
             flag = self.spatial_toggles[name] = tk.BooleanVar(value=False)
             ttk.Checkbutton(panel, text=label, variable=flag, command=self.sync_spatial).grid(
-                row=row, column=0, sticky="w", pady=(9, 3))
+                row=row, column=0, sticky="w", pady=(5, 1))
             header = ttk.Frame(panel)
             header.grid(row=row, column=1, sticky="e")
             badge = self.spatial_badges[name] = ttk.Label(header, style="Quiet.TLabel")
@@ -605,6 +618,9 @@ class RendererApp(LayerControls):
         picked = self.values[name+"_topic"].get()
         topic = "" if picked == "自动识别" else picked
         if name == "camera":
+            picked_row = next((row for row in topics if row["topic"] == topic), None)
+            if picked_row and picked_row["type"] != CAMERA_INFO:
+                return topic, picked_row
             candidates = camera_choices(topics)
             pairs = list(self.bag_metadata["tf_pairs"])
             if self.values["pose_source"].get() == "Odometry":
@@ -635,6 +651,9 @@ class RendererApp(LayerControls):
             elif self.bag_path is None:
                 detail = "打开 ROS1 bag 后识别"
                 state = LayerStatus("待导入")
+            elif row and row["type"] not in SPATIAL_TOPIC_TYPES[name]:
+                detail = f"{topic} · {row['type']}"
+                state = LayerStatus("类型不匹配", tone="Warning")
             elif row and name == "camera":
                 view = row["view"]
                 detail = f"{topic} · {view.frame} · {view.angles[0]:.0f}° × {view.angles[1]:.0f}°"
@@ -689,6 +708,8 @@ class RendererApp(LayerControls):
             if not enabled.get():
                 continue
             topic, row = self.spatial_source(name)
+            if row and row["type"] not in SPATIAL_TOPIC_TYPES[name]:
+                continue
             if name == "camera":
                 args.append("--show-camera-fov")
                 if self.bag_path and values["camera_topic"] != "自动识别":
@@ -992,14 +1013,10 @@ class RendererApp(LayerControls):
             widget.set(fallback if fallback in choices else (choices[0] if choices else ""))
         self.change_cloud_topic()
         self.values["pose_source"].set("Odometry" if odometry else "TF")
-        for name, types in (("plan", PLAN_TYPES), ("goal", GOAL_TYPES), ("corridor", CORRIDOR_TYPES),
-                            ("scan", SCAN_TYPES)):
-            choices = sorted({row["topic"] for row in topics if row["type"] in types})
-            self.spatial_topics[name].configure(values=("自动识别", *choices))
-            self.spatial_topics[name].set("自动识别")
-        choices = tuple(dict.fromkeys(row["topic"] for row in camera_choices(topics)))
-        self.spatial_topics["camera"].configure(values=("自动识别", *choices))
-        self.spatial_topics["camera"].set("自动识别")
+        choices = ("自动识别", *sorted({row["topic"] for row in topics}))
+        for widget in self.spatial_topics.values():
+            widget.configure(values=choices)
+            widget.set("自动识别")
         self.sync_spatial()
         self.status.set(f"已读取 {len(clouds)} 个点云话题，{len(odometry)} 个里程计话题")
 

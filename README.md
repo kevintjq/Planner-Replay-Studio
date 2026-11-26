@@ -62,7 +62,7 @@ SUPER defaults to `visualization/exp_traj` and `visualization/exp_sfc` when pres
 
 Scroll over a point-cloud view to zoom it. Each view also has a camera zoom percentage that is saved with the project.
 
-The **Spatial overlays** panel shows each layer's status at the preview position, including waiting for data, missing TF and hidden in the current view.
+Under **Data → Spatial overlays**, keep automatic detection or select any topic in the bag. Each layer reports its status at the preview position and flags incompatible message types.
 
 ## Timeline
 

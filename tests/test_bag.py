@@ -17,7 +17,9 @@ def bag(tmp_path):
     with Writer(path) as writer:
         cs={topic:writer.add_connection(topic,typ,typestore=ts) for topic,typ in
             [('/points','sensor_msgs/msg/PointCloud2'),('/odom','nav_msgs/msg/Odometry'),
-             ('/tf','tf2_msgs/msg/TFMessage'),('/tf_static','tf2_msgs/msg/TFMessage')]}
+             ('/tf','tf2_msgs/msg/TFMessage'),('/tf_static','tf2_msgs/msg/TFMessage'),
+             ('/plan','nav_msgs/msg/Path'),('/corridor','visualization_msgs/msg/MarkerArray'),
+             ('/scan','sensor_msgs/msg/PointCloud2')]}
         for i in range(4):
             p=make('geometry_msgs/msg/Point',float(i),0.,0.)
             q=make('geometry_msgs/msg/Quaternion',0.,0.,0.,1.)
@@ -32,6 +34,19 @@ def bag(tmp_path):
             cloud=make('sensor_msgs/msg/PointCloud2',header(i,'lidar'),1,1,fields,False,12,12,
                        np.array([1,0,0],dtype='<f4').view('u1'),True)
             messages=[('/odom',odom),('/tf',tf),('/points',cloud)]
+            if i == 1:
+                second_pose = make('geometry_msgs/msg/Pose', make('geometry_msgs/msg/Point', 3., 0., 0.), q)
+                plan = make('nav_msgs/msg/Path', header(i,'body'), [
+                    make('geometry_msgs/msg/PoseStamped', header(i,'body'), item)
+                    for item in (pose, second_pose)])
+                messages.extend([('/plan', plan), ('/scan', cloud)])
+            if i in (1, 2):
+                corridor = make('visualization_msgs/msg/Marker', header(i,'map'), 'corridor', 1,
+                                1, 0 if i == 1 else 2, pose,
+                                make('geometry_msgs/msg/Vector3', 1., 2., 1.),
+                                make('std_msgs/msg/ColorRGBA', .3, .7, 1., .25),
+                                make('builtin_interfaces/msg/Duration', 0, 0), False, [], [], '', '', False)
+                messages.append(('/corridor', make('visualization_msgs/msg/MarkerArray', [corridor])))
             if i==0:
                 transform=make('geometry_msgs/msg/Transform',make('geometry_msgs/msg/Vector3',.5,0.,0.),q)
                 messages.insert(0,('/tf_static',make('tf2_msgs/msg/TFMessage',[
@@ -66,3 +81,22 @@ def test_export_synthetic_bag_cli(bag,tmp_path):
     report=json.loads(output.with_suffix('.json').read_text())
     # Input format labels recorded_ros1; fixture provenance remains synthetic.
     assert report['frames']==1 and report['complete']
+
+
+def test_mission_topics_obey_headers_tf_deletes_and_separate_scans(bag):
+    source = BagSource(bag, '/points', '/odom', 'map', 'body',
+                       plan_topic='/plan', corridor_topic='/corridor', scan_topic='/scan').index()
+    start, plan_time = source.first, source.first + 100_000_000
+    assert source.mission_shapes('plan', start) == ()
+    assert source.mission_shapes('corridor', start) == ()
+    plan, = source.mission_shapes('plan', plan_time)
+    np.testing.assert_allclose(plan.lines[0], [[2, 0, 0], [4, 0, 0]])
+    corridor, = source.mission_shapes('corridor', plan_time)
+    assert corridor.triangles[0].shape == (12, 3, 3)
+    assert source.mission_shapes('corridor', plan_time + 100_000_000) == ()
+    assert source.mission_shapes('corridor', plan_time)
+    (time, scan), = list(source.scans())
+    assert time == plan_time
+    np.testing.assert_allclose(scan, [[2.5, 0, 0]])
+    with pytest.raises(ValueError, match='/missing'):
+        BagSource(bag, '/points', '/odom', 'map', 'body', scan_topic='/missing').index()

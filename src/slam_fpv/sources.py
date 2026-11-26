@@ -4,6 +4,7 @@ import numpy as np
 from rosbags.highlevel import AnyReader
 from .geometry import TransformTree, transform_points
 from .cloud import decode
+from .spatial import CLOUD, CORRIDOR_TYPES, PLAN_TYPES, GeometryTimeline
 
 
 def inspect_bag(path):
@@ -35,13 +36,18 @@ def add_tf(tree, msg, static=False):
 
 
 class BagSource:
-    def __init__(self, path, cloud_topic, odom_topic, world, body, pose_source='odom', max_gap=.5, extrinsics=()):
+    def __init__(self, path, cloud_topic, odom_topic, world, body, pose_source='odom', max_gap=.5, extrinsics=(), *,
+                 plan_topic=None, corridor_topic=None, scan_topic=None):
         self.path, self.cloud_topic = Path(path), cloud_topic
         self.world, self.body = world.lstrip('/'), body.lstrip('/')
         self.tree = TransformTree(max_gap)
         self.pose_source = pose_source
         self.odom_topic = odom_topic
         self.extrinsics = extrinsics
+        self.scan_topic = scan_topic
+        self.mission = {key: (topic, types, GeometryTimeline()) for key, topic, types in
+                        (("plan", plan_topic, PLAN_TYPES), ("corridor", corridor_topic, CORRIDOR_TYPES))
+                        if topic}
         self.first = self.last = None
         self.count = 0
         self.leading_cloud_skips = 0
@@ -51,16 +57,27 @@ class BagSource:
         with AnyReader([self.path]) as reader:
             if reader.is2 or self.path.suffix != '.bag':
                 raise ValueError("Expected a ROS1 .bag")
-            wanted = [c for c in reader.connections if c.topic in
+            specifications = [(topic, types) for topic, types, _ in self.mission.values()]
+            if self.scan_topic:
+                specifications.append((self.scan_topic, (CLOUD,)))
+            for topic, types in specifications:
+                connections = [c for c in reader.connections if c.topic == topic]
+                if not connections or any(c.msgtype not in types for c in connections):
+                    raise ValueError(f"{topic}: 缺少话题或消息类型不匹配 ({', '.join(types)})")
+            mission_topics = {topic for topic, _, _ in self.mission.values()}
+            wanted = [c for c in reader.connections if c.topic in mission_topics or c.topic in
                       (self.cloud_topic, self.odom_topic, '/tf', '/tf_static')]
             clouds = [c for c in wanted if c.topic == self.cloud_topic]
             if not clouds or any(c.msgtype != 'sensor_msgs/msg/PointCloud2' for c in clouds):
                 raise ValueError("Cloud topic missing or not sensor_msgs/PointCloud2; Livox CustomMsg needs SLAM/driver conversion")
             previous = None
-            for c, _, raw in reader.messages(connections=wanted):
+            for c, recorded, raw in reader.messages(connections=wanted):
                 if check_cancel is not None:
                     check_cancel()
                 msg = reader.deserialize(raw, c.msgtype)
+                for topic, _, timeline in self.mission.values():
+                    if c.topic == topic:
+                        timeline.add(c.msgtype, msg, recorded)
                 if c.topic == self.cloud_topic:
                     t = stamp(msg)
                     if previous is not None and t < previous:
@@ -89,7 +106,34 @@ class BagSource:
                 raise ValueError("Extrinsic duplicates recorded TF")
             self.tree.add(parent, child, 0, p, q, True)
         self.tree.prepare()
+        for _, _, timeline in self.mission.values():
+            timeline.prepare()
         return self
+
+    def mission_shapes(self, name, t):
+        layer = self.mission.get(name)
+        return tuple(layer[2].shapes(self.tree, self.world, t)) if layer else ()
+
+    def sensor_pose(self, sensor, t):
+        return self.tree.lookup(self.world, sensor.frame, t)
+
+    def scans(self):
+        previous = None
+        with AnyReader([self.path]) as reader:
+            connections = [c for c in reader.connections if c.topic == self.scan_topic]
+            for connection, _, raw in reader.messages(connections=connections):
+                msg = reader.deserialize(raw, connection.msgtype)
+                t = stamp(msg)
+                if previous is not None and t < previous:
+                    raise ValueError(f"{self.scan_topic}: 当前扫描的帧时间戳倒退")
+                previous = t
+                try:
+                    transform = self.tree.lookup(self.world, msg.header.frame_id, t)
+                except LookupError:
+                    yield t, None
+                    continue
+                xyz, _ = decode(msg)
+                yield t, transform_points(transform, xyz)
 
     def clouds(self):
         started = False

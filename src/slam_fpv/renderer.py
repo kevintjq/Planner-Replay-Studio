@@ -45,20 +45,68 @@ def line_actor(points, color, width=3):
     return actor
 
 
-def overlay_line(points,color,width, *, screen_space=False):
-    poly=vtk.vtkPolyData(); pts=vtk.vtkPoints()
-    pts.SetData(numpy_to_vtk(np.ascontiguousarray(points,dtype=float),deep=True)); poly.SetPoints(pts)
-    cells=vtk.vtkCellArray(); cells.InsertNextCell(len(points))
-    for i in range(len(points)): cells.InsertCellPoint(i)
-    poly.SetLines(cells)
-    coordinate=vtk.vtkCoordinate()
+SPATIAL_COLORS = {
+    "plan": (.20, .92, .50),
+    "corridor": (.30, .70, 1.),
+    "camera": (.78, .53, 1.),
+    "lidar": (.98, .60, .26),
+    "scan": (118, 246, 255),
+}
+
+
+def spatial_polydata(groups, surface=False):
+    points = np.concatenate(groups, axis=0)
+    lengths = np.array([len(group) for group in groups], dtype=np.int64)
+    offsets = np.r_[0, np.cumsum(lengths)]
+    cells = vtk.vtkCellArray()
+    cells.SetData(numpy_to_vtkIdTypeArray(offsets, deep=True),
+                  numpy_to_vtkIdTypeArray(np.arange(len(points), dtype=np.int64), deep=True))
+    vertices = vtk.vtkPoints()
+    vertices.SetData(numpy_to_vtk(np.ascontiguousarray(points, dtype=float), deep=True))
+    poly = vtk.vtkPolyData()
+    poly.SetPoints(vertices)
+    if surface:
+        poly.SetPolys(cells)
+    else:
+        poly.SetLines(cells)
+    return poly
+
+
+def overlay_lines(groups, color, width, *, screen_space=False):
+    coordinate = vtk.vtkCoordinate()
     if screen_space:
         coordinate.SetCoordinateSystemToDisplay()
     else:
         coordinate.SetCoordinateSystemToWorld()
-    mapper=vtk.vtkPolyDataMapper2D(); mapper.SetInputData(poly); mapper.SetTransformCoordinate(coordinate)
-    actor=vtk.vtkActor2D(); actor.SetMapper(mapper)
-    actor.GetProperty().SetColor(*color); actor.GetProperty().SetLineWidth(width)
+    mapper = vtk.vtkPolyDataMapper2D()
+    mapper.SetInputData(spatial_polydata(groups))
+    mapper.SetTransformCoordinate(coordinate)
+    actor = vtk.vtkActor2D()
+    actor.SetMapper(mapper)
+    actor.GetProperty().SetColor(*color)
+    actor.GetProperty().SetLineWidth(width)
+    return actor
+
+
+def overlay_line(points, color, width, *, screen_space=False):
+    return overlay_lines((points,), color, width, screen_space=screen_space)
+
+
+def mission_actor(groups, color, width, *, surface=False):
+    mapper = vtk.vtkPolyDataMapper()
+    mapper.SetInputData(spatial_polydata(groups, surface))
+    if not surface:
+        mapper.SetResolveCoincidentTopologyToPolygonOffset()
+    actor = vtk.vtkActor()
+    actor.SetMapper(mapper)
+    props = actor.GetProperty()
+    props.SetColor(*color)
+    props.LightingOff()
+    if surface:
+        props.SetOpacity(.14)
+        props.BackfaceCullingOn()
+    else:
+        props.SetLineWidth(width)
     return actor
 
 
@@ -111,6 +159,8 @@ class Renderer:
         self.views=[]
         self.cloud_actors=[]
         self.dynamic=[]
+        self.scan_actors = []
+        self.scan = None
         self.view_modes = view_modes
         self.modes = (main_mode, *(("oblique",) if view_modes is None else view_modes))
         view_widths = (.32,) * (len(self.modes)-1) if view_widths is None else view_widths
@@ -150,9 +200,52 @@ class Renderer:
             scene.AddActor(actor)
             self.cloud_actors.append((scene, actor))
 
-    def frame(self,pose,trajectory,label,elapsed=0.,fpv_pose=None):
+    def update_scan(self, scan):
+        if scan is self.scan:
+            return
+        self.scan = scan
+        for scene, actor in self.scan_actors:
+            scene.RemoveActor(actor)
+        self.scan_actors.clear()
+        if scan is not None and len(scan):
+            sample = scan[::max(1, (len(scan) + 79999) // 80000)]
+            rgb = np.broadcast_to(SPATIAL_COLORS["scan"], sample.shape)
+            for scene, _ in self.views:
+                actor = point_actor(sample, rgb, self.point_size + 1.7 * self.scale)
+                actor.GetMapper().SetResolveCoincidentTopologyToPolygonOffset()
+                actor.GetMapper().SetRelativeCoincidentTopologyPointOffsetParameter(-4)
+                scene.AddActor(actor)
+                self.scan_actors.append((scene, actor))
+
+    def add_spatial(self, scene, overlay, frame):
+        def add(groups, color, width, surface=False):
+            if groups:
+                actor = mission_actor(groups, SPATIAL_COLORS[color], width*self.scale, surface=surface)
+                scene.AddActor(actor)
+                self.dynamic.append((scene, actor))
+
+        def lines(shapes):
+            return tuple(group for shape in shapes for group in shape.lines) + tuple(
+                segment for shape in shapes for group in shape.segments for segment in group)
+
+        planned = lines(frame.plan)
+        if planned:
+            for color, width in (((.027, .085, .048), 7.), (SPATIAL_COLORS["plan"], 4.5)):
+                actor = overlay_lines(planned, color, width*self.scale)
+                overlay.AddViewProp(actor)
+                self.dynamic.append((overlay, actor))
+        add(lines(frame.corridor), "corridor", 2.)
+        triangles = tuple(triangle for shape in frame.corridor for group in shape.triangles for triangle in group)
+        add(triangles, "corridor", 1., surface=True)
+        for name in ("camera", "lidar"):
+            segments = getattr(frame, name)
+            if segments is not None:
+                add(tuple(segments), name, 2.)
+
+    def frame(self,pose,trajectory,label,elapsed=0.,fpv_pose=None, spatial=None):
         for renderer,actor in self.dynamic: renderer.RemoveActor(actor)
         self.dynamic=[]
+        self.update_scan(spatial.scan if spatial else None)
         self.label.SetInput(('SIMULATION' if label.startswith('SYNTHETIC') else '') if self.clean
                             else label+'\nX red / Y green / Z blue | metres')
         for index,(scene,overlay) in enumerate(self.views):
@@ -170,6 +263,8 @@ class Renderer:
                 else:
                     actor=line_actor(trajectory,self.trajectory_color,self.trajectory_width)
                     scene.AddActor(actor); self.dynamic.append((scene,actor))
+            if spatial is not None and mode not in FPV_MODES:
+                self.add_spatial(scene, overlay, spatial)
             viewport_width, viewport_height = self.windows[index].GetSize()
             screen_space = mode in FPV_MODES
             if screen_space:

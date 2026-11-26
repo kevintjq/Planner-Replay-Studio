@@ -22,6 +22,7 @@ from .timeline import Timeline
 from .layer_controls import LayerControls
 from .video_editor import VideoEditor
 from .sources import inspect_bag
+from .spatial import CLOUD, CORRIDOR_TYPES, PLAN_TYPES
 
 
 class FormParser(ArgumentParser):
@@ -115,8 +116,8 @@ class RendererApp(LayerControls):
         nav = ttk.Notebook(self.form)
         nav.pack(fill="both", expand=True)
         self.nav = nav
-        source, quality, camera, footage = (ttk.Frame(nav, padding=12) for _ in range(4))
-        for panel, name in zip((source, quality, camera, footage), ("数据", "画质", "相机", "图层")):
+        source, quality, camera, footage, spatial = (ttk.Frame(nav, padding=12) for _ in range(5))
+        for panel, name in zip((source, quality, camera, footage, spatial), ("数据", "画质", "相机", "图层", "空间叠加")):
             nav.add(panel, text=name)
             panel.columnconfigure(1, weight=1)
 
@@ -180,6 +181,7 @@ class RendererApp(LayerControls):
             self.field(camera, row, label, key, value)
 
         self.make_layer_panel(footage)
+        self.make_spatial_panel(spatial)
 
         actions = ttk.Frame(self.form, style="Shell.TFrame")
         actions.pack(fill="x", pady=(10, 0))
@@ -187,6 +189,76 @@ class RendererApp(LayerControls):
         ttk.Button(actions, text="导出 MP4 / PNG", style="Shell.Primary.TButton",
                    command=lambda: self.start_render(False)).pack(side="right")
         self.sync_odometry()
+
+    def make_spatial_panel(self, panel):
+        self.spatial_panel = panel
+        self.spatial_toggles = {}
+        self.spatial_topics = {}
+        self.spatial_demo_labels = {}
+
+        def toggle(row, name, label, color):
+            flag = self.spatial_toggles[name] = tk.BooleanVar(value=False)
+            ttk.Checkbutton(panel, text=label, variable=flag, command=self.sync_spatial).grid(
+                row=row, column=0, sticky="w", pady=5)
+            group = ttk.Frame(panel)
+            group.grid(row=row, column=1, sticky="e")
+            tk.Label(group, width=3, height=1, bg=color).pack(side="right", padx=3)
+
+        for row, name, label, color in ((0, "plan", "规划轨迹", "#33EB80"),
+                                         (2, "corridor", "飞行安全走廊", "#4DB3FF"),
+                                         (4, "scan", "当前扫描点云", "#76F6FF")):
+            toggle(row, name, label, color)
+            self.spatial_topics[name] = self.field(panel, row+1, "ROS 话题", name + "_topic", "", ("",))
+            demo = ttk.Label(panel, text="内置模拟数据", style="Quiet.TLabel")
+            demo.grid(row=row+1, column=1, sticky="w")
+            self.spatial_demo_labels[name] = demo
+        toggle(6, "camera", "相机 FOV", "#C787FF")
+        self.field(panel, 7, "光学坐标系", "camera_frame", "camera_optical_frame")
+        self.field(panel, 8, "水平° 垂直° 深度m", "camera_fov", "82 53 3.5")
+        toggle(9, "lidar", "雷达 FOV", "#FA9942")
+        self.field(panel, 10, "雷达坐标系", "lidar_frame", "lidar")
+        self.field(panel, 11, "水平° 垂直° 半径m 仰角°", "lidar_fov", "360 40 5 0")
+        self.spatial_hint = tk.StringVar()
+        ttk.Label(panel, textvariable=self.spatial_hint, style="Quiet.TLabel", wraplength=295).grid(
+            row=12, column=0, columnspan=2, sticky="w", pady=(12, 2))
+        self.sync_spatial()
+
+    def sync_spatial(self):
+        for name, widget in self.spatial_topics.items():
+            demo = self.spatial_demo_labels[name]
+            if self.demo_selected:
+                widget.grid_remove()
+                demo.grid()
+            else:
+                demo.grid_remove()
+                widget.grid()
+                enabled = self.bag_path is not None and self.spatial_toggles[name].get()
+                widget.configure(state="readonly" if enabled else "disabled")
+        if self.demo_selected:
+            self.spatial_hint.set("模拟模式使用内置规划与传感器数据。勾选图层后重新生成预览。")
+        else:
+            self.spatial_hint.set("配置后重新生成预览。当前扫描留空时使用主点云话题的最新一帧。")
+
+    def add_spatial_args(self, args, values):
+        for name in ("plan", "corridor", "scan"):
+            if not self.spatial_toggles[name].get():
+                continue
+            topic = values[name + "_topic"]
+            if self.bag_path is None or (name == "scan" and not topic):
+                args.append("--show-" + name)
+            elif topic:
+                args.extend(("--" + name + "-topic", topic))
+            else:
+                label = "规划轨迹" if name == "plan" else "飞行安全走廊"
+                raise ValueError(f"请选择{label}话题，或取消勾选。")
+        for name, total in (("camera", 3), ("lidar", 4)):
+            if not self.spatial_toggles[name].get():
+                continue
+            angles = values[name+"_fov"].replace("，", " ").replace(",", " ").split()
+            frame = values[name+"_frame"]
+            if len(angles) != total or not frame:
+                raise ValueError("请填写传感器坐标系及对应数量的 FOV 参数。")
+            args.extend(("--" + name + "-fov", frame, *angles))
 
     def field(self, panel, row, label, name, value, choices=None):
         variable = self.values[name] = tk.StringVar(value=value)
@@ -245,6 +317,7 @@ class RendererApp(LayerControls):
         self.bag_path = None
         self.demo_selected = True
         self.bag_name.set("模拟点云与轨迹")
+        self.sync_spatial()
         self.start_render(True)
 
     def sync_odometry(self):
@@ -263,6 +336,13 @@ class RendererApp(LayerControls):
                                           (self.odom_topics, odometry, "/Odometry")):
             widget.configure(values=choices)
             widget.set(fallback if fallback in choices else (choices[0] if choices else ""))
+        for name, types in (("plan", PLAN_TYPES), ("corridor", CORRIDOR_TYPES), ("scan", (CLOUD,))):
+            widget = self.spatial_topics[name]
+            choices = sorted({row["topic"] for row in topics if row["type"] in types})
+            widget.configure(values=("", *choices))
+            if self.values[name + "_topic"].get() not in choices:
+                widget.set("")
+        self.sync_spatial()
         self.values["pose_source"].set("Odometry" if odometry else "TF")
         self.status.set(f"已读取 {len(clouds)} 个点云话题，{len(odometry)} 个里程计话题")
 
@@ -342,6 +422,7 @@ class RendererApp(LayerControls):
         args += ["--color", color, "--cloud-mode", mode, "--encoder", encoder]
         if not self.edl.get():
             args.append("--no-edl")
+        self.add_spatial_args(args, values)
         settings = parser(FormParser).parse_args(args)
         validate(settings)
         return settings

@@ -11,6 +11,7 @@ from .cloud import CloudMap
 from .geometry import stabilized_fpv_pose
 from .composition import SpeedHistory, compose, estimated_speed
 from .sources import BagSource, DemoSource, TrailDemoSource, inspect_bag
+from .spatial import SpatialOverlays, sensor_settings
 from .encoding import h264_encoder
 from .footage import FULL_FRAME, FlightVideo, VideoEdit, composite
 
@@ -62,7 +63,18 @@ def parser(parser_class=argparse.ArgumentParser):
         x.add_argument('--supersample',type=int,choices=(1,2),default=1)
         x.add_argument('--crf',type=int,choices=range(0,52),default=None,metavar='0–51')
         x.add_argument('--encoder',choices=('auto','cpu','nvenc'),default='cpu')
+        if name == 'bag':
+            x.add_argument('--plan-topic', help='Planned nav_msgs/Path, Marker or MarkerArray')
+            x.add_argument('--corridor-topic', help='Safety corridor Marker or MarkerArray')
+            x.add_argument('--scan-topic', help='Separate PointCloud2 topic for the latest scan')
+        if name == 'demo':
+            x.add_argument('--show-plan', action='store_true')
+            x.add_argument('--show-corridor', action='store_true')
         if name != 'listen':
+            x.add_argument('--show-scan', action='store_true', help='Highlight the latest map input frame')
+            x.add_argument('--scan-max-age', type=float, default=.5, help='Hide scans older than this many seconds')
+            x.add_argument('--camera-fov', nargs=4, metavar=('FRAME','HFOV','VFOV','DEPTH'))
+            x.add_argument('--lidar-fov', nargs=5, metavar=('FRAME','HFOV','VFOV','RADIUS','ELEVATION'))
             x.add_argument('--video',type=Path)
             x.add_argument('--video-in',type=float,default=0)
             x.add_argument('--video-out',type=float)
@@ -157,6 +169,7 @@ def render(a, source, *, preview=None, preview_offset=0, progress=None, check_ca
                 output = Export(a, destination)
                 codec = output.codec
                 stack.callback(output.close)
+            spatial = SpatialOverlays(a, source, stack)
             iterator = iter(source.clouds())
             stack.callback(iterator.close)
 
@@ -172,7 +185,8 @@ def render(a, source, *, preview=None, preview_offset=0, progress=None, check_ca
                     check_cancel()
                 t = start + round(i * 1e9 / a.fps)
                 while pending is not None and pending[0] <= t:
-                    _, xyz, rgb = pending
+                    cloud_stamp, xyz, rgb = pending
+                    spatial.update_map_scan(cloud_stamp, xyz)
                     cloud.add(xyz, None if a.color == 'height' else rgb, a.cloud_mode == 'replace')
                     transformed += 1
                     dirty = True
@@ -199,8 +213,9 @@ def render(a, source, *, preview=None, preview_offset=0, progress=None, check_ca
                     dirty = False
                 label = 'SYNTHETIC DEMO' if is_synthetic else 'RECORDED ROS1 DATA'
                 camera_pose = stabilized_fpv_pose(source, t, pose) if "fpv" in renderer.modes else None
+                overlays = {"spatial": spatial.frame(t, pose, check_cancel)} if spatial else {}
                 frame = renderer.frame(pose, trajectory, f'{label} | t={elapsed:.3f}s | REAR CHASE + OBLIQUE',
-                                       elapsed=elapsed, fpv_pose=camera_pose)
+                                       elapsed=elapsed, fpv_pose=camera_pose, **overlays)
                 if project is not None:
                     frame, cloud_views = frame
                     footage = tuple(layer.frame_at(elapsed) for layer in layers)
@@ -245,7 +260,9 @@ def open_source(a, check_cancel=None):
     if a.command == 'demo':
         return (TrailDemoSource if a.demo_scene == "trail" else DemoSource)(a.seconds)
     return BagSource(a.bag,a.cloud_topic,a.odom_topic,a.world,a.body,a.pose_source,
-                     a.max_gap,extrinsics(a.extrinsics)).index(check_cancel)
+                     a.max_gap,extrinsics(a.extrinsics), plan_topic=getattr(a, 'plan_topic', None),
+                     corridor_topic=getattr(a, 'corridor_topic', None),
+                     scan_topic=getattr(a, 'scan_topic', None)).index(check_cancel)
 
 
 def video_edit(a):
@@ -270,6 +287,10 @@ def validate(a):
         raise ValueError('--max-gap must be positive')
 
     if a.command != 'listen':
+        for name in ("camera", "lidar"):
+            sensor_settings(a, name)
+        if not np.isfinite(a.scan_max_age) or a.scan_max_age <= 0:
+            raise ValueError('扫描保留时间须是大于 0 的有限值。')
         video_edit(a)
         if not .05 <= a.video_width <= .90:
             raise ValueError('Invalid video time offset or size (5–90%)')

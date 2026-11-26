@@ -1,0 +1,56 @@
+name: Native Windows preview
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'native/**'
+      - '.github/workflows/native-windows.yml'
+  pull_request:
+    paths:
+      - 'native/**'
+      - '.github/workflows/native-windows.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          arch: win64_msvc2022_64
+          cache: true
+      - name: Install ROS1 bag compression libraries
+        shell: pwsh
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe" install bzip2:x64-windows-static-md lz4:x64-windows-static-md
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build and test
+        shell: pwsh
+        run: |
+          cmake -S native -B build-native -G "Visual Studio 17 2022" -A x64 "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" "-DVCPKG_TARGET_TRIPLET=x64-windows-static-md"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build-native --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build-native -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Stage portable application
+        shell: pwsh
+        run: |
+          cmake --install build-native --config Release --prefix dist/PlannerReplayNative
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          windeployqt --release --qmldir native/qml dist/PlannerReplayNative/PlannerReplayNative.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item native/README.md, LICENSE dist/PlannerReplayNative/
+          $app = Start-Process -Wait -PassThru dist/PlannerReplayNative/PlannerReplayNative.exe --smoke
+          if ($app.ExitCode -ne 0) { exit $app.ExitCode }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PlannerReplayNative-Windows-x64
+          path: dist/PlannerReplayNative/
+          if-no-files-found: error

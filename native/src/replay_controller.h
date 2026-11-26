@@ -1,0 +1,86 @@
+#pragma once
+
+#include "replay_data.h"
+
+#include <QElapsedTimer>
+#include <QFutureWatcher>
+#include <QObject>
+#include <QTimer>
+#include <QUrl>
+#include <atomic>
+
+class ReplayController : public QObject {
+    Q_OBJECT
+    Q_PROPERTY(bool loading READ loading NOTIFY stateChanged)
+    Q_PROPERTY(bool playing READ playing NOTIFY playingChanged)
+    Q_PROPERTY(double duration READ duration NOTIFY recordingChanged)
+    Q_PROPERTY(double position READ position NOTIFY positionChanged)
+    Q_PROPERTY(double progress READ progress NOTIFY stateChanged)
+    Q_PROPERTY(QString status READ status NOTIFY stateChanged)
+    Q_PROPERTY(QString name READ name NOTIFY recordingChanged)
+    Q_PROPERTY(QString speed READ speed NOTIFY positionChanged)
+    Q_PROPERTY(QString cloudTopic READ cloudTopic NOTIFY recordingChanged)
+    Q_PROPERTY(QString odometryTopic READ odometryTopic NOTIFY recordingChanged)
+    Q_PROPERTY(QStringList cloudTopics READ cloudTopics NOTIFY recordingChanged)
+    Q_PROPERTY(QStringList odometryTopics READ odometryTopics NOTIFY recordingChanged)
+    Q_PROPERTY(int pointCount READ pointCount NOTIFY positionChanged)
+    Q_PROPERTY(bool replacing READ replacing NOTIFY recordingChanged)
+    Q_PROPERTY(bool demo READ demo NOTIFY recordingChanged)
+public:
+    explicit ReplayController(QObject *parent = nullptr);
+    ~ReplayController() override;
+
+    bool loading() const { return loading_; }
+    bool playing() const { return timer_.isActive(); }
+    double duration() const { return record_->duration(); }
+    double position() const { return position_; }
+    double progress() const { return progress_; }
+    QString status() const { return status_; }
+    QString name() const { return record_->name; }
+    QString speed() const;
+    QString cloudTopic() const { return record_->cloudTopic; }
+    QString odometryTopic() const { return record_->odometryTopic; }
+    QStringList cloudTopics() const { return record_->cloudTopics; }
+    QStringList odometryTopics() const { return record_->odometryTopics; }
+    int pointCount() const;
+    bool replacing() const { return record_->replace; }
+    bool demo() const { return path_.isEmpty(); }
+    std::shared_ptr<const replay::Recording> recording() const { return record_; }
+
+    Q_INVOKABLE void openBag(const QUrl &url);
+    Q_INVOKABLE void openDemo();
+    Q_INVOKABLE void setCloudTopic(const QString &topic);
+    Q_INVOKABLE void setOdometryTopic(const QString &topic);
+    Q_INVOKABLE void setReplacing(bool replace);
+    Q_INVOKABLE void togglePlayback();
+    Q_INVOKABLE void pause();
+    Q_INVOKABLE void seek(double seconds);
+    Q_INVOKABLE void cancel();
+
+signals:
+    void stateChanged();
+    void playingChanged();
+    void positionChanged();
+    void recordingChanged();
+
+private:
+    struct Result {
+        std::shared_ptr<const replay::Recording> record;
+        QString path;
+        QString issue;
+        std::optional<replay::MapMode> mode;
+    };
+    void load(const QString &path, const replay::LoadOptions &options);
+    void install(std::shared_ptr<const replay::Recording> record);
+    void setPosition(double seconds);
+
+    std::shared_ptr<const replay::Recording> record_;
+    QFutureWatcher<Result> watcher_;
+    QTimer timer_;
+    QElapsedTimer clock_;
+    QString path_, status_;
+    std::optional<replay::MapMode> mapMode_;
+    std::atomic_bool cancelRequested_ = false;
+    bool loading_ = false;
+    double position_ = 0., start_ = 0., progress_ = 0.;
+};

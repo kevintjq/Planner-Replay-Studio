@@ -33,6 +33,8 @@
 
 ## 快速开始
 
+可试用 [C++ / Qt 原生预览版](native/README.md)，直接打开 ROS1 bag 播放点云、轨迹和里程计速度。
+
 1. 安装带 Tcl/Tk 的 64 位 Python 3.10 或更高版本。
 2. 克隆仓库，双击 [Start_Planner_Replay.cmd](Start_Planner_Replay.cmd)。首次启动会下载依赖。
 3. 在「数据」打开 ROS1 `.bag`，或点「使用模拟数据」查看效果。选择机位和图层后点「生成预览」。

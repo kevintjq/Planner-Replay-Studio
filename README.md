@@ -33,6 +33,8 @@ A Windows workspace for composing multi-view videos from ROS1 SLAM point clouds,
 
 ## Quick start
 
+Try the [C++ / Qt native preview](native/README.md) for ROS1 bag playback with point clouds, flown paths and odometry speed.
+
 1. Install 64-bit Python 3.10 or newer with Tcl/Tk.
 2. Clone the repository and double-click [Start_Planner_Replay.cmd](Start_Planner_Replay.cmd). The first launch downloads dependencies.
 3. Open a ROS1 `.bag` under **Data** or choose **Use simulated data**. Pick views and layers, then generate a preview.

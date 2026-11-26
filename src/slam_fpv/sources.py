@@ -1,11 +1,11 @@
-"""Offline ROS1 bag reader. Bag storage time never substitutes for header time."""
+"""Offline ROS1 bag reader using message timestamps for synchronized replay."""
 from pathlib import Path
 import numpy as np
 from rosbags.highlevel import AnyReader
 from .geometry import TransformTree, transform_points
 from .cloud import decode
 from .spatial import CLOUD, CORRIDOR_TYPES, GOAL_TYPES, PLAN_TYPES, GeometryTimeline
-from .sensor_topics import SCAN_TYPES, camera_choices, connected_frames, inspect_metadata, is_lidar_cloud, scan_points
+from .sensor_topics import SCAN_TYPES, camera_choices, connected_frames, inspect_metadata, planner_map_topic, scan_points
 
 
 def inspect_bag(path, check_cancel=None):
@@ -15,11 +15,13 @@ def inspect_bag(path, check_cancel=None):
                     topics=topics, tf_pairs=pairs)
 
 
-def stamp(msg):
+def stamp(msg, *, unstamped_map_time=None):
     t = msg.header.stamp
     sec = getattr(t, 'sec', getattr(t, 'secs', 0))
     ns = getattr(t, 'nanosec', getattr(t, 'nsecs', 0))
     value = int(sec)*10**9+int(ns)
+    if value == 0 and unstamped_map_time is not None and unstamped_map_time > 0:
+        return unstamped_map_time
     if value <= 0:
         raise ValueError("Zero/negative header timestamp; repair data explicitly")
     return value
@@ -37,31 +39,17 @@ def add_tf(tree, msg, static=False):
                  [p.x,p.y,p.z], [q.x,q.y,q.z,q.w], static)
 
 
-def cloud_origin(tree, world, body, topic, frame, t, transform, lidar_frame=None):
-    """Find the acquisition origin for either a local scan or a registered cloud."""
-    if is_lidar_cloud({"topic": topic, "frame": frame.strip("/")}, world.strip("/"), body.strip("/")):
-        return transform[:3, 3]
-    for candidate in (lidar_frame, body):
-        if candidate:
-            try:
-                return tree.lookup(world, candidate, t)[:3, 3]
-            except LookupError:
-                continue
-    return None
-
-
 class BagSource:
     def __init__(self, path, cloud_topic, odom_topic, world, body, pose_source='odom', max_gap=.5, extrinsics=(), *,
-                 plan_topic=None, corridor_topic=None, scan_topic=None, goal_topic=None, plan_frame='world',
-                 lidar_frame=None):
+                 plan_topic=None, corridor_topic=None, scan_topic=None, goal_topic=None, plan_frame='world'):
         self.path, self.cloud_topic = Path(path), cloud_topic
+        self.planner_map = planner_map_topic(cloud_topic)
         self.world, self.body = world.lstrip('/'), body.lstrip('/')
         self.tree = TransformTree(max_gap)
         self.pose_source = pose_source
         self.odom_topic = odom_topic
         self.extrinsics = extrinsics
         self.scan_topic = scan_topic
-        self.lidar_frame = lidar_frame
         self.detected_camera = None
         self.camera_topic = None
         self.camera_issue = "缺少有效 CameraInfo"
@@ -104,7 +92,7 @@ class BagSource:
                     if c.topic == topic:
                         timeline.add(c.msgtype, msg, recorded)
                 if c.topic == self.cloud_topic:
-                    t = stamp(msg)
+                    t = stamp(msg, unstamped_map_time=recorded if self.planner_map else None)
                     if previous is not None and t < previous:
                         raise ValueError("Cloud header time moved backwards; split/sort bag first")
                     previous = t
@@ -187,13 +175,13 @@ class BagSource:
                     continue
                 yield t, transform_points(transform, scan_points(msg))
 
-    def clouds(self, *, with_origin=False):
+    def clouds(self):
         started = False
         with AnyReader([self.path]) as reader:
             cs = [c for c in reader.connections if c.topic == self.cloud_topic]
-            for c, _, raw in reader.messages(connections=cs):
+            for c, recorded, raw in reader.messages(connections=cs):
                 msg = reader.deserialize(raw,c.msgtype)
-                t = stamp(msg)
+                t = stamp(msg, unstamped_map_time=recorded if self.planner_map else None)
                 xyz, rgb = decode(msg)
                 try:
                     T = self.tree.lookup(self.world, msg.header.frame_id, t)
@@ -203,13 +191,7 @@ class BagSource:
                     self.leading_cloud_skips += 1
                     continue
                 started = True
-                points = transform_points(T, xyz)
-                if with_origin:
-                    origin = cloud_origin(self.tree, self.world, self.body, self.cloud_topic,
-                                          msg.header.frame_id, t, T, self.lidar_frame)
-                    yield t, points, rgb, origin
-                else:
-                    yield t, points, rgb
+                yield t, transform_points(T, xyz), rgb
 
     def pose(self, t):
         return self.tree.lookup(self.world, self.body, t)
@@ -230,7 +212,7 @@ class DemoSource:
         return matrix(p, [np.sin(roll/2)*np.cos(yaw/2),np.sin(roll/2)*np.sin(yaw/2),
                           np.cos(roll/2)*np.sin(yaw/2),np.cos(roll/2)*np.cos(yaw/2)])
 
-    def clouds(self, *, with_origin=False):
+    def clouds(self):
         rng = np.random.default_rng(7)
         n=14000
         floor = np.column_stack([rng.uniform(-4,14,n),rng.uniform(-6,6,n),rng.normal(0,.015,n)])
@@ -242,11 +224,9 @@ class DemoSource:
         xyz=np.concatenate([floor,walls,*pillars])
         for t in range(self.first,self.last+1,100000000):
             # Incrementally reveal points within a forward-moving range.
-            origin = self.pose(t)[:3, 3]
-            x = origin[0]
+            x=self.pose(t)[0,3]
             mask=(xyz[:,0]<x+5)&(xyz[:,0]>x-5)
-            sample = t, xyz[mask], None
-            yield (*sample, origin) if with_origin else sample
+            yield t, xyz[mask], None
 
 
 class TrailDemoSource(DemoSource):
@@ -267,7 +247,7 @@ class TrailDemoSource(DemoSource):
         return matrix([x, self.center(x), 1.25 + self.ground(x)],
                       [0, 0, np.sin(yaw / 2), np.cos(yaw / 2)])
 
-    def clouds(self, *, with_origin=False):
+    def clouds(self):
         rng = np.random.default_rng(27)
         start, end = -7, (self.last - self.first) / 1e9 * 2.8 + 12
         # Narrow sweep bands on the road and uneven strips behind the shoulders.
@@ -294,10 +274,8 @@ class TrailDemoSource(DemoSource):
         xyz = xyz[np.argsort(xyz[:, 0])]
         previous = 0
         for t in range(self.first, self.last + 1, 100_000_000):
-            origin = self.pose(t)[:3, 3]
-            front = origin[0] + 10
+            front = self.pose(t)[0, 3] + 10
             end_index = np.searchsorted(xyz[:, 0], front)
             if end_index > previous:
-                sample = t, xyz[previous:end_index], None
-                yield (*sample, origin) if with_origin else sample
+                yield t, xyz[previous:end_index], None
             previous = end_index

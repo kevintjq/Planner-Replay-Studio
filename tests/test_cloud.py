@@ -39,12 +39,13 @@ def test_scan_palette_is_stable_and_zero_voxel_keeps_raw_samples():
     np.testing.assert_array_equal(cloud.rgb[-3:], first_colors)
 
 
-def test_range_palette_uses_acquisition_origin_and_keeps_previous_colors():
+def test_range_palette_recolors_existing_points_from_current_body_position():
     cloud = CloudMap(0, range_color=True, range_limits=(0., 10.))
     points = np.array([[8., 0., 0.], [4., 0., 4.]])
-    cloud.add(points, origin=[4., 0., 0.])
-    first_colors = cloud.rgb.copy()
+    cloud.add(points)
+    first_colors = cloud.colors_from([4., 0., 0.])
     np.testing.assert_array_equal(first_colors[0], first_colors[1])
-    cloud.add(points, origin=[8., 0., 0.])
-    np.testing.assert_array_equal(cloud.rgb[:2], first_colors)
-    assert not np.array_equal(cloud.rgb[2], cloud.rgb[3])
+    new_colors = cloud.colors_from([8., 0., 0.])
+    np.testing.assert_array_equal(cloud.xyz, points)
+    assert not np.array_equal(new_colors[0], new_colors[1])
+    assert not np.array_equal(new_colors[0], first_colors[0])

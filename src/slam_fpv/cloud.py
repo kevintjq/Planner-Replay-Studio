@@ -58,16 +58,9 @@ class CloudMap:
         self.xyz = np.empty((0, 3))
         self.rgb = np.empty((0, 3), dtype='u1')
 
-    def add(self, xyz, rgb=None, replace=False, *, origin=None):
+    def add(self, xyz, rgb=None, replace=False):
         if self.range_color:
-            if origin is not None and len(xyz):
-                ranges = np.linalg.norm(xyz - origin, axis=1)
-                if self.range_limits is None:
-                    low, high = np.percentile(ranges, (2, 98))
-                    self.range_limits = float(low), float(max(high, low + .5))
-                rgb = scan_colors(ranges, self.range_limits)
-            else:
-                rgb = np.broadcast_to(np.array([222, 227, 232], dtype='u1'), xyz.shape)
+            rgb = np.zeros(xyz.shape, dtype='u1')
         elif self.scan_height:
             if self.height_limits is None and len(xyz):
                 low, high = np.percentile(xyz[:, 2], (2, 98))
@@ -86,3 +79,14 @@ class CloudMap:
             idx = np.sort(idx)[-self.max_points:]
             xyz, rgb = xyz[idx], rgb[idx]
         self.xyz, self.rgb = xyz[-self.max_points:], rgb[-self.max_points:]
+
+    def colors_from(self, position):
+        """Color the retained map relative to the body at the current playback time."""
+        if not len(self.xyz):
+            return self.rgb
+        offsets = self.xyz - position
+        distances = np.sqrt(np.einsum('ij,ij->i', offsets, offsets))
+        if self.range_limits is None:
+            low, high = np.percentile(distances, (2, 98))
+            self.range_limits = float(low), float(max(high, low + .5))
+        return scan_colors(distances, self.range_limits)

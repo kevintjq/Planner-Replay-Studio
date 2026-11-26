@@ -6,7 +6,7 @@ import socket
 from types import SimpleNamespace
 import numpy as np
 from .geometry import TransformTree, Series, transform_points
-from .sources import stamp, components, add_tf, cloud_origin
+from .sources import stamp, components, add_tf
 from .cloud import decode, CloudMap
 
 
@@ -74,10 +74,7 @@ def listen(a):
                             if (next_frame-first)/1e9>=a.seconds or a.output.suffix.lower()=='.png':
                                 stats['complete']=True; return
                         xyz,rgb=decode(msg)
-                        origin = (cloud_origin(tree, a.world, a.body, a.cloud_topic, msg.header.frame_id, t, T)
-                                  if a.color == "range" else None)
-                        cloud.add(transform_points(T,xyz),None if a.color=='height' else rgb,
-                                  a.cloud_mode=='replace',origin=origin)
+                        cloud.add(transform_points(T,xyz),None if a.color=='height' else rgb,a.cloud_mode=='replace')
                         renderer.update_cloud(cloud)
                     for value in tree.edges.values():
                         if isinstance(value,Series) and len(value.samples)>6000:

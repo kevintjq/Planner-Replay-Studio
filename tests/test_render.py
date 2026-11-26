@@ -18,6 +18,25 @@ def test_world_path_crossing_camera_is_clipped_without_a_bridge():
     np.testing.assert_allclose(right, [[4, 0, .1], [4, 0, 2]])
 
 
+def test_range_colors_follow_body_without_a_new_cloud():
+    from vtk.util.numpy_support import vtk_to_numpy
+    from slam_fpv.geometry import matrix
+
+    cloud = CloudMap(0, range_color=True, range_limits=(0., 10.))
+    cloud.add(np.array([[0., 0., 0.], [8., 0., 0.]]))
+    renderer = Renderer(320, 180, edl=False, view_modes=("oblique",))
+    try:
+        renderer.update_cloud(cloud)
+        renderer.frame(matrix([0., 0., 0.], [0., 0., 0., 1.]), (), "")
+        meshes = [actor.GetMapper().GetInput() for _, actor in renderer.cloud_actors]
+        first = vtk_to_numpy(meshes[0].GetPointData().GetScalars()).copy()
+        renderer.frame(matrix([8., 0., 0.], [0., 0., 0., 1.]), (), "")
+        for mesh in meshes:
+            np.testing.assert_array_equal(vtk_to_numpy(mesh.GetPointData().GetScalars()), first[::-1])
+    finally:
+        renderer.close()
+
+
 def test_edl_two_view_frame_and_rgb_axes():
     s=DemoSource(1); _,xyz,rgb=next(s.clouds())
     m=CloudMap(); m.add(xyz,rgb)

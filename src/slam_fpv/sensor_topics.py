@@ -15,6 +15,11 @@ ODOM = "nav_msgs/msg/Odometry"
 TF = "tf2_msgs/msg/TFMessage"
 
 
+def planner_map_topic(topic):
+    return any(("/" + topic.strip("/")).endswith("/" + suffix) for suffix in (
+        "grid_map/occupancy", "grid_map/occupancy_inflate", "rog_map/occ", "rog_map/inf_occ"))
+
+
 def camera_view(message):
     frame = message.header.frame_id.strip("/")
     if not frame or min(message.width, message.height) <= 0:

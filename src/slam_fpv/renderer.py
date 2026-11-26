@@ -227,6 +227,7 @@ class Renderer:
         self.windows=[]
         self.views=[]
         self.cloud_actors=[]
+        self.range_cloud = self.range_position = None
         self.dynamic=[]
         self.scan_actors = []
         self.scan = None
@@ -265,12 +266,22 @@ class Renderer:
     def update_cloud(self,cloud):
         for scene,actor in self.cloud_actors: scene.RemoveActor(actor)
         self.cloud_actors=[]
+        self.range_cloud = cloud if getattr(cloud, "range_color", False) and self.cloud_color is None else None
+        self.range_position = None
         rgb = cloud.rgb if self.cloud_color is None else np.broadcast_to(self.cloud_color, cloud.rgb.shape)
         for scene, _ in self.views:
             # Each mapper owns GPU buffers for its own OpenGL context.
             actor = point_actor(cloud.xyz, rgb, self.point_size)
             scene.AddActor(actor)
             self.cloud_actors.append((scene, actor))
+
+    def update_range_colors(self, position):
+        if self.range_cloud is None or np.array_equal(position, self.range_position):
+            return
+        colors = numpy_to_vtk(self.range_cloud.colors_from(position), deep=True)
+        for _, actor in self.cloud_actors:
+            actor.GetMapper().GetInput().GetPointData().SetScalars(colors)
+        self.range_position = position.copy()
 
     def update_scan(self, scan):
         if scan is self.scan:
@@ -349,6 +360,7 @@ class Renderer:
                     self.dynamic.append((overlay, actor))
 
     def frame(self,pose,trajectory,label,elapsed=0.,fpv_pose=None, spatial=None):
+        self.update_range_colors(pose[:3, 3])
         for renderer,actor in self.dynamic: renderer.RemoveActor(actor)
         self.dynamic=[]
         self.update_scan(spatial.scan if spatial else None)

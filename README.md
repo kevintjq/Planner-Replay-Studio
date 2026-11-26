@@ -74,7 +74,7 @@ Scroll over a point-cloud view to zoom it. Each view also has a camera zoom perc
 - Set a layout marker at the playhead to switch between the composition, full-screen point cloud, and full-screen footage. Click a purple marker to jump back to it.
 - Keep the cloud layer transparent and add **Footage backdrop** then **Footage inset** markers for the same clip. The second marker starts a 0.4-second transition by default.
 
-The default palette colors points from green to purple by distance from the lidar when each scan was recorded. Registered clouds use the lidar TF at the scan timestamp, with the body position as a fallback. The rear and oblique views can show the yellow flown path and moving TF axes. FPV hides the flown path and retains the axes.
+The default palette colors each point from green to purple by its 3D distance from the current vehicle position, including points retained from earlier frames. Select a SLAM cloud or a planner's `PointCloud2` map, such as EGO `grid_map/occupancy` or SUPER `rog_map/occ`. Known occupancy map topics default to **Replace map** and use bag recording time when the header timestamp is missing.
 
 ## Fixed-camera trajectory image
 

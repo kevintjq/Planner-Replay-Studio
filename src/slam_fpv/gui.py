@@ -31,7 +31,7 @@ from .sources import inspect_bag
 from .project_file import ProjectFile, load_project, save_project
 from .export_media import inspect_export
 from .spatial import CORRIDOR_TYPES, EGO_SPLINES, GOAL_TYPES, PLAN_TYPES
-from .sensor_topics import SCAN_TYPES, camera_choices, connected_frames, pose_frames, suggested_topic
+from .sensor_topics import SCAN_TYPES, camera_choices, connected_frames, planner_map_topic, pose_frames, suggested_topic
 
 
 class FormParser(ArgumentParser):
@@ -486,7 +486,7 @@ class RendererApp(LayerControls):
         ttk.Label(source, textvariable=self.bag_name, wraplength=310).grid(
             row=1, column=0, columnspan=2, sticky="w", pady=(0, 12))
         self.cloud_topics = self.field(source, 2, "点云话题", "cloud_topic", "", ())
-        self.cloud_topics.bind("<<ComboboxSelected>>", self.change_source_frames)
+        self.cloud_topics.bind("<<ComboboxSelected>>", self.change_cloud_topic)
         self.field(source, 3, "位姿来源", "pose_source", "Odometry", ("Odometry", "TF"))
         self.odom_topics = self.field(source, 4, "里程计话题", "odom_topic", "", ())
         self.odom_topics.bind("<<ComboboxSelected>>", self.change_source_frames)
@@ -510,8 +510,8 @@ class RendererApp(LayerControls):
         self.field(quality, 4, "体素 (m，0 为原始)", "voxel", ".015")
         self.field(quality, 5, "点数上限", "max_points", "850000")
         self.field(quality, 6, "点大小 (px)", "point_size", "1.5")
-        self.field(quality, 7, "点云着色", "color", "雷达距离渐变",
-                   ("雷达距离渐变", "SLAM 高度彩虹", "FAST-LIO 灰白", "原始 RGB", "按高度", "自选纯色"))
+        self.field(quality, 7, "点云着色", "color", "机体距离渐变",
+                   ("机体距离渐变", "SLAM 高度彩虹", "FAST-LIO 灰白", "原始 RGB", "按高度", "自选纯色"))
         self.color_field(quality, 8, "点云纯色", "cloud_color", "#70d9ff")
         self.color_field(quality, 9, "轨迹颜色", "trajectory_color", "#f9d74b")
         self.field(quality, 10, "已飞轨迹线宽 (px)", "trajectory_width", "5")
@@ -770,6 +770,8 @@ class RendererApp(LayerControls):
                 self.values[name].set(saved.values[name])
         for name, value in saved.values.items():
             if name in self.values and name not in ("cloud_topic", "odom_topic", "pose_source", "extrinsics"):
+                if name == "color" and value == "雷达距离渐变":
+                    value = "机体距离渐变"
                 self.values[name].set(value)
         self.values["extrinsics"].set(str(saved.extrinsics or ""))
         for name, flag in {**self.spatial_toggles, "edl": self.edl, "slam_view": self.slam_view}.items():
@@ -945,6 +947,7 @@ class RendererApp(LayerControls):
                                           (self.odom_topics, odometry, "/Odometry")):
             widget.configure(values=choices)
             widget.set(fallback if fallback in choices else (choices[0] if choices else ""))
+        self.change_cloud_topic()
         self.values["pose_source"].set("Odometry" if odometry else "TF")
         for name, types in (("plan", PLAN_TYPES), ("goal", GOAL_TYPES), ("corridor", CORRIDOR_TYPES),
                             ("scan", SCAN_TYPES)):
@@ -956,6 +959,11 @@ class RendererApp(LayerControls):
         self.spatial_topics["camera"].set("自动识别")
         self.sync_spatial()
         self.status.set(f"已读取 {len(clouds)} 个点云话题，{len(odometry)} 个里程计话题")
+
+    def change_cloud_topic(self, *_):
+        topic = self.values["cloud_topic"].get()
+        self.values["cloud_mode"].set("替换整图" if planner_map_topic(topic) else "累积扫描")
+        self.change_source_frames()
 
     def change_source_frames(self, *_):
         self.sync_odometry()
@@ -1102,7 +1110,7 @@ class RendererApp(LayerControls):
             args += ["--pose-source", "odom" if values["pose_source"] == "Odometry" else "tf"]
             if values["extrinsics"]:
                 keys += ("extrinsics",)
-        color = {"雷达距离渐变": "range", "FAST-LIO 灰白": "solid", "SLAM 高度彩虹": "scan", "原始 RGB": "rgb",
+        color = {"机体距离渐变": "range", "FAST-LIO 灰白": "solid", "SLAM 高度彩虹": "scan", "原始 RGB": "rgb",
                  "按高度": "height", "自选纯色": "solid"}[values["color"]]
         if values["color"] == "FAST-LIO 灰白":
             values["cloud_color"] = "#DEE3E8"

@@ -20,6 +20,7 @@ def bag(tmp_path):
     with Writer(path) as writer:
         cs={topic:writer.add_connection(topic,typ,typestore=ts) for topic,typ in
             [('/points','sensor_msgs/msg/PointCloud2'),('/odom','nav_msgs/msg/Odometry'),
+             ('/drone/grid_map/occupancy','sensor_msgs/msg/PointCloud2'),
              ('/tf','tf2_msgs/msg/TFMessage'),('/tf_static','tf2_msgs/msg/TFMessage'),
              ('/plan','nav_msgs/msg/Path'),('/corridor','visualization_msgs/msg/MarkerArray'),
              ('/scan','sensor_msgs/msg/PointCloud2'), ('/camera/info','sensor_msgs/msg/CameraInfo'),
@@ -41,6 +42,10 @@ def bag(tmp_path):
             fields=[make('sensor_msgs/msg/PointField',name,j*4,7,1) for j,name in enumerate(['x','y','z'])]
             cloud=make('sensor_msgs/msg/PointCloud2',header(i,'lidar'),1,1,fields,False,12,12,
                        np.array([1,0,0],dtype='<f4').view('u1'),True)
+            map_header = make('std_msgs/msg/Header', i, make('builtin_interfaces/msg/Time',0,0), 'map')
+            map_cloud = make('sensor_msgs/msg/PointCloud2',map_header,1,1,fields,False,12,12,cloud.data,True)
+            writer.write(cs['/drone/grid_map/occupancy'], 1_000_000_000+i*100000000,
+                         ts.serialize_ros1(map_cloud,map_cloud.__msgtype__))
             messages=[('/odom',odom),('/tf',tf),('/points',cloud)]
             if i == 1:
                 second_pose = make('geometry_msgs/msg/Pose', make('geometry_msgs/msg/Point', 3., 0., 0.), q)
@@ -108,6 +113,15 @@ def test_direct_bag_tf_static_and_header_sync(bag,pose_source):
     np.testing.assert_allclose(clouds[2][1],[[3.5,0,0]])
     assert s.pose(1_150_000_000)[0,3]==pytest.approx(1.5)
     with pytest.raises(LookupError): s.pose(999_000_000)
+
+
+def test_native_ego_map_with_zero_header_stamp_replays_on_bag_clock(bag):
+    source = BagSource(bag, '/drone/grid_map/occupancy', '/odom', 'map', 'body').index()
+    assert source.first == 1_000_000_000 and source.last == 1_300_000_000
+    frames = list(source.clouds())
+    assert len(frames) == 4 and frames[1][0] == 1_100_000_000
+    np.testing.assert_allclose(frames[1][1], [[1., 0., 0.]])
+    np.testing.assert_allclose(source.pose(frames[1][0])[:3, 3], [1., 0., 0.])
 
 
 def test_missing_cloud_and_frames_rejected(bag):

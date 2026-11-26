@@ -191,6 +191,7 @@ class SpatialOverlays:
         self.corridor = getattr(args, "corridor_topic", None) or getattr(args, "show_corridor", False)
         self.show_scan = getattr(args, "show_scan", False) or getattr(args, "scan_topic", None)
         self.scan_age = round(getattr(args, "scan_max_age", .5) * 1e9)
+        self.wants_camera = getattr(args, "show_camera_fov", False) or bool(getattr(args, "camera_fov", None))
         self.camera = camera_settings(args)
         if self.camera is None and getattr(args, "show_camera_fov", False):
             self.camera = (CameraView("camera_optical_frame", (82, 53)) if self.demo
@@ -231,6 +232,37 @@ class SpatialOverlays:
             corridor = self.source.mission_shapes("corridor", stamp) if self.corridor else ()
 
         return SpatialFrame(plan, corridor, self.camera_frame(stamp, body_pose), scan)
+
+    def status(self, stamp, frame):
+        lines = []
+        if self.show_scan:
+            topic = "模拟扫描" if self.demo else (self.source.scan_topic or self.source.cloud_topic)
+            last, points = self.latest
+            if last == 0:
+                state = "等待首帧"
+            elif stamp - last > self.scan_age:
+                state = f"扫描已过期 ({(stamp-last)/1e9:.2f} s)"
+            elif points is None:
+                state = "当前帧缺少 TF"
+            elif not len(points):
+                state = "当前帧无有效点"
+            else:
+                state = f"{len(points):,} 点 · 帧龄 {(stamp-last)/1e6:.0f} ms"
+            lines.append(f"雷达 {topic}  ·  {state}")
+        if self.wants_camera:
+            if self.camera is None:
+                state = self.source.camera_issue
+            elif frame is None or frame.camera is None:
+                state = f"{self.camera.frame} 当前缺少 TF"
+            else:
+                topic = "模拟标定" if self.demo else (self.source.camera_topic or "手动标定")
+                state = f"{topic} · {self.camera.frame}"
+            lines.append(f"相机 {state}")
+        for name, enabled, label in (("plan", self.plan, "规划轨迹"), ("corridor", self.corridor, "安全走廊")):
+            if enabled and (frame is None or not any(shape.lines or shape.segments or shape.triangles
+                                                     for shape in getattr(frame, name))):
+                lines.append(f"{label}当前无可绘制数据")
+        return tuple(lines)
 
     def camera_frame(self, stamp, body_pose):
         if self.camera is None:

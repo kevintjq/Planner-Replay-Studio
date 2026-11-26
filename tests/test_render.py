@@ -166,3 +166,21 @@ def test_actual_and_planned_trajectory_use_independent_widths():
         assert widths[SPATIAL_COLORS["plan"]] == 6.
     finally:
         renderer.close()
+
+
+def test_per_view_filters_keep_scan_out_of_selected_fpvs():
+    from slam_fpv.spatial import Geometry, SpatialFrame
+
+    source = DemoSource(1)
+    path = np.array([[.5, 0, 1.], [1., 0, 1.]])
+    spatial = SpatialFrame((Geometry(lines=(path,)),), (), None, path)
+    renderer = Renderer(320, 180, edl=False, slam_view=True, view_modes=("oblique", "fpv"),
+                        overlays=(("scan", "actual"), ("plan",), ()))
+    try:
+        renderer.frame(source.pose(source.first), path, "", spatial=spatial)
+        assert renderer.visible_overlays == ({"scan", "actual"}, {"plan"}, set())
+        assert len(renderer.scan_actors) == 1
+        assert renderer.scan_actors[0][0] == renderer.views[0][0]
+        assert any(scene == renderer.views[1][1] for scene, _ in renderer.dynamic)
+    finally:
+        renderer.close()

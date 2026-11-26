@@ -66,14 +66,34 @@ POINT_CLOUD_VIEWS = {
     "orbit": ("环绕观察", (.75, .88)),
 }
 
+VIEW_OVERLAYS = {
+    "actual": "已飞轨迹",
+    "plan": "规划轨迹",
+    "corridor": "安全走廊",
+    "scan": "雷达当前帧",
+    "camera": "相机 FOV",
+}
+FPV_MODES = {"fpv", "fpv_raw"}
+
+
+def view_overlays(kind, selected=None):
+    if selected is not None:
+        return frozenset(selected) - ({"actual", "plan"} if kind in FPV_MODES else set())
+    return frozenset({"scan"} if kind in FPV_MODES else VIEW_OVERLAYS)
+
+
 @dataclass(frozen=True)
 class PointCloudView:
     kind: str = "oblique"
     width: float = .32
     position: tuple = (.97, .05)
     transparent: bool = True
+    overlays: tuple | None = None
 
     def __post_init__(self):
+        if self.overlays is not None and (len(set(self.overlays)) != len(self.overlays)
+                                         or not set(self.overlays) <= VIEW_OVERLAYS.keys()):
+            raise ValueError("未知或重复的视角叠加项。")
         if self.kind not in POINT_CLOUD_VIEWS:
             raise ValueError("未知的点云视角。")
         if not .12 <= self.width <= 1.5:
@@ -93,6 +113,7 @@ class Composition:
     speed_transparent: bool = True
     speed_start: float = 0.
     speed_end: float | None = None
+    transparent_canvas: bool = False
 
     def __post_init__(self):
         if not .35 <= self.speed_scale <= 2.5:
@@ -251,12 +272,25 @@ def rounded_tile(tile, transparent, radius):
     return tile
 
 
-def compose(base, project, videos, elapsed, speed, cloud_views=None):
+def compose(base, project, videos, elapsed, speed, cloud_views=None, *, alpha=None):
     """Render a scene and return the draggable layer rectangles."""
     scene = base if isinstance(base, Image.Image) else Image.fromarray(base)
     color = scene.getpixel((0, 0)) if scene.mode == "RGBA" else None
     fallback = color[:3] if color is not None and color[3] == 0 else MATTE
-    image = Image.new("RGB", scene.size, fallback)
+    alpha = project.transparent_canvas if alpha is None else alpha
+    image = Image.new("RGBA" if alpha else "RGB", scene.size, (0, 0, 0, 0) if alpha else fallback)
+
+    def paste(tile, position, opacity=1.):
+        mask = tile.getchannel("A")
+        if opacity != 1.:
+            mask = mask.point(lambda value: round(value * opacity))
+        if alpha:
+            if opacity != 1.:
+                tile.putalpha(mask)
+            image.alpha_composite(tile, position)
+        else:
+            image.paste(tile, position, mask)
+
     bounds = {}
     radius = max(2, round(image.height * .016))
 
@@ -267,8 +301,7 @@ def compose(base, project, videos, elapsed, speed, cloud_views=None):
             video = ImageOps.fit(source.convert("RGBA"), (w, h), Image.Resampling.LANCZOS)
             if layer.backdrop_scale < 1.:
                 video = rounded_tile(video, layer.transparent, radius)
-            mask = video.getchannel("A").point(lambda alpha: round(alpha * layer.opacity))
-            image.paste(video, (x, y), mask)
+            paste(video, (x, y), layer.opacity)
             bounds["video", index] = x, y, w, h
             break
 
@@ -281,7 +314,7 @@ def compose(base, project, videos, elapsed, speed, cloud_views=None):
         panel = Image.new("RGBA", tile.size, MATTE)
         panel.alpha_composite(tile)
         tile = panel
-    image.paste(tile, (x, y), tile.getchannel("A"))
+    paste(tile, (x, y))
     bounds["main", 0] = x, y, w, h
 
     for index, layer in enumerate(project.views):
@@ -291,7 +324,7 @@ def compose(base, project, videos, elapsed, speed, cloud_views=None):
         inset = captured if isinstance(captured, Image.Image) else Image.fromarray(captured)
         x, y, w, h = scaled_rect(image.size, inset.size, layer.width, layer.position)
         tile = rounded_tile(inset.resize((w, h), Image.Resampling.LANCZOS), layer.transparent, radius)
-        image.paste(tile, (x, y), tile.getchannel("A"))
+        paste(tile, (x, y))
         bounds["view", index] = x, y, w, h
 
     for index, (layer, footage) in enumerate(zip(project.videos, videos)):
@@ -307,8 +340,7 @@ def compose(base, project, videos, elapsed, speed, cloud_views=None):
             stroke = min(radius // 2, (min(w, h) - 1) // 2)
             tile.paste(inset.resize((w - 2 * stroke, h - 2 * stroke), Image.Resampling.LANCZOS), (stroke, stroke))
         tile = rounded_tile(tile, layer.transparent, radius)
-        mask = tile.getchannel("A").point(lambda alpha: round(alpha * layer.opacity))
-        image.paste(tile, (x, y), mask)
+        paste(tile, (x, y), layer.opacity)
         bounds["video", index] = x, y, w, h
 
     for index, layer in enumerate(project.texts):
@@ -317,14 +349,14 @@ def compose(base, project, videos, elapsed, speed, cloud_views=None):
             x, y = position_tile(image.size, tile, layer.position)
             if not layer.transparent:
                 tile = rounded_tile(tile, False, radius)
-            image.paste(tile, (x, y), tile)
+            paste(tile, (x, y))
             bounds["text", index] = x, y, *tile.size
     if project.show_speed and elapsed >= project.speed_start and (project.speed_end is None or elapsed < project.speed_end):
         tile = speed_tile(speed, project.speed_limit, round(image.height * project.speed_scale))
         x, y = position_tile(image.size, tile, project.speed_position)
         if not project.speed_transparent:
             tile = rounded_tile(tile, False, radius)
-        image.paste(tile, (x, y), tile)
+        paste(tile, (x, y))
         bounds["speed", 0] = x, y, *tile.size
     return image, bounds
 

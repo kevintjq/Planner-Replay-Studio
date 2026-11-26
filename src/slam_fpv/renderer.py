@@ -6,13 +6,12 @@ from PIL import Image, ImageChops
 import vtk
 from vtk.util.numpy_support import numpy_to_vtk, numpy_to_vtkIdTypeArray, vtk_to_numpy
 from .geometry import camera, fpv_angles, level_fpv_pose
-from .composition import rounded_mask
+from .composition import FPV_MODES, rounded_mask, view_overlays
 
 
 # Lift EDL midtones while preserving the dark background and white overlays.
 EDL_TONES = [v if v <= 14 else round(14 + 241 * ((v - 14) / 241) ** .66)
              for v in range(256)] * 3
-FPV_MODES = {"fpv", "fpv_raw"}
 # Fixed world-oriented projection for the FPV attitude indicator.
 ATTITUDE_PROJECTION = np.array([[1., -1., 0.], [-1., -1., 2.], [0., 0., 0.]])
 ATTITUDE_PROJECTION[:2] /= np.linalg.norm(ATTITUDE_PROJECTION[:2], axis=1)[:, None]
@@ -140,7 +139,7 @@ def view_camera(pose, mode, rear, oblique, elapsed, fpv_pose=None):
 class Renderer:
     def __init__(self,width=1280,height=720,edl=True,axis=.48,axis_pixels=28,point_size=2,
                  distance=3.8,camera_height=1.35,side=0.,fov=65,inset_distance=10,inset_height=6.7,
-                 *, supersample=1, cloud_color=None, trajectory_color=(1,.73,.18), trajectory_width=3, plan_width=3, clean=False, slam_view=False, view_modes=None, main_mode="rear", view_widths=None):
+                 *, supersample=1, cloud_color=None, trajectory_color=(1,.73,.18), trajectory_width=3, plan_width=3, clean=False, slam_view=False, view_modes=None, main_mode="rear", view_widths=None, overlays=None):
         self.output_size = (width, height)
         self.scale = supersample
         self.edl = edl
@@ -163,6 +162,8 @@ class Renderer:
         self.scan = None
         self.view_modes = view_modes
         self.modes = (main_mode, *(("oblique",) if view_modes is None else view_modes))
+        settings = (None,) * len(self.modes) if overlays is None else overlays
+        self.visible_overlays = tuple(view_overlays(mode, selected) for mode, selected in zip(self.modes, settings))
         view_widths = (.32,) * (len(self.modes)-1) if view_widths is None else view_widths
         for index in range(len(self.modes)):
             window=vtk.vtkRenderWindow()
@@ -210,14 +211,16 @@ class Renderer:
         if scan is not None and len(scan):
             sample = scan[::max(1, (len(scan) + 79999) // 80000)]
             rgb = np.broadcast_to(SPATIAL_COLORS["scan"], sample.shape)
-            for scene, _ in self.views:
+            for (scene, _), visible in zip(self.views, self.visible_overlays):
+                if "scan" not in visible:
+                    continue
                 actor = point_actor(sample, rgb, self.point_size + 1.7 * self.scale)
                 actor.GetMapper().SetResolveCoincidentTopologyToPolygonOffset()
                 actor.GetMapper().SetRelativeCoincidentTopologyPointOffsetParameter(-4)
                 scene.AddActor(actor)
                 self.scan_actors.append((scene, actor))
 
-    def add_spatial(self, scene, overlay, frame):
+    def add_spatial(self, scene, overlay, frame, visible):
         def add(groups, color, width, surface=False):
             if groups:
                 actor = mission_actor(groups, SPATIAL_COLORS[color], width*self.scale, surface=surface)
@@ -228,17 +231,18 @@ class Renderer:
             return tuple(group for shape in shapes for group in shape.lines) + tuple(
                 segment for shape in shapes for group in shape.segments for segment in group)
 
-        planned = lines(frame.plan)
+        planned = lines(frame.plan) if "plan" in visible else ()
         if planned:
             for color, width in (((.027, .085, .048), self.plan_width + 2 * self.scale),
                                  (SPATIAL_COLORS["plan"], self.plan_width)):
                 actor = overlay_lines(planned, color, width)
                 overlay.AddViewProp(actor)
                 self.dynamic.append((overlay, actor))
-        add(lines(frame.corridor), "corridor", 2.)
-        triangles = tuple(triangle for shape in frame.corridor for group in shape.triangles for triangle in group)
-        add(triangles, "corridor", 1., surface=True)
-        if frame.camera is not None:
+        if "corridor" in visible:
+            add(lines(frame.corridor), "corridor", 2.)
+            triangles = tuple(triangle for shape in frame.corridor for group in shape.triangles for triangle in group)
+            add(triangles, "corridor", 1., surface=True)
+        if "camera" in visible and frame.camera is not None:
             for color, width in (((.12, .09, .20), 3.2), (SPATIAL_COLORS["camera"], 1.6)):
                 actor = overlay_lines(tuple(frame.camera), color, width*self.scale)
                 overlay.AddViewProp(actor)
@@ -255,7 +259,8 @@ class Renderer:
             position,target,up = view_camera(pose, mode, self.camera_args, self.inset_args, elapsed, fpv_pose)
             cam=scene.GetActiveCamera(); cam.SetPosition(*position); cam.SetFocalPoint(*target)
             cam.SetViewUp(*up); cam.SetClippingRange(.035,1000)
-            if mode not in FPV_MODES and len(trajectory)>1:
+            visible = self.visible_overlays[index]
+            if "actual" in visible and len(trajectory)>1:
                 if self.slam_view:
                     for color, width in (((.09, .085, .065), self.trajectory_width + 2 * self.scale),
                                          (self.trajectory_color, self.trajectory_width)):
@@ -265,8 +270,8 @@ class Renderer:
                 else:
                     actor=line_actor(trajectory,self.trajectory_color,self.trajectory_width)
                     scene.AddActor(actor); self.dynamic.append((scene,actor))
-            if spatial is not None and mode not in FPV_MODES:
-                self.add_spatial(scene, overlay, spatial)
+            if spatial is not None:
+                self.add_spatial(scene, overlay, spatial, visible)
             viewport_width, viewport_height = self.windows[index].GetSize()
             screen_space = mode in FPV_MODES
             if screen_space:

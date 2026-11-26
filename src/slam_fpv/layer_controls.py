@@ -6,7 +6,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import colorchooser, filedialog, messagebox, ttk
 
-from .composition import POINT_CLOUD_VIEWS, PointCloudView, TextLayer, VideoLayer
+from .composition import POINT_CLOUD_VIEWS, VIEW_OVERLAYS, PointCloudView, TextLayer, VideoLayer, view_overlays
 from .footage import VideoEdit
 
 
@@ -308,19 +308,24 @@ class LayerControls:
         occupied = {view.kind for i, view in enumerate(self.project.views) if i != index} if kind == "view" else set()
         choices = {title: mode for mode, (title, _) in POINT_CLOUD_VIEWS.items() if mode not in occupied}
 
+        visible = view_overlays(layer.kind, layer.overlays)
+        switches = {key: (label, key in visible) for key, label in VIEW_OVERLAYS.items()}
+
         def save(values):
             mode = choices[values["camera"]]
-            change = replace(layer, kind=mode, width=float(values["width"])/100,
+            selected = tuple(key for key in VIEW_OVERLAYS if values[key])
+            overlays = layer.overlays if set(selected) == visible else selected
+            change = replace(layer, kind=mode, width=float(values["width"])/100, overlays=overlays,
                              transparent=values["background"] == MATTE_OPTIONS[0])
             self.replace_layer(kind, index, change)
-            if self.frame is not None and mode != layer.kind:
+            if self.frame is not None and (mode != layer.kind or overlays != layer.overlays):
                 self.root.after_idle(lambda: self.start_render(True))
 
         self.layer_dialog("主视角设置" if kind == "main" else "点云小窗设置", (
             ("camera", "机位", POINT_CLOUD_VIEWS[layer.kind][0], tuple(choices)),
             ("width", "宽度 (%)", f"{layer.width*100:g}"),
             background_field(layer.transparent),
-        ), save)
+        ), save, switches=switches, note="叠加项由本视角与「空间叠加」共同控制。FPV 始终隐藏轨迹线。")
 
     def edit_text(self, index=None):
         if index is None:
@@ -368,7 +373,7 @@ class LayerControls:
             ("end", "结束时间 (s)", "" if p.speed_end is None else f"{p.speed_end:g}"),
         ), save, note="结束时间留空时显示至片段结束。")
 
-    def layer_dialog(self, title, fields, save, *, note=""):
+    def layer_dialog(self, title, fields, save, *, note="", switches=None):
         modal = tk.Toplevel(self.root)
         modal.title(title)
         modal.transient(self.root)
@@ -393,17 +398,29 @@ class LayerControls:
                     if chosen:
                         variables["color"].set(chosen)
                 ttk.Button(box, text="选色", command=choose).grid(row=row, column=2, padx=(6,0))
+        flags = {}
+        row = len(fields)
+        if switches:
+            section = ttk.LabelFrame(box, text="此视角的叠加项", padding=(8, 6))
+            section.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+            for i, (name, (label, enabled)) in enumerate(switches.items()):
+                flag = flags[name] = tk.BooleanVar(value=enabled)
+                ttk.Checkbutton(section, text=label, variable=flag).grid(
+                    row=i//2, column=i%2, sticky="w", padx=(0, 10), pady=2)
+            row += 1
+
         def confirm(_event=None):
             try:
-                save({key: var.get().strip() for key,var in variables.items()})
+                save({**{key: var.get().strip() for key,var in variables.items()},
+                      **{key: flag.get() for key, flag in flags.items()}})
             except ValueError as error:
                 messagebox.showerror("检查图层设置", str(error), parent=modal)
                 return
             modal.destroy()
         if note:
-            ttk.Label(box, text=note, style="Quiet.TLabel").grid(row=len(fields), column=0, columnspan=3, sticky="w", pady=7)
+            ttk.Label(box, text=note, style="Quiet.TLabel").grid(row=row, column=0, columnspan=3, sticky="w", pady=7)
         ttk.Button(box, text="应用", style="Primary.TButton", command=confirm).grid(
-            row=len(fields)+1, column=1, sticky="e", pady=(12,0))
+            row=row+1, column=1, sticky="e", pady=(12,0))
         modal.bind("<Return>", confirm)
         modal.bind("<Escape>", lambda _: modal.destroy())
         modal.wait_visibility()

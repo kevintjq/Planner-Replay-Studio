@@ -48,6 +48,8 @@ class BagSource:
         self.extrinsics = extrinsics
         self.scan_topic = scan_topic
         self.detected_camera = None
+        self.camera_topic = None
+        self.camera_issue = "缺少有效 CameraInfo"
         self.mission = {key: (topic, types, GeometryTimeline()) for key, topic, types in
                         (("plan", plan_topic, PLAN_TYPES), ("corridor", corridor_topic, CORRIDOR_TYPES))
                         if topic}
@@ -117,9 +119,13 @@ class BagSource:
         frames = connected_frames(self.world, self.tree.edges)
         for item in camera_choices(metadata["topics"]):
             view = item["view"]
-            if (not topic or topic == item["topic"]) and view.frame in frames:
+            if topic and topic != item["topic"]:
+                continue
+            if view.frame in frames:
                 self.detected_camera = view
+                self.camera_topic = item["topic"]
                 break
+            self.camera_issue = f"{item['topic']} 缺少到 {view.frame} 的 TF"
 
     def mission_shapes(self, name, t):
         layer = self.mission.get(name)

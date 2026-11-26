@@ -72,3 +72,16 @@ def test_main_and_view_plate_geometry():
     transparent = replace(project, views=(replace(project.views[0], transparent=True),))
     image, _ = compose(scene, transparent, (), 1., None, {"right": inset})
     assert image.getpixel((x+w//2, y+h//2)) == (10, 15, 20)
+
+
+def test_transparent_canvas_keeps_real_alpha_and_can_flatten_for_mp4():
+    scene = Image.new("RGBA", (200, 100), (10, 15, 20, 0))
+    scene.putpixel((100, 50), (60, 90, 130, 120))
+    project = Composition(views=(), transparent_canvas=True)
+    alpha, _ = compose(scene, project, (), 1., None)
+    assert alpha.mode == "RGBA"
+    assert alpha.getpixel((0, 0))[3] == 0
+    assert alpha.getpixel((100, 50)) == (60, 90, 130, 120)
+    flattened, _ = compose(scene, project, (), 1., None, alpha=False)
+    assert flattened.mode == "RGB"
+    assert flattened.getpixel((0, 0)) == (10, 15, 20)

@@ -15,9 +15,11 @@ Install 64-bit Python 3.10 or newer with Tcl/Tk. Clone the repository, then doub
 ## Make a composition
 
 1. Open a ROS1 `.bag` under **Data**. The app selects point-cloud and odometry topics and reads their frame IDs. Adjust the dropdowns or export interval as needed.
-2. Choose the main camera and add secondary views in **Layers → + View**. Pick from 12 presets, including stabilized FPV, raw FPV, oblique, side, chase and orbit. Both FPV modes hide the actual and planned flight paths and show the original body attitude on the corner triad.
-3. Add flight footage as a backdrop or an inset. Align clips using matching events, then add timed captions or a speed gauge. Drag layers, resize them by the corner, and choose a transparent or dark background.
-4. Export MP4 or PNG. The default video settings are 1080p at 60 fps, with automatic NVIDIA NVENC or CPU H.264 encoding.
+2. Choose the main camera and add secondary views in **Layers → + View**. Pick from 12 presets, including stabilized FPV, raw FPV, oblique, side, chase and orbit. Each view has its own overlay switches. Both FPV modes hide the actual and planned flight paths and show the original body attitude on the corner triad.
+3. Add flight footage as a backdrop or an inset. Trim and align each clip independently. Use the shared timeline, step through the footage, and check the midpoint between two anchors. Add timed captions or a speed gauge. Drag layers, resize them by the corner, and choose a transparent or dark background.
+4. Export MP4 or PNG. Enable **Transparent canvas** to preserve alpha in PNG. MP4 uses a solid canvas. The default video settings are 1080p at 60 fps, with automatic NVIDIA NVENC or CPU H.264 encoding.
+
+Use **Save project** to store media references, anchors, layer settings and export options in a `.slamfpv` file. You can relink moved media when reopening a project.
 
 ## Spatial overlays
 
@@ -30,7 +32,7 @@ Enable any layer under **Spatial overlays** and refresh the preview. Topics and 
 | Camera FOV | Compact wireframe based on `CameraInfo` and optical TF |
 | Current LiDAR scan | Highlights the latest PointCloud2, Livox CustomMsg or LaserScan frame |
 
-Record the planner visualization topics together with the bag. Use the TF tree or the extrinsics JSON to connect sensor frames to the world frame. Set actual and planned trajectory widths independently under **Quality**. Layers without matching data or TF are skipped. If a dedicated scan is unavailable, the latest main input frame is highlighted.
+Record the planner visualization topics together with the bag. Use the TF tree or the extrinsics JSON to connect sensor frames to the world frame. Set actual and planned trajectory widths independently under **Quality**. The preview reports the scan source and age, missing TF, and unavailable camera calibration. If a dedicated scan is unavailable, the latest main input frame is highlighted.
 
 ## CLI
 

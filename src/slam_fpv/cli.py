@@ -111,7 +111,7 @@ def extrinsics(path):
     return [(v['parent'],v['child'],v['translation'],v['quaternion_xyzw']) for v in data]
 
 
-def make_renderer(a, *, clean=False, view_modes=None, main_mode="rear", view_widths=None):
+def make_renderer(a, *, clean=False, view_modes=None, main_mode="rear", view_widths=None, overlays=None):
     from .renderer import Renderer
     solid = rgb_bytes(a.cloud_color) if a.color == 'solid' else None
     trajectory = ((1,.73,.18) if a.trajectory_color is None
@@ -120,7 +120,7 @@ def make_renderer(a, *, clean=False, view_modes=None, main_mode="rear", view_wid
                     a.distance,a.camera_height,a.side,a.fov,a.inset_distance,a.inset_height,
                     supersample=a.supersample,cloud_color=solid,trajectory_color=trajectory,
                     trajectory_width=a.trajectory_width, plan_width=getattr(a, 'plan_width', 3.), clean=clean,slam_view=a.slam_view,view_modes=view_modes,
-                    main_mode=main_mode,view_widths=view_widths)
+                    main_mode=main_mode,view_widths=view_widths,overlays=overlays)
 
 
 class Export:
@@ -151,7 +151,7 @@ class Export:
         if self.writer: self.writer.close()
 
 
-def render(a, source, *, preview=None, preview_offset=0, progress=None, check_cancel=None, staging=None, project=None):
+def render(a, source, *, preview=None, preview_offset=0, preview_data=None, progress=None, check_cancel=None, staging=None, project=None):
     """Render an export, or deliver one uncomposited preview and its optional footage."""
     destination = a.output if staging is None else staging
     cloud = CloudMap(a.voxel, a.max_points, scan_height=a.color == "scan", height_limits=a.height_range)
@@ -168,7 +168,9 @@ def render(a, source, *, preview=None, preview_offset=0, progress=None, check_ca
             view_modes = None if project is None else tuple(view.kind for view in project.views)
             renderer = make_renderer(a, clean=project is not None, view_modes=view_modes,
                                      main_mode="rear" if project is None else project.main_view.kind,
-                                     view_widths=None if project is None else tuple(view.width for view in project.views))
+                                     view_widths=None if project is None else tuple(view.width for view in project.views),
+                                     overlays=None if project is None else tuple(
+                                         view.overlays for view in (project.main_view, *project.views)))
             stack.callback(renderer.close)
             output = None
             if preview is None:
@@ -219,16 +221,19 @@ def render(a, source, *, preview=None, preview_offset=0, progress=None, check_ca
                     dirty = False
                 label = 'SYNTHETIC DEMO' if is_synthetic else 'RECORDED ROS1 DATA'
                 camera_pose = stabilized_fpv_pose(source, t, pose) if "fpv" in renderer.modes else None
-                overlays = {"spatial": spatial.frame(t, pose, check_cancel)} if spatial else {}
+                spatial_frame = spatial.frame(t, pose, check_cancel) if spatial else None
                 frame = renderer.frame(pose, trajectory, f'{label} | t={elapsed:.3f}s | REAR CHASE + OBLIQUE',
-                                       elapsed=elapsed, fpv_pose=camera_pose, **overlays)
+                                       elapsed=elapsed, fpv_pose=camera_pose, spatial=spatial_frame)
+                if preview is not None and preview_data is not None:
+                    preview_data((source.last - source.first) / 1e9, spatial.status(t, spatial_frame))
                 if project is not None:
                     frame, cloud_views = frame
                     footage = tuple(layer.frame_at(elapsed) for layer in layers)
                     if preview is not None:
                         preview(frame, footage, elapsed, speed, cloud_views)
                         return
-                    combined, _ = compose(frame, project, footage, elapsed, speed, cloud_views)
+                    combined, _ = compose(frame, project, footage, elapsed, speed, cloud_views,
+                                          alpha=project.transparent_canvas and a.output.suffix.lower() == ".png")
                     output.append(np.asarray(combined))
                 else:
                     footage = video.frame_at(elapsed)
@@ -264,7 +269,7 @@ def render(a, source, *, preview=None, preview_offset=0, progress=None, check_ca
 
 def open_source(a, check_cancel=None, metadata=None):
     if a.command == 'demo':
-        return (TrailDemoSource if a.demo_scene == "trail" else DemoSource)(a.seconds)
+        return (TrailDemoSource if a.demo_scene == "trail" else DemoSource)(a.start + a.seconds)
     auto_camera = a.show_camera_fov and camera_settings(a) is None
     auto_scan = a.show_scan and not a.scan_topic
     if metadata is None and (auto_camera or auto_scan):

@@ -23,10 +23,13 @@ def test_camera_geometry_and_scan_expiry():
         spatial = SpatialOverlays(args, source, stack)
         t, xyz, _ = next(source.clouds())
         spatial.update_map_scan(t, xyz)
-        assert spatial.frame(t, source.pose(t)).scan is xyz
+        initial = spatial.frame(t, source.pose(t))
+        assert initial.scan is xyz
+        assert "帧龄 0 ms" in spatial.status(t, initial)[0]
         t += 250_000_000
         frame = spatial.frame(t, source.pose(t))
         assert frame.scan is None
+        assert "扫描已过期" in spatial.status(t, frame)[0]
         assert frame.plan and frame.corridor
 
 

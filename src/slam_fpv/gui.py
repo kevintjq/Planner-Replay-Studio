@@ -13,7 +13,7 @@ import tkinter as tk
 import av
 from tkinter import colorchooser, filedialog, messagebox, ttk
 
-from PIL import Image, ImageTk
+from PIL import Image, ImageDraw, ImageTk
 
 from .cli import extrinsics, open_source, parser, render, validate
 from .composition import Composition, compose, placement_axis, rounded_mask
@@ -22,6 +22,7 @@ from .timeline import Timeline
 from .layer_controls import LayerControls
 from .video_editor import VideoEditor
 from .sources import inspect_bag
+from .project_file import ProjectFile, load_project, save_project
 from .spatial import CORRIDOR_TYPES, PLAN_TYPES
 from .sensor_topics import SCAN_TYPES, camera_choices, connected_frames, pose_frames, suggested_topic
 
@@ -48,7 +49,7 @@ class RendererApp(LayerControls):
         self.closing = False
         self.values = {}
         self.project = Composition()
-        self.frame = self.elapsed = self.speed = None
+        self.frame = self.elapsed = self.speed = self.source_duration = self.checkerboard = None
         self.footages = ()
         self.cloud_views = {}
         self.selection = None
@@ -80,6 +81,8 @@ class RendererApp(LayerControls):
         ttk.Label(header, text="合成工作台", style="Subtitle.TLabel").pack(side="left", padx=13)
         ttk.Button(header, text="主视角", command=lambda: self.edit_cloud_view("main", 0),
                    style="Shell.TButton").pack(side="right")
+        ttk.Button(header, text="保存项目", command=self.save_workspace, style="Shell.TButton").pack(side="right", padx=6)
+        ttk.Button(header, text="打开项目", command=self.open_workspace, style="Shell.TButton").pack(side="right")
 
         self.form = ttk.Frame(workspace, style="Shell.TFrame")
         self.form.grid(row=1, column=0, sticky="nsew", padx=(0, 16))
@@ -87,11 +90,20 @@ class RendererApp(LayerControls):
 
         viewer = ttk.Frame(workspace, padding=14, style="Workspace.TFrame")
         viewer.grid(row=1, column=1, sticky="nsew")
-        self.preview_label = ttk.Label(viewer, text="画面预览", style="PanelTitle.TLabel")
-        self.preview_label.pack(anchor="w", pady=(0, 8))
+        preview_header = ttk.Frame(viewer)
+        preview_header.pack(fill="x", pady=(0, 8))
+        self.preview_label = ttk.Label(preview_header, text="画面预览", style="PanelTitle.TLabel")
+        self.preview_label.pack(side="left")
+        self.transparent_canvas = tk.BooleanVar(value=False)
+        ttk.Checkbutton(preview_header, text="透明画布", variable=self.transparent_canvas,
+                        command=self.toggle_canvas).pack(side="right")
+        self.overlay_status = tk.StringVar()
+        self.overlay_label = ttk.Label(viewer, textvariable=self.overlay_status, style="Quiet.TLabel",
+                                       justify="left", wraplength=700)
+        self.overlay_label.pack(fill="x", pady=(0, 4))
         self.canvas = tk.Canvas(viewer, bg="#F8F9FB", highlightthickness=0, width=460, height=365)
         self.canvas.pack(fill="both", expand=True)
-        self.canvas.bind("<Configure>", lambda _: self.draw_preview())
+        self.canvas.bind("<Configure>", self.resize_preview)
         self.canvas.bind("<ButtonPress-1>", self.start_drag)
         self.canvas.bind("<B1-Motion>", self.move_layer)
         self.canvas.bind("<ButtonRelease-1>", lambda _: self.end_drag())
@@ -299,7 +311,12 @@ class RendererApp(LayerControls):
 
         def set_path(path):
             self.values[name].set(path)
+
+        def display_path(*_):
+            path = self.values[name].get()
             display.set(Path(path).name if path else placeholder)
+
+        self.values[name].trace_add("write", display_path)
 
         def browse():
             path = filedialog.askopenfilename(parent=self.root, title=label, filetypes=filetypes)
@@ -319,16 +336,107 @@ class RendererApp(LayerControls):
         group.grid(row=row, column=1, sticky="ew")
         swatch = tk.Label(group, width=3, bg=default)
         swatch.pack(side="left", padx=(0, 6))
+        variable.trace_add("write", lambda *_: swatch.configure(bg=variable.get()))
 
         def pick():
             _, color = colorchooser.askcolor(variable.get(), parent=self.root, title=label)
             if color:
                 variable.set(color)
-                swatch.configure(bg=color)
                 if name == "cloud_color":
                     self.values["color"].set("自选纯色")
 
         ttk.Button(group, textvariable=variable, command=pick).pack(side="left")
+
+    def save_workspace(self):
+        if self.busy:
+            return
+        path = filedialog.asksaveasfilename(parent=self.root, title="保存项目", defaultextension=".slamfpv",
+                                            filetypes=(("SLAM FPV 项目", "*.slamfpv"),))
+        if not path:
+            return
+        values = {name: value.get() for name, value in self.values.items() if name != "extrinsics"}
+        enabled = {name: flag.get() for name, flag in self.spatial_toggles.items()}
+        enabled.update(edl=self.edl.get(), slam_view=self.slam_view.get())
+        source = "bag" if self.bag_path else "demo" if self.demo_selected else "none"
+        external = self.values["extrinsics"].get()
+        project = ProjectFile(self.project, values, enabled, source, self.bag_path, Path(external) if external else None)
+        try:
+            save_project(Path(path), project)
+        except (ValueError, OSError) as error:
+            messagebox.showerror("无法保存项目", str(error), parent=self.root)
+            return
+        self.status.set(f"已保存项目 {Path(path).name}")
+
+    def open_workspace(self):
+        if self.busy:
+            return
+        path = filedialog.askopenfilename(parent=self.root, title="打开项目",
+                                          filetypes=(("SLAM FPV 项目", "*.slamfpv"),))
+        if not path:
+            return
+        try:
+            project = load_project(Path(path))
+        except (ValueError, OSError) as error:
+            messagebox.showerror("无法打开项目", str(error), parent=self.root)
+            return
+        replacements = {}
+        for media in project.media():
+            if not media.is_file():
+                linked = filedialog.askopenfilename(parent=self.root, title=f"重新定位 {media.name}",
+                                                     initialfile=media.name)
+                if not linked:
+                    self.status.set("已取消打开项目")
+                    return
+                replacements[media] = Path(linked).resolve()
+        project = project.relink(replacements)
+        if project.bag is None:
+            self.restore_workspace(Path(path), project, None)
+        else:
+            def work():
+                metadata = inspect_bag(project.bag, self.check_cancel)
+                return "project", (Path(path), project, metadata)
+            self.run_job(work, "正在读取项目的话题…")
+
+    def restore_workspace(self, path, saved, metadata):
+        if saved.bag:
+            self.set_topics(saved.bag, metadata)
+        else:
+            self.bag_path = self.bag_metadata = None
+            self.demo_selected = saved.source == "demo"
+            self.bag_name.set("模拟点云与轨迹" if self.demo_selected else "未选择 ROS1 bag")
+        # Restore source choices first; changing the pose source refreshes frame defaults.
+        for name in ("cloud_topic", "odom_topic", "pose_source"):
+            if name in saved.values:
+                self.values[name].set(saved.values[name])
+        for name, value in saved.values.items():
+            if name in self.values and name not in ("cloud_topic", "odom_topic", "pose_source", "extrinsics"):
+                self.values[name].set(value)
+        self.values["extrinsics"].set(str(saved.extrinsics or ""))
+        for name, flag in {**self.spatial_toggles, "edl": self.edl, "slam_view": self.slam_view}.items():
+            if name in saved.enabled:
+                flag.set(saved.enabled[name])
+        self.selection = None
+        self.reset_alignment()
+        self.project = saved.composition
+        self.transparent_canvas.set(self.project.transparent_canvas)
+        self.footages = (None,) * len(self.project.videos)
+        self.refresh_layers()
+        self.sync_spatial()
+        self.update_timeline()
+        self.status.set(f"已打开项目 {path.name}")
+        if self.bag_path or self.demo_selected:
+            self.root.after_idle(lambda: self.start_render(True))
+
+    def resize_preview(self, event):
+        self.overlay_label.configure(wraplength=max(200, event.width - 12))
+        self.draw_preview()
+
+    def toggle_canvas(self):
+        if self.busy:
+            self.transparent_canvas.set(self.project.transparent_canvas)
+            return
+        self.project = replace(self.project, transparent_canvas=self.transparent_canvas.get())
+        self.draw_preview()
 
     def select_bag(self):
         path = filedialog.askopenfilename(parent=self.root, filetypes=(("ROS1 bag", "*.bag"),))
@@ -389,7 +497,8 @@ class RendererApp(LayerControls):
         self.sync_spatial()
 
     def reset_alignment(self, _event=None):
-        self.frame = self.elapsed = self.speed = self.base_cache = None
+        self.frame = self.elapsed = self.speed = self.base_cache = self.source_duration = None
+        self.overlay_status.set("")
         self.footages = (None,) * len(self.project.videos)
         self.cloud_views = {}
         videos = tuple(replace(layer, edit=replace(layer.edit, anchors=())) for layer in self.project.videos)
@@ -410,8 +519,13 @@ class RendererApp(LayerControls):
                 self.root.after_idle(lambda: self.start_render(True))
 
         try:
+            start, duration = self.timeline_range()
+            end = start + duration
+            metadata = self.bag_metadata
+            approximate = (metadata["storage_end_ns"] - metadata["storage_start_ns"])/1e9 if metadata else end
             self.video_editor = VideoEditor(self.root, layer.path, layer.edit, self.frame, self.elapsed,
-                                            self.request_alignment_frame, apply)
+                                            self.request_alignment_frame, apply,
+                                            duration=self.source_duration or max(end, approximate))
         except (ValueError, OSError, av.FFmpegError) as error:
             messagebox.showerror("无法打开视频", str(error), parent=self.root)
 
@@ -423,12 +537,15 @@ class RendererApp(LayerControls):
         args.seconds = max(args.seconds, seconds + 1 / args.fps)
         args.width, args.height, args.supersample = 960, 540, 1
 
+        project = replace(self.project, videos=(), views=(), texts=(), show_speed=False)
+        metadata = self.bag_metadata
+
         def work():
             result = []
-            source = open_source(args, self.check_cancel, self.bag_metadata)
+            source = open_source(args, self.check_cancel, metadata)
             render(args, source, preview=lambda *frame: result.append(frame),
-                   preview_offset=seconds, check_cancel=self.check_cancel)
-            return "alignment", result[0]
+                   preview_offset=seconds, check_cancel=self.check_cancel, project=project)
+            return "alignment", (result[0], (source.last - source.first)/1e9)
 
         self.run_job(work, "正在定位 SLAM 帧…")
 
@@ -500,10 +617,11 @@ class RendererApp(LayerControls):
         def work():
             source = open_source(args, self.check_cancel, self.bag_metadata)
             if preview:
-                result = []
+                result, data = [], []
                 render(args, source, preview=lambda *frame: result.append(frame),
+                       preview_data=lambda *status: data.append(status),
                        preview_offset=offset, check_cancel=self.check_cancel, project=project)
-                return "preview", result[0]
+                return "preview", (result[0], *data[0])
             destination.parent.mkdir(parents=True, exist_ok=True)
             with TemporaryDirectory(prefix=".slam-fpv-", dir=destination.parent) as staging:
                 temporary_output = Path(staging) / destination.name
@@ -599,16 +717,19 @@ class RendererApp(LayerControls):
                 if editor is not None and not editor.window.winfo_exists():
                     self.video_editor = editor = None
                 if editor is not None:
-                    editor.set_slam(editor.slam_frame, editor.slam_time)
+                    editor.finish_seek()
                 if kind == "alignment":
-                    frame, _, elapsed = value
+                    (frame, _, elapsed, *_), duration = value
                     if editor is not None:
-                        editor.set_slam(Image.fromarray(frame), elapsed)
+                        editor.set_slam(Image.fromarray(frame), elapsed, duration)
                     self.status.set(f"已定位 SLAM {elapsed:.3f} s")
                 elif kind == "topics":
                     self.set_topics(*value)
+                elif kind == "project":
+                    self.restore_workspace(*value)
                 elif kind == "preview":
-                    frame, videos, elapsed, self.speed, self.cloud_views = value
+                    (frame, videos, elapsed, self.speed, self.cloud_views), self.source_duration, diagnostics = value
+                    self.overlay_status.set("\n".join(diagnostics))
                     self.frame = Image.fromarray(frame)
                     self.elapsed = elapsed
                     self.base_cache = None
@@ -649,6 +770,14 @@ class RendererApp(LayerControls):
             if self.frame.mode == "RGBA":
                 self.base_cache.putalpha(self.frame.getchannel("A").resize(size, Image.Resampling.LANCZOS))
         image, bounds = compose(self.base_cache, self.project, self.footages, self.elapsed, self.speed, self.cloud_views)
+        if image.mode == "RGBA":
+            if self.checkerboard is None or self.checkerboard.size != size:
+                self.checkerboard = Image.new("RGBA", size, "#E9EBEF")
+                draw = ImageDraw.Draw(self.checkerboard)
+                for top in range(0, size[1], 14):
+                    for left in range(14 * ((top // 14) % 2), size[0], 28):
+                        draw.rectangle((left, top, left+13, top+13), fill="#D8DBE3")
+            image = Image.alpha_composite(self.checkerboard, image)
         image.putalpha(rounded_mask(image.size, 16))
         self.base_photo = ImageTk.PhotoImage(image)
         self.canvas.create_image(x, y, image=self.base_photo, anchor="nw")

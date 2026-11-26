@@ -269,6 +269,20 @@ def test_views_zoom_independently_and_goal_is_a_sized_disk():
         renderer.close()
 
 
+def test_interactive_preview_keeps_selected_point_cloud_quality():
+    from slam_fpv.cli import parser
+    from slam_fpv.preview_transport import configure_preview
+
+    args = parser().parse_args(["demo", "--output", "preview.png", "--width", "3840", "--height", "2160",
+                               "--fps", "60", "--voxel", ".015", "--max-points", "850000"])
+    configure_preview(args, playing=True)
+    assert (args.width, args.height, args.fps) == (1920, 1080, 30)
+    assert (args.voxel, args.max_points) == (.015, 850_000)
+    configure_preview(args, playing=False, viewport=(800, 450))
+    assert (args.width, args.height) == (1000, 562)
+    assert (args.voxel, args.max_points) == (.015, 850_000)
+
+
 def test_proxy_stream_delivers_ordered_previews_without_writing_a_file(tmp_path):
     from slam_fpv.cli import open_source, parser, render
     from slam_fpv.composition import Composition

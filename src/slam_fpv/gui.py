@@ -1246,9 +1246,9 @@ class RendererApp(LayerControls):
             outputs = {destination.resolve(), destination.with_suffix(".json").resolve()}
             if not preview and any(layer.path.resolve() in outputs for layer in (*project.videos, *project.images)):
                 raise ValueError("导出位置不能覆盖已导入的素材。")
-            if preview and args.width > 1440:
-                args.height = round(args.height * 1440 / args.width / 2) * 2
-                args.width, args.supersample = 1440, 1
+            if preview and args.width > 1920:
+                args.height = round(args.height * 1920 / args.width / 2) * 2
+                args.width, args.supersample = 1920, 1
             offset = float(self.values["preview_offset"].get()) if preview else 0
             if not isfinite(offset) or offset < 0:
                 raise ValueError("片段内预览位置须为非负有限数值。")
@@ -1494,7 +1494,9 @@ class RendererApp(LayerControls):
         self.root.after(25, self.poll)
 
     def accept_preview(self, value, *, playing=False):
-        frame_info, self.source_duration, diagnostics, self.timeline_events, self.clip_durations = value
+        frame_info, duration, diagnostics, events, clips = value
+        same_tracks = (duration, events, clips) == (self.source_duration, self.timeline_events, self.clip_durations)
+        self.source_duration, self.timeline_events, self.clip_durations = duration, events, clips
         frame, videos, elapsed, self.speed, self.cloud_views = frame_info
         self.spatial_diagnostics = diagnostics
         self.frame = Image.fromarray(frame)
@@ -1505,7 +1507,14 @@ class RendererApp(LayerControls):
         self.preview_label.configure(text=f"画面预览    {elapsed:.3f} s")
         self.status.set("正在播放预览" if playing else "预览已更新。")
         self.draw_preview()
-        self.update_timeline()
+        if playing and same_tracks:
+            self.timeline.update_playhead(elapsed)
+            cue = self.project.layout_at(elapsed)
+            label = LAYOUT_NAMES[cue.mode if cue else "mix"]
+            if self.layout_status.get() != label:
+                self.layout_status.set(label)
+        else:
+            self.update_timeline()
 
     def draw_preview(self):
         self.canvas.delete("all")
@@ -1616,7 +1625,7 @@ class RendererApp(LayerControls):
     def render_zoom(self):
         self.zoom_job = None
         if not self.busy and self.frame is not None:
-            self.start_render(True)
+            self.transport.request(self.elapsed)
 
     def is_video_backdrop(self, layer):
         cue = self.project.layout_at(self.elapsed) if self.elapsed is not None else None

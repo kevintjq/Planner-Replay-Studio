@@ -83,9 +83,8 @@ class Timeline(tk.Canvas):
     def draw(self):
         self.delete("all")
         x0, x1 = self.x(self.start), self.x(self.start+self.duration)
-        play = self.draft if self.drag == "play" else self.time
         self.create_text(9, 13, anchor="w", text="合成时间轴", font=(self.face, 9, "bold"), fill="#34445C")
-        self.create_text(x1, 13, anchor="e", text=f"{play:.3f} s", font=(self.face, 9), fill="#34445C")
+        self.create_text(x1, 13, anchor="e", font=(self.face, 9), fill="#34445C", tags="playhead-time")
         self.create_line(x0, 39, x1, 39, fill="#DCE7F6", width=5)
         for index in range(6):
             value = self.start + self.duration*index/5
@@ -123,9 +122,17 @@ class Timeline(tk.Canvas):
         elif len(self.tracks) > self.visible_tracks:
             self.create_text(9, self.track_top+self.row_height*self.visible_tracks-1,
                              anchor="sw", text="滚轮查看更多", font=(self.face, 7), fill="#61758E")
+        self.create_line(0, 0, 0, 0, fill="#2165D9", width=1, tags="playhead-line")
+        self.create_oval(0, 0, 0, 0, fill="#2165D9", outline="#FFFFFF", tags="playhead-dot")
+        self.update_playhead(self.time)
+
+    def update_playhead(self, time):
+        self.time = time
+        play = self.draft if self.drag == "play" and self.draft is not None else time
         x = self.x(play)
-        self.create_line(x, 36, x, self.winfo_height()-3, fill="#2165D9", width=1)
-        self.create_oval(x-5, 34, x+5, 44, fill="#2165D9", outline="#FFFFFF")
+        self.itemconfigure("playhead-time", text=f"{play:.3f} s")
+        self.coords("playhead-line", x, 36, x, self.winfo_height()-3)
+        self.coords("playhead-dot", x-5, 34, x+5, 44)
 
     def draw_track(self, track, row, x0, x1):
         y = self.track_top + row*self.row_height
@@ -255,6 +262,8 @@ class Timeline(tk.Canvas):
             if value != self.draft:
                 self.draft = value
                 self.scrub(value)
+            self.update_playhead(self.time)
+            return
         else:
             key, index = self.active_segment
             track = next(t for t in self.tracks if t.key == key)
@@ -287,8 +296,7 @@ class Timeline(tk.Canvas):
         action, value, cue = self.drag, self.draft, self.layout_drag
         self.drag = self.draft = self.layout_drag = self.clip_origin = None
         if action == "play" or (action == "clip" and not isinstance(value, tuple)):
-            self.time = value
-            self.draw()
+            self.update_playhead(value)
             self.seek(value)
         elif action == "layout":
             if value == cue.time:
@@ -305,6 +313,5 @@ class Timeline(tk.Canvas):
 
     def keyboard(self, direction):
         if not self.busy:
-            self.time = min(self.start+self.duration, max(self.start, self.time+direction/self.fps))
-            self.draw()
+            self.update_playhead(min(self.start+self.duration, max(self.start, self.time+direction/self.fps)))
             self.seek(self.time)

@@ -70,7 +70,7 @@ Under **Data → Spatial overlays**, keep automatic detection or select any topi
 ## Timeline
 
 - Add a PNG or JPG from **Layers**. Drag to position or resize it in the preview. Drag either timeline edge or double-click the layer to set exact display times. PNG alpha is preserved.
-- Use **Play** for continuous proxy preview. With timeline focus, Space pauses or plays and arrow keys step one frame. Drag the playhead to scrub. Export retains the configured resolution and frame rate.
+- Use **Play** for continuous preview. With timeline focus, Space pauses or plays and arrow keys step one frame. Drag the playhead to scrub. Interactive previews run at up to 1080p and 30 fps with the configured point and voxel settings. Export uses the configured resolution and frame rate.
 - Select a video and press S to split or Delete to remove the segment at the playhead. The clip menu offers the same actions. Cuts preserve the bag-time alignment and mute the selected source audio in removed ranges. Use Ctrl+Z / Ctrl+Y to undo or redo, and **Snap** to align to markers and segment edges.
 - Click a purple layout marker to jump or drag it to change its time. Right-click a **Footage inset** marker to adjust its own size, position and 0–5 second transition.
 - Select a layer, move the playhead and use **Shrink here** to start a 0.4-second transition. Drag the small window after the transition or right-click the green marker to set its destination and fine-tune the timing.

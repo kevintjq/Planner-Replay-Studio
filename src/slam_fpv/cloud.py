@@ -49,6 +49,16 @@ def scan_colors(values, limits):
     ]).astype('u1')
 
 
+def first_voxel_indices(xyz, size):
+    cells = np.floor(xyz / size).astype(np.int64)
+    lower, upper = cells.min(axis=0), cells.max(axis=0)
+    if all(int(hi) - int(lo) < 2**21 for lo, hi in zip(lower, upper)):
+        x, y, z = (cells - lower).T
+        keys = (x << 42) | (y << 21) | z
+        return np.unique(keys, return_index=True)[1]
+    return np.unique(cells, axis=0, return_index=True)[1]
+
+
 class CloudMap:
     def __init__(self, voxel=.08, max_points=200000, *, scan_height=False, height_limits=None,
                  range_color=False, range_limits=None):
@@ -75,8 +85,7 @@ class CloudMap:
         if not replace:
             xyz, rgb = np.concatenate([self.xyz, xyz]), np.concatenate([self.rgb, rgb])
         if self.voxel and len(xyz):
-            _, idx = np.unique(np.floor(xyz/self.voxel).astype('i8'), axis=0, return_index=True)
-            idx = np.sort(idx)[-self.max_points:]
+            idx = np.sort(first_voxel_indices(xyz, self.voxel))[-self.max_points:]
             xyz, rgb = xyz[idx], rgb[idx]
         self.xyz, self.rgb = xyz[-self.max_points:], rgb[-self.max_points:]
 

@@ -49,3 +49,14 @@ def test_range_palette_recolors_existing_points_from_current_body_position():
     np.testing.assert_array_equal(cloud.xyz, points)
     assert not np.array_equal(new_colors[0], new_colors[1])
     assert not np.array_equal(new_colors[0], first_colors[0])
+
+
+@pytest.mark.parametrize("extent", [7., 2**22])
+def test_voxel_keys_preserve_the_first_point_across_signed_cells(extent):
+    from slam_fpv.cloud import first_voxel_indices
+
+    points = np.array([[-extent, 1., 2.], [-extent + .25, 1., 2.],
+                       [.25, -1.1, 2.], [.75, -.9, 2.], [.5, -.8, 2.],
+                       [0., 0., 0.]])
+    reference = np.unique(np.floor(points).astype(np.int64), axis=0, return_index=True)[1]
+    np.testing.assert_array_equal(first_voxel_indices(points, 1.), reference)

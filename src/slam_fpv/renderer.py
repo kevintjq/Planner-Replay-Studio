@@ -17,7 +17,7 @@ ATTITUDE_PROJECTION = np.array([[1., -1., 0.], [-1., -1., 2.], [0., 0., 0.]])
 ATTITUDE_PROJECTION[:2] /= np.linalg.norm(ATTITUDE_PROJECTION[:2], axis=1)[:, None]
 
 
-def point_actor(xyz, rgb, size):
+def point_mesh(xyz, rgb):
     poly=vtk.vtkPolyData()
     pts=vtk.vtkPoints(); pts.SetData(numpy_to_vtk(np.ascontiguousarray(xyz),deep=True)); poly.SetPoints(pts)
     cells=vtk.vtkCellArray()
@@ -26,7 +26,11 @@ def point_actor(xyz, rgb, size):
                   numpy_to_vtkIdTypeArray(offsets[:-1], deep=True))
     poly.SetVerts(cells)
     poly.GetPointData().SetScalars(numpy_to_vtk(np.ascontiguousarray(rgb,dtype='u1'),deep=True))
-    mapper=vtk.vtkPolyDataMapper(); mapper.SetInputData(poly)
+    return poly
+
+
+def point_actor(mesh, size):
+    mapper=vtk.vtkPolyDataMapper(); mapper.SetInputData(mesh)
     actor=vtk.vtkActor(); actor.SetMapper(mapper); actor.GetProperty().SetPointSize(size)
     actor.GetProperty().LightingOff()
     return actor
@@ -269,9 +273,10 @@ class Renderer:
         self.range_cloud = cloud if getattr(cloud, "range_color", False) and self.cloud_color is None else None
         self.range_position = None
         rgb = cloud.rgb if self.cloud_color is None else np.broadcast_to(self.cloud_color, cloud.rgb.shape)
+        mesh = point_mesh(cloud.xyz, rgb)
         for scene, _ in self.views:
-            # Each mapper owns GPU buffers for its own OpenGL context.
-            actor = point_actor(cloud.xyz, rgb, self.point_size)
+            # Reuse the CPU mesh while each OpenGL context retains its own mapper.
+            actor = point_actor(mesh, self.point_size)
             scene.AddActor(actor)
             self.cloud_actors.append((scene, actor))
 
@@ -279,8 +284,7 @@ class Renderer:
         if self.range_cloud is None or np.array_equal(position, self.range_position):
             return
         colors = numpy_to_vtk(self.range_cloud.colors_from(position), deep=True)
-        for _, actor in self.cloud_actors:
-            actor.GetMapper().GetInput().GetPointData().SetScalars(colors)
+        self.cloud_actors[0][1].GetMapper().GetInput().GetPointData().SetScalars(colors)
         self.range_position = position.copy()
 
     def update_scan(self, scan):
@@ -293,10 +297,11 @@ class Renderer:
         if scan is not None and len(scan):
             sample = scan[::max(1, (len(scan) + 79999) // 80000)]
             rgb = np.broadcast_to(SPATIAL_COLORS["scan"], sample.shape)
+            mesh = point_mesh(sample, rgb)
             for (scene, _), visible in zip(self.views, self.visible_overlays):
                 if "scan" not in visible:
                     continue
-                actor = point_actor(sample, rgb, self.point_size)
+                actor = point_actor(mesh, self.point_size)
                 # Preserve the map's distance colors where the current scan overlaps it.
                 actor.GetProperty().SetOpacity(.25)
                 actor.GetMapper().SetResolveCoincidentTopologyToPolygonOffset()

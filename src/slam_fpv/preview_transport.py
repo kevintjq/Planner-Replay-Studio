@@ -8,6 +8,20 @@ from time import monotonic
 from .cli import open_source, render
 
 
+def configure_preview(args, *, playing, viewport=None):
+    scale = min(1., 1920 / args.width, 1080 / args.height)
+    if viewport and min(viewport) > 1:
+        display_scale = min(viewport[0] / args.width, viewport[1] / args.height)
+        scale = min(scale, max(640 / args.width, 1.25 * display_scale))
+    if scale < 1:
+        args.width = max(8, round(args.width * scale / 2) * 2)
+        args.height = max(8, round(args.height * scale / 2) * 2)
+    args.supersample = 1
+    if playing:
+        args.fps = min(args.fps, 30)
+    return args.width
+
+
 class PreviewTransport:
     def __init__(self, app):
         self.app = app
@@ -77,25 +91,25 @@ class PreviewTransport:
             return
         project, metadata = app.project, app.bag_metadata
         settings = vars(args).copy()
-        cache_key = settings, project
+        playing = self.playing
+        viewport = app.canvas.winfo_width(), app.canvas.winfo_height()
+        limit = configure_preview(args, playing=playing, viewport=viewport)
+        cache_key = settings, project, args.width, args.height
         if cache_key != self.cache_key:
             self.cache.clear()
             self.cache_key = cache_key
-        tick = round((time-start) * args.fps)
-        time = min(end, start + tick/args.fps)
+        tick = round((time-start) * settings["fps"])
+        time = min(end, start + tick/settings["fps"])
         if not self.playing and (cached := self.cache.get(tick)) is not None:
             self.cache.move_to_end(tick)
             app.accept_preview(cached)
             return
 
-        playing = self.playing
-        limit = 640
-        if args.width > limit:
-            args.height = max(8, round(args.height*limit/args.width/2)*2)
-            args.width = limit
-        args.supersample = 1
-        if playing:
-            args.fps = min(args.fps, 20)
+        source_fields = (("demo_scene", "start", "seconds") if args.command == "demo" else
+                         ("bag", "cloud_topic", "odom_topic", "world", "body", "pose_source", "max_gap",
+                          "extrinsics", "plan_topic", "corridor_topic", "scan_topic", "goal_topic", "plan_frame",
+                          "speed_topic", "camera_info_topic", "show_camera_fov", "camera_fov", "show_scan"))
+        source_key = (args.command, *(settings[name] for name in source_fields))
         frames = Queue(maxsize=8) if playing else None
         self.buffer, self.working, self.requested = frames, True, time
         self.working_fps = settings["fps"]
@@ -106,9 +120,9 @@ class PreviewTransport:
             app.root.after(15, lambda: self.advance(frames))
 
         def work():
-            if self.source_key != settings:
+            if self.source_key != source_key:
                 source = open_source(args, app.check_cancel, metadata)
-                self.source, self.source_key = source, settings
+                self.source, self.source_key = source, source_key
             source = self.source
             data, events, durations, result = (), [], [], []
 
@@ -159,12 +173,15 @@ class PreviewTransport:
                     self.remember_frame(tick, payload)
                 self.app.accept_preview(payload, playing=True)
                 self.next_frame = max(self.next_frame + self.period, now)
-        self.app.root.after(12, lambda: self.advance(frames))
+        self.app.root.after(8, lambda: self.advance(frames))
 
     def remember_frame(self, tick, payload):
         self.cache[tick] = payload
         self.cache.move_to_end(tick)
-        limit = max(4, 42 // (1 + len(self.app.project.videos)*2 + len(self.app.project.views)))
+        frame, videos, _, _, views = payload[0]
+        bytes_per_frame = frame.nbytes + sum(video.nbytes for video in videos if video is not None)
+        bytes_per_frame += sum(view.width * view.height * 4 for view in views.values())
+        limit = max(1, min(42, 64 * 1024**2 // bytes_per_frame))
         while len(self.cache) > limit:
             self.cache.popitem(last=False)
 

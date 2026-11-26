@@ -510,7 +510,8 @@ class RendererApp(LayerControls):
         self.field(quality, 4, "体素 (m，0 为原始)", "voxel", ".015")
         self.field(quality, 5, "点数上限", "max_points", "850000")
         self.field(quality, 6, "点大小 (px)", "point_size", "2.3")
-        self.field(quality, 7, "点云着色", "color", "SLAM 高度彩虹", ("SLAM 高度彩虹", "原始 RGB", "按高度", "自选纯色"))
+        self.field(quality, 7, "点云着色", "color", "FAST-LIO 灰白",
+                   ("FAST-LIO 灰白", "SLAM 高度彩虹", "原始 RGB", "按高度", "自选纯色"))
         self.color_field(quality, 8, "点云纯色", "cloud_color", "#70d9ff")
         self.color_field(quality, 9, "轨迹颜色", "trajectory_color", "#f9d74b")
         self.field(quality, 10, "已飞轨迹线宽 (px)", "trajectory_width", "5")
@@ -1100,9 +1101,12 @@ class RendererApp(LayerControls):
             args += ["--pose-source", "odom" if values["pose_source"] == "Odometry" else "tf"]
             if values["extrinsics"]:
                 keys += ("extrinsics",)
+        color = {"FAST-LIO 灰白": "solid", "SLAM 高度彩虹": "scan", "原始 RGB": "rgb",
+                 "按高度": "height", "自选纯色": "solid"}[values["color"]]
+        if values["color"] == "FAST-LIO 灰白":
+            values["cloud_color"] = "#DEE3E8"
         for key in keys:
             args += ["--" + key.replace("_", "-") + "=" + values[key]]
-        color = {"SLAM 高度彩虹": "scan", "原始 RGB": "rgb", "按高度": "height", "自选纯色": "solid"}[values["color"]]
         if values["height_range"]:
             limits = values["height_range"].replace("，", " ").replace(",", " ").split()
             args += ["--height-range", *limits]

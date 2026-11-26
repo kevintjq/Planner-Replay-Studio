@@ -74,7 +74,7 @@ def draw_motion_shadows(reader, original, samples, size, check_cancel):
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
         if np.count_nonzero(mask) < max(6, .035*w*h):
             continue
-        opacity = .44+.36*step/(len(chosen)-1)
+        opacity = .84+.14*step/(len(chosen)-1)
         mask = np.rint(cv2.GaussianBlur(mask, (3, 3), 0)*opacity).astype(np.uint8)
         sprite = Image.fromarray(crop).convert("RGBA")
         sprite.putalpha(Image.fromarray(mask))

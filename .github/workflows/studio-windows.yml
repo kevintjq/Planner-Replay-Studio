@@ -46,7 +46,7 @@ jobs:
           $options = @('--noconfirm', '--clean', '--onedir', '--windowed', '--noupx',
             '--name', 'PlannerReplayStudio', '--workpath', 'build/studio', '--specpath', 'build/studio',
             '--distpath', 'dist', '--collect-all', 'vtkmodules', '--collect-all', 'imageio_ffmpeg',
-            '--collect-submodules', 'rosbags.typesys.stores',
+            '--collect-submodules', 'rosbags',
             '--recursive-copy-metadata', 'slam-fpv-renderer', '--hidden-import', 'imageio.plugins.ffmpeg',
             '--hidden-import', 'imageio.plugins.pillow', 'packaging/windows/studio_entry.py')
           python -m PyInstaller @options

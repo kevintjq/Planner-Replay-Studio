@@ -176,9 +176,15 @@ def render(a, source, *, preview=None, preview_offset=0, preview_stream=False, p
             video = stack.enter_context(FlightVideo(a.video, video_edit(a)))
             layers = [stack.enter_context(FlightVideo(layer.path, layer.edit)) for layer in project.videos] if project else ()
             view_modes = None if project is None else tuple(view.kind for view in project.views)
+            large_views = {}
+            if project is not None:
+                for motion in project.motions:
+                    if motion.kind == "view":
+                        large_views[motion.layer_id] = max(large_views.get(motion.layer_id, 0.), motion.large_width)
             renderer = make_renderer(a, clean=project is not None, view_modes=view_modes,
                                      main_mode="rear" if project is None else project.main_view.kind,
-                                     view_widths=None if project is None else tuple(view.width for view in project.views),
+                                     view_widths=None if project is None else tuple(
+                                         max(view.width, large_views.get(view.id, 0.)) for view in project.views),
                                      overlays=None if project is None else tuple(
                                          view.overlays for view in (project.main_view, *project.views)),
                                      view_zooms=None if project is None else tuple(

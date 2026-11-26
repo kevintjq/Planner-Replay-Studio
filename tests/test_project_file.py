@@ -1,7 +1,7 @@
 from dataclasses import replace
 import json
 
-from slam_fpv.composition import Composition, LayoutCue, PointCloudView, TimelineMarker, VideoLayer
+from slam_fpv.composition import Composition, LayerMotion, LayoutCue, PointCloudView, TimelineMarker, VideoLayer
 from slam_fpv.footage import VideoEdit
 from slam_fpv.project_file import ProjectFile, load_project, save_project
 
@@ -23,6 +23,7 @@ def test_round_trip_keeps_per_clip_anchors_and_per_view_overlays(tmp_path):
     clip = composition.videos[1]
     composition = replace(composition, layouts=(LayoutCue(1., "backdrop", clip.id),
                                                LayoutCue(2.5, "inset", clip.id, .65, .28, (.15, .2)), LayoutCue(5., "mix")),
+                          motions=(LayerMotion("view", composition.views[0].id, 0., 1.5, .8, .9, (.2, .7)),),
                           audio_id=clip.id, play_rate=.5, compare_plans=True, markers=(TimelineMarker(1.2, '入口'),))
     saved = ProjectFile(composition, {"encoder": "CPU", "cloud_topic": "/registered"},
                         {"scan": True, "camera": False}, "bag", bag, extrinsics)

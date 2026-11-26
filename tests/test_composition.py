@@ -140,3 +140,34 @@ def test_inset_marker_sets_its_own_size_position_and_duration():
     for stamp, expected in ((1., (0, 0, 320, 180)), (1.5, (0, 0, 240, 135)),
                             (2., (0, 0, 160, 90)), (3., (240, 135, 80, 45))):
         assert compose(scene, project, (footage,), stamp, None)[1]["video", 0] == expected
+
+
+def test_all_visible_windows_shrink_independently_with_eased_geometry():
+    from slam_fpv.composition import LayerMotion
+
+    scene = Image.new("RGBA", (640, 360))
+    cloud = Image.new("RGBA", (320, 180), (15, 70, 80, 150))
+    footage = Image.new("RGB", (160, 90), (210, 45, 55))
+    video = VideoLayer(Path("flight.mp4"), position=(1., 1.))
+    view = PointCloudView("fpv", .3, (1., 0.))
+    caption = TextLayer("SLAM", 0., 3., position=(0., 0.))
+    base = Composition(videos=(video,), views=(view,), texts=(caption,), show_speed=True,
+                       main_view=PointCloudView("rear", .46, (.2, .8)), transparent_canvas=True)
+    targets = (("main", None, .83), ("view", view.id, .75), ("video", video.id, .71),
+               ("text", caption.id, .43), ("speed", None, .54))
+    motions = tuple(LayerMotion(kind, key, .1, .5, 1., size, (0., 0.)) for kind, key, size in targets)
+    composition = replace(base, motions=motions)
+    snapshots = [
+        compose(scene, composition, (footage,), t, None, {"fpv": cloud})
+        for t in (0., .3, .5, .75, 1., 1.25, 1.5)
+    ]
+    regular, hold, start, first_step, half, last_step, end = [bounds for _, bounds in snapshots]
+    assert regular == end
+    assert hold == start
+    for key in regular:
+        widths = [bounds[key][2] for bounds in (start, first_step, half, last_step, end)]
+        assert widths == sorted(widths, reverse=True) and widths[0] > widths[-1]
+        assert widths[0]-widths[1] < widths[1]-widths[2]
+        assert widths[3]-widths[4] < widths[2]-widths[3]
+        assert hold[key][:2] == (0, 0)
+    assert all(image.mode == "RGBA" for image, _ in snapshots)

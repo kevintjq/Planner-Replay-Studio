@@ -42,6 +42,7 @@ class TextLayer:
     size: int = 32
     color: str = "#F7FAFF"
     transparent: bool = True
+    id: str = field(default_factory=lambda: uuid4().hex)
 
     def __post_init__(self):
         if not self.text.strip() or len(self.text) > 160:
@@ -94,6 +95,7 @@ class PointCloudView:
     transparent: bool = True
     overlays: tuple | None = None
     zoom: float = 1.
+    id: str = field(default_factory=lambda: uuid4().hex)
 
     def __post_init__(self):
         if self.overlays is not None and (len(set(self.overlays)) != len(self.overlays)
@@ -144,6 +146,39 @@ def inset_placement(layer, cue):
 
 
 @dataclass(frozen=True)
+class LayerMotion:
+    """Enlarge one layer from start, then ease back to its editable placement."""
+
+    kind: str
+    layer_id: str | None
+    start: float
+    time: float
+    duration: float = INSET_TRANSITION_SECONDS
+    large_width: float = 1.
+    large_position: tuple = (.5, .5)
+
+    def __post_init__(self):
+        if self.kind not in {"main", "view", "video", "text", "speed"}:
+            raise ValueError("未知的缩窗图层。")
+        if not isfinite(self.start) or not isfinite(self.time) or not 0 <= self.start <= self.time:
+            raise ValueError("放大时间须为非负数，且不能晚于缩窗时间。")
+        if not .1 <= self.duration <= 5.:
+            raise ValueError("缩窗时长须为 0.1–5 秒。")
+        if not .05 <= self.large_width <= 1.:
+            raise ValueError("大窗宽度须为画面的 5–100%。")
+        if len(self.large_position) != 2 or not all(0 <= coordinate <= 1 for coordinate in self.large_position):
+            raise ValueError("大窗位置须为 0–100%。")
+
+    @property
+    def target(self):
+        return self.kind, self.layer_id
+
+    @property
+    def end(self):
+        return self.time + self.duration
+
+
+@dataclass(frozen=True)
 class TimelineMarker:
     time: float
     label: str
@@ -172,6 +207,7 @@ class Composition:
     play_rate: float = 1.
     compare_plans: bool = False
     markers: tuple = ()
+    motions: tuple = ()
 
     def __post_init__(self):
         if any(left.time >= right.time for left, right in zip(self.markers, self.markers[1:])):
@@ -196,7 +232,30 @@ class Composition:
             raise ValueError("速度表开始时间须为非负数。")
         if self.speed_end is not None and (not isfinite(self.speed_end) or self.speed_end <= self.speed_start):
             raise ValueError("速度表结束时间须晚于开始时间。")
+        targets = {("main", None), ("speed", None)}
+        for kind, layers in (("video", self.videos), ("view", self.views), ("text", self.texts)):
+            keys = {(kind, layer.id) for layer in layers}
+            if len(keys) != len(layers):
+                raise ValueError("图层标识重复。")
+            targets.update(keys)
+        end_by_target = {}
+        for motion in sorted(self.motions, key=lambda item: item.start):
+            if motion.target not in targets:
+                raise ValueError("缩窗动画引用了不存在的图层。")
+            if motion.start < end_by_target.get(motion.target, 0.) - 1e-8:
+                raise ValueError("同一图层的缩窗动画不能重叠。")
+            end_by_target[motion.target] = motion.end
 
+    def motion_target(self, selection):
+        kind, index = selection
+        if kind in {"main", "speed"}:
+            return kind, None
+        layers = {"view": self.views, "video": self.videos, "text": self.texts}[kind]
+        return kind, layers[index].id
+
+    def motion_at(self, target, elapsed):
+        return next((motion for motion in self.motions if motion.target == target
+                     and motion.start <= elapsed < motion.end), None)
 
     def layout_at(self, elapsed):
         return next((cue for cue in reversed(self.layouts) if cue.time <= elapsed), None)
@@ -268,8 +327,7 @@ def label_tile(text, size, color):
     return tile
 
 
-@lru_cache(maxsize=32)
-def gauge_face(size, limit):
+def draw_gauge_face(size, limit):
     face = Image.new("RGBA", (size, round(size * .89)))
     draw = ImageDraw.Draw(face)
     center = size * .5, size * .48
@@ -289,9 +347,15 @@ def gauge_face(size, limit):
     return face
 
 
-def speed_tile(readings, limit, height):
-    size = max(115, round(height * .29))
-    tile = gauge_face(size, limit).copy()
+gauge_face = lru_cache(maxsize=32)(draw_gauge_face)
+
+
+def speed_tile(readings, limit, height, *, size=None):
+    if size is None:
+        size = max(115, round(height * .29))
+        tile = gauge_face(size, limit).copy()
+    else:
+        tile = draw_gauge_face(size, limit)
     draw = ImageDraw.Draw(tile)
     current, peak, average = readings or (None, None, None)
     center, radius = (size * .5, size * .48), size * .322
@@ -350,6 +414,22 @@ def scaled_rect(canvas, source, scale, position):
     return x, y, width, height
 
 
+def motion_rect(canvas, rect, motion, elapsed):
+    if motion is None:
+        return rect
+    x, y, w, h = rect
+    scale = min(canvas[0] * motion.large_width / w, canvas[1] / h)
+    if scale <= 1.:
+        return rect
+    large_w, large_h = round(w*scale), round(h*scale)
+    left = round((canvas[0]-large_w)*motion.large_position[0])
+    top = round((canvas[1]-large_h)*motion.large_position[1])
+    large = left, top, large_w, large_h
+    fraction = max(0., elapsed - motion.time) / motion.duration
+    ease = fraction*fraction*(3. - 2.*fraction)
+    return tuple(round(a + (b-a)*ease) for a, b in zip(large, (x, y, w, h)))
+
+
 def rounded_tile(tile, transparent, radius):
     if not transparent:
         panel = Image.new("RGBA", tile.size, MATTE)
@@ -388,10 +468,14 @@ def compose(base, project, videos, elapsed, speed, cloud_views=None, *, alpha=No
             image = footage if isinstance(footage, Image.Image) else Image.fromarray(footage)
             return ImageOps.fit(image.convert("RGBA" if alpha else "RGB"), scene.size, Image.Resampling.LANCZOS), {}
     if cue and cue.mode == "cloud":
-        project = replace(project, videos=(), layouts=(), audio_id=None, views=(), texts=(), show_speed=False,
+        project = replace(project, videos=(), layouts=(), motions=(), audio_id=None, views=(), texts=(), show_speed=False,
                           main_view=replace(project.main_view, width=1., position=(.5, .5)))
     image = Image.new("RGBA" if alpha else "RGB", scene.size, (0, 0, 0, 0) if alpha else fallback)
     behind = None
+    active_motions = {motion.target: motion for motion in project.motions if motion.start <= elapsed < motion.end}
+
+    def place(kind, layer_id, rect):
+        return motion_rect(image.size, rect, active_motions.get((kind, layer_id)), elapsed)
 
     def paste(tile, position, opacity=1., *, canvases=None):
         if canvases is None:
@@ -421,7 +505,8 @@ def compose(base, project, videos, elapsed, speed, cloud_views=None, *, alpha=No
     for index, (layer, footage) in enumerate(pairs):
         if layer.id == backdrop_id and footage is not None:
             source = footage if isinstance(footage, Image.Image) else Image.fromarray(footage)
-            x, y, w, h = scaled_rect(image.size, image.size, layer.backdrop_scale, layer.backdrop_position)
+            rect = scaled_rect(image.size, image.size, layer.backdrop_scale, layer.backdrop_position)
+            x, y, w, h = place("video", layer.id, rect)
             video = ImageOps.fit(source.convert("RGBA"), (w, h), Image.Resampling.LANCZOS)
             if layer.backdrop_scale < 1.:
                 video = rounded_tile(video, layer.transparent, radius)
@@ -436,7 +521,8 @@ def compose(base, project, videos, elapsed, speed, cloud_views=None, *, alpha=No
         source = footage if isinstance(footage, Image.Image) else Image.fromarray(footage)
         start = scaled_rect(image.size, image.size, layer.backdrop_scale, layer.backdrop_position)
         end = video_rect(image.size, source.size, *inset_placement(layer, cue))
-        x, y, w, h = (round(a + (b - a) * progress) for a, b in zip(start, end))
+        rect = tuple(round(a + (b - a) * progress) for a, b in zip(start, end))
+        x, y, w, h = place("video", layer.id, rect)
         start_radius = radius if layer.backdrop_scale < 1. else 0
         corner = round(start_radius + (radius - start_radius) * progress)
         stroke = 0 if layer.transparent else min(round(radius // 2 * progress), (min(w, h) - 1) // 2)
@@ -447,9 +533,10 @@ def compose(base, project, videos, elapsed, speed, cloud_views=None, *, alpha=No
         bounds["video", moving_index] = x, y, w, h
 
     main = project.main_view
-    x, y, w, h = scaled_rect(image.size, scene.size, main.width, main.position)
+    rect = scaled_rect(image.size, scene.size, main.width, main.position)
+    x, y, w, h = place("main", None, rect)
     tile = scene.convert("RGBA").resize((w, h), Image.Resampling.LANCZOS)
-    if main.width < 1.:
+    if w < image.width:
         tile = rounded_tile(tile, main.transparent, radius)
     elif not main.transparent:
         panel = Image.new("RGBA", tile.size, MATTE)
@@ -463,7 +550,8 @@ def compose(base, project, videos, elapsed, speed, cloud_views=None, *, alpha=No
         if captured is None:
             continue
         inset = captured if isinstance(captured, Image.Image) else Image.fromarray(captured)
-        x, y, w, h = scaled_rect(image.size, inset.size, layer.width, layer.position)
+        rect = scaled_rect(image.size, inset.size, layer.width, layer.position)
+        x, y, w, h = place("view", layer.id, rect)
         tile = rounded_tile(inset.resize((w, h), Image.Resampling.LANCZOS), layer.transparent, radius)
         paste(tile, (x, y))
         bounds["view", index] = x, y, w, h
@@ -488,7 +576,8 @@ def compose(base, project, videos, elapsed, speed, cloud_views=None, *, alpha=No
             behind = None
             continue
         inset = footage if isinstance(footage, Image.Image) else Image.fromarray(footage)
-        x, y, w, h = video_rect(image.size, inset.size, *inset_placement(layer, cue))
+        rect = video_rect(image.size, inset.size, *inset_placement(layer, cue))
+        x, y, w, h = place("video", layer.id, rect)
         stroke = 0 if layer.transparent else min(radius // 2, (min(w, h) - 1) // 2)
         tile = inset_tile(inset, (w, h), layer.transparent, radius, stroke)
         paste(tile, (x, y), layer.opacity)
@@ -496,15 +585,26 @@ def compose(base, project, videos, elapsed, speed, cloud_views=None, *, alpha=No
 
     for index, layer in enumerate(project.texts):
         if layer.start <= elapsed < layer.end:
-            tile = label_tile(layer.text, max(6, round(layer.size * image.height / 1080)), layer.color)
-            x, y = position_tile(image.size, tile, layer.position)
+            size = max(6, round(layer.size * image.height / 1080))
+            tile = label_tile(layer.text, size, layer.color)
+            original_width = tile.width
+            position = position_tile(image.size, tile, layer.position)
+            x, y, w, h = place("text", layer.id, (*position, *tile.size))
+            if (w, h) != tile.size:
+                tile = label_tile(layer.text, max(6, round(size*w/original_width)), layer.color)
+                tile = tile.resize((w, h), Image.Resampling.LANCZOS)
             if not layer.transparent:
                 tile = rounded_tile(tile, False, radius)
             paste(tile, (x, y))
             bounds["text", index] = x, y, *tile.size
     if project.show_speed and elapsed >= project.speed_start and (project.speed_end is None or elapsed < project.speed_end):
         tile = speed_tile(speed, project.speed_limit, round(image.height * project.speed_scale))
-        x, y = position_tile(image.size, tile, project.speed_position)
+        position = position_tile(image.size, tile, project.speed_position)
+        x, y, w, h = place("speed", None, (*position, *tile.size))
+        if (w, h) != tile.size:
+            tile = speed_tile(speed, project.speed_limit, image.height, size=w)
+            if tile.size != (w, h):
+                tile = tile.resize((w, h), Image.Resampling.LANCZOS)
         if not project.speed_transparent:
             tile = rounded_tile(tile, False, radius)
         paste(tile, (x, y))

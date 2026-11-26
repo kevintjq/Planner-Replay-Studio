@@ -69,6 +69,7 @@ Scroll over a point-cloud view to zoom it. Each view also has a camera zoom perc
 - Use **Play** for continuous proxy preview. With timeline focus, Space pauses or plays and arrow keys step one frame. Drag the playhead to scrub. Export retains the configured resolution and frame rate.
 - Select a video and press S to split or Delete to remove the segment at the playhead. The clip menu offers the same actions. Cuts preserve the bag-time alignment and mute the selected source audio in removed ranges. Use Ctrl+Z / Ctrl+Y to undo or redo, and **Snap** to align to markers and segment edges.
 - Click a purple layout marker to jump or drag it to change its time. Right-click a **Footage inset** marker to adjust its own size, position and 0–5 second transition.
+- Select any layer and arrange its final size and position. Use **Shrink layer** to set when it enlarges and when it eases back. Multiple layers can animate together. Drag a green marker to move the animation, or right-click to edit or delete it.
 - Add a marker at the playhead with **+ Event**. Right-click it to rename or delete it. Click a marker or pick an event from the list to jump.
 - Video, captions and the speed gauge have separate tracks. Drag an edge to trim, or drag the body of a video segment to move its visibility window on the aligned bag timeline. Enable previous-plan comparison to show a dashed grey path.
 - Set a layout marker at the playhead to switch between the composition, full-screen point cloud, and full-screen footage. Click a purple marker to jump back to it.

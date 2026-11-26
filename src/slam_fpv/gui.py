@@ -18,7 +18,7 @@ from PIL import Image, ImageDraw, ImageTk
 from .alignment import motion_candidates
 from .cli import extrinsics, open_source, parser, render, validate
 from .composition import (
-    LAYOUT_NAMES, VIDEO_LAYOUTS, MAX_CAMERA_ZOOM, MIN_CAMERA_ZOOM, Composition, LayoutCue, TimelineMarker, compose,
+    LAYOUT_NAMES, VIDEO_LAYOUTS, MAX_CAMERA_ZOOM, MIN_CAMERA_ZOOM, Composition, LayerMotion, LayoutCue, TimelineMarker, compose,
     inset_placement, placement_axis, rounded_mask,
 )
 from .desktop_style import INK, desktop_style
@@ -162,6 +162,8 @@ class RendererApp(LayerControls):
         self.layout_video_menus = {mode: tk.Menu(self.layout_menu, tearoff=False) for mode in VIDEO_LAYOUTS}
         self.layout_button.configure(menu=self.layout_menu)
         self.layout_button.pack(side="right")
+        self.layer_motion_button = ttk.Button(markers, text="图层缩窗", command=self.edit_layer_motion)
+        self.layer_motion_button.pack(side="right", padx=(0, 6))
         self.layout_status = tk.StringVar(value="当前合成")
         ttk.Label(preview_header, textvariable=self.layout_status, style="Quiet.TLabel").pack(side="right", padx=8)
         for key in ("start", "seconds"):
@@ -270,20 +272,78 @@ class RendererApp(LayerControls):
             self.update_timeline()
             self.draw_preview()
 
+    def edit_layer_motion(self, motion=None):
+        if self.busy or (motion is None and not self.selection):
+            return
+        if motion is None:
+            kind, layer_id = self.project.motion_target(self.selection)
+            timeline_start, _ = self.timeline_range()
+            shrink = max(timeline_start, self.timeline.time)
+            start = max(timeline_start, shrink-1.)
+            if kind == "text":
+                start = max(start, self.project.texts[self.selection[1]].start)
+            elif kind == "speed":
+                start = max(start, self.project.speed_start)
+            large = {"text": .65, "speed": .5}.get(kind, 1.)
+            draft = LayerMotion(kind, layer_id, start, max(start, shrink), large_width=large)
+        else:
+            draft = motion
+
+        def save(values):
+            update = replace(draft, start=float(values["start"]), time=float(values["time"]),
+                             duration=float(values["duration"]), large_width=float(values["width"])/100,
+                             large_position=(float(values["x"])/100, float(values["y"])/100))
+            self.replace_layer_motion(motion, update)
+            if update.kind == "view" and self.elapsed is not None:
+                self.root.after_idle(lambda: self.start_render(True))
+
+        self.layer_dialog("图层缩窗", (
+            ("start", "大窗出现时间 (s)", f"{draft.start:.3f}"),
+            ("time", "开始缩窗时间 (s)", f"{draft.time:.3f}"),
+            ("duration", "过渡时长 (s)", f"{draft.duration:g}"),
+            ("width", "大窗最大宽度 (%)", f"{draft.large_width*100:g}"),
+            ("x", "大窗横向位置 (%)", f"{draft.large_position[0]*100:g}"),
+            ("y", "大窗纵向位置 (%)", f"{draft.large_position[1]*100:g}"),
+        ), save, note="大窗保持原比例，缩回此图层原有的位置和大小。")
+
+    def replace_layer_motion(self, motion, update):
+        motions = [item for item in self.project.motions if item != motion]
+        if update is not None:
+            motions.append(update)
+        self.project = replace(self.project, motions=tuple(sorted(motions, key=lambda item: item.start)))
+        self.update_timeline()
+        self.draw_preview()
+
     def move_layout(self, cue, seconds):
-        self.replace_layout(cue, replace(cue, time=seconds))
-        if not self.busy:
-            self.jump_cue(seconds)
+        if self.busy:
+            self.update_timeline()
+            return
+        if isinstance(cue, LayerMotion):
+            seconds = max(seconds, cue.time - cue.start)
+            try:
+                self.replace_layer_motion(cue, replace(cue, time=seconds,
+                                                       start=max(0., cue.start + (seconds-cue.time))))
+            except ValueError as error:
+                self.status.set(str(error))
+                self.update_timeline()
+                return
+        else:
+            self.replace_layout(cue, replace(cue, time=seconds))
+        self.jump_cue(seconds)
 
     def layout_context(self, cue, x, y):
         if self.busy:
             return
         menu = self.marker_popup
         menu.delete(0, "end")
-        if cue.mode == "inset":
-            menu.add_command(label="调整过渡时长…", command=lambda: self.edit_transition(cue))
-            menu.add_command(label="调整小窗大小和位置…", command=lambda: self.edit_inset(cue))
-        menu.add_command(label="删除布局标记", command=lambda: self.replace_layout(cue, None))
+        if isinstance(cue, LayerMotion):
+            menu.add_command(label="编辑图层缩窗…", command=lambda: self.edit_layer_motion(cue))
+            menu.add_command(label="删除图层缩窗", command=lambda: self.replace_layer_motion(cue, None))
+        else:
+            if cue.mode == "inset":
+                menu.add_command(label="调整过渡时长…", command=lambda: self.edit_transition(cue))
+                menu.add_command(label="调整小窗大小和位置…", command=lambda: self.edit_inset(cue))
+            menu.add_command(label="删除布局标记", command=lambda: self.replace_layout(cue, None))
         menu.tk_popup(x, y)
         menu.grab_release()
 
@@ -858,7 +918,7 @@ class RendererApp(LayerControls):
         args.seconds = max(args.seconds, seconds + 1 / args.fps)
         args.width, args.height, args.supersample = 960, 540, 1
 
-        project = replace(self.project, videos=(), layouts=(), audio_id=None, views=(), texts=(), show_speed=False)
+        project = replace(self.project, videos=(), layouts=(), motions=(), audio_id=None, views=(), texts=(), show_speed=False)
         metadata = self.bag_metadata
 
         def work():
@@ -877,7 +937,7 @@ class RendererApp(LayerControls):
         args.start, args.seconds, args.fps = start, end-start, 10
         args.width, args.height, args.supersample = 480, 270, 1
         metadata = self.bag_metadata
-        project = replace(self.project, videos=(), layouts=(), audio_id=None, views=(), texts=(), show_speed=False)
+        project = replace(self.project, videos=(), layouts=(), motions=(), audio_id=None, views=(), texts=(), show_speed=False)
 
         def work():
             source = open_source(args, self.check_cancel, metadata)
@@ -1213,7 +1273,10 @@ class RendererApp(LayerControls):
         if self.project.inset_transition(cue, self.elapsed) is not None:
             index = next(i for i, layer in enumerate(self.project.videos) if layer.id == cue.video_id)
             bounds.pop(("video", index), None)
-        self.layer_bounds = {key: (x+left, y+top, w, h) for key, (left, top, w, h) in bounds.items()}
+        self.layer_bounds = {
+            key: (x+left, y+top, w, h) for key, (left, top, w, h) in bounds.items()
+            if self.project.motion_at(self.project.motion_target(key), self.elapsed) is None
+        }
         selected = self.layer_bounds.get(self.selection)
         if selected is not None:
             x, y, w, h = selected

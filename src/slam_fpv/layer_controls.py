@@ -140,6 +140,7 @@ class LayerControls:
         selection = self.selection
         kind, i = selection or ("", 0)
         self.layer_settings.state(["!disabled" if selection else "disabled"])
+        self.layer_motion_button.state(["!disabled" if selection else "disabled"])
         self.layer_align.state(["!disabled" if kind == "video" else "disabled"])
         self.layer_remove.state(["!disabled" if selection and kind != "main" else "disabled"])
         self.layer_matte.state(["!disabled" if selection else "disabled"])
@@ -260,19 +261,23 @@ class LayerControls:
         if not self.selection or self.selection[0] == "main":
             return
         kind, index = self.selection
+        target = self.project.motion_target(self.selection)
+        motions = tuple(motion for motion in self.project.motions if motion.target != target)
         self.selection = None
         if kind == "speed":
-            self.project = replace(self.project, show_speed=False)
+            self.project = replace(self.project, show_speed=False, motions=motions)
         elif kind == "video":
             removed = self.project.videos[index].id
             self.project = replace(self.project, videos=self.project.videos[:index]+self.project.videos[index+1:],
                                    layouts=tuple(cue for cue in self.project.layouts if cue.video_id != removed),
-                                   audio_id=None if self.project.audio_id == removed else self.project.audio_id)
+                                   motions=motions, audio_id=None if self.project.audio_id == removed else self.project.audio_id)
             self.footages = self.footages[:index]+self.footages[index+1:]
         elif kind == "view":
-            self.project = replace(self.project, views=self.project.views[:index]+self.project.views[index+1:])
+            self.project = replace(self.project, views=self.project.views[:index]+self.project.views[index+1:],
+                                   motions=motions)
         else:
-            self.project = replace(self.project, texts=self.project.texts[:index]+self.project.texts[index+1:])
+            self.project = replace(self.project, texts=self.project.texts[:index]+self.project.texts[index+1:],
+                                   motions=motions)
         self.refresh_layers()
 
     def edit_selected(self):
@@ -458,9 +463,11 @@ class LayerControls:
                       for i, layer in enumerate(self.project.texts))
         if self.project.show_speed:
             tracks.append(Track(("speed", 0), self.project.speed_start, self.project.speed_end or start+duration, "速度表"))
+        target = self.project.motion_target(self.selection) if self.selection else None
+        motion_marks = tuple(motion for motion in self.project.motions if motion.target == target)
         self.timeline.update_view(start, duration, self.elapsed if self.elapsed is not None else start,
                                   tuple(tracks), self.selection, int(self.values["fps"].get()),
-                                  self.timeline_events, self.project.layouts, self.project.markers)
+                                  self.timeline_events, self.project.layouts, self.project.markers, motion_marks)
         self.update_event_choices(start, duration)
 
     def seek_timeline(self, seconds):

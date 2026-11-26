@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from .composition import Composition, LayoutCue, PointCloudView, TextLayer, TimelineMarker, VideoLayer
+from .composition import Composition, LayerMotion, LayoutCue, PointCloudView, TextLayer, TimelineMarker, VideoLayer
 from .footage import VideoEdit
 
 
@@ -105,6 +105,8 @@ def load_project(path):
             videos.append(VideoLayer(**vectors(item, "position", "backdrop_position")))
         composition["videos"] = tuple(videos)
         composition["layouts"] = tuple(LayoutCue(**vectors(item, "position")) for item in composition.get("layouts", ()))
+        composition["motions"] = tuple(LayerMotion(**vectors(item, "large_position"))
+                                       for item in composition.get("motions", ()))
         composition["markers"] = tuple(TimelineMarker(**item) for item in composition.get("markers", ()))
         return ProjectFile(Composition(**composition), values, enabled, source, bag, media(data.get("extrinsics")))
     except (AttributeError, KeyError, TypeError) as error:

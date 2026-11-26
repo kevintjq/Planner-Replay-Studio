@@ -23,7 +23,7 @@ class Track:
 
 class Timeline(tk.Canvas):
     gutter = 116
-    track_top = 66
+    track_top = 82
     row_height = 25
     visible_tracks = 4
 
@@ -44,6 +44,7 @@ class Timeline(tk.Canvas):
         self.duration = 6.
         self.fps = 60
         self.events, self.layouts, self.markers, self.tracks = (), (), (), ()
+        self.motions = ()
         self.selected = None
         self.top_track = 0
         self.drag = self.draft = None
@@ -60,10 +61,10 @@ class Timeline(tk.Canvas):
         self.bind("<Key-m>", lambda _: None if self.busy else self.add_marker())
         self.busy = False
 
-    def update_view(self, start, duration, time, tracks, selected, fps, events=(), layouts=(), markers=()):
+    def update_view(self, start, duration, time, tracks, selected, fps, events=(), layouts=(), markers=(), motions=()):
         self.start, self.duration, self.time, self.fps = start, duration, time, fps
         self.tracks, self.selected = tracks, selected
-        self.events, self.layouts, self.markers = events, layouts, markers
+        self.events, self.layouts, self.markers, self.motions = events, layouts, markers, motions
         self.top_track = min(self.top_track, max(0, len(tracks)-self.visible_tracks))
         self.draw()
 
@@ -102,6 +103,17 @@ class Timeline(tk.Canvas):
             if self.visible(marker.time):
                 x = self.x(marker.time)
                 self.create_polygon(x-5, 50, x, 46, x+5, 50, x, 56, fill="#FFB849", outline="#9F580E")
+        if self.motions:
+            self.create_text(9, 72, anchor="w", text="图层缩窗", font=(self.face, 8), fill="#61758E")
+        for motion in self.motions:
+            time = self.draft if self.layout_drag == motion else motion.time
+            shift = time - motion.time
+            start, end = motion.start+shift, motion.end+shift
+            if end >= self.start and start <= self.start+self.duration:
+                self.create_line(self.x(start), 72, self.x(end), 72, fill="#62CAA9", width=3)
+            if self.visible(time):
+                x = self.x(time)
+                self.create_polygon(x-5, 72, x, 67, x+5, 72, x, 77, fill="#087A60")
         for row, track in enumerate(self.tracks[self.top_track:self.top_track+self.visible_tracks]):
             self.draw_track(track, row, x0, x1)
         if not self.tracks:
@@ -144,9 +156,8 @@ class Timeline(tk.Canvas):
         return self.tracks[index] if 0 <= row < self.visible_tracks and index < len(self.tracks) else None
 
     def layout_at(self, x, y):
-        if not 54 <= y < self.track_top:
-            return None
-        cues = [cue for cue in self.layouts if self.visible(cue.time) and abs(self.x(cue.time)-x) <= 8]
+        items = self.motions if 65 <= y < self.track_top else self.layouts if 54 <= y < 65 else ()
+        cues = [cue for cue in items if self.visible(cue.time) and abs(self.x(cue.time)-x) <= 8]
         return min(cues, key=lambda cue: abs(self.x(cue.time)-x), default=None)
 
     def snap_time(self, x, track=None):
@@ -157,7 +168,7 @@ class Timeline(tk.Canvas):
         x = self.x(raw)
         if self.snap:
             points = [self.start, self.start+self.duration, *(time for time, _ in self.events),
-                      *(mark.time for mark in self.markers), *(cue.time for cue in self.layouts if cue != self.layout_drag)]
+                      *(mark.time for mark in self.markers), *(cue.time for cue in (*self.layouts, *self.motions) if cue != self.layout_drag)]
             if self.drag != "play":
                 points.append(self.time)
                 for item in self.tracks:

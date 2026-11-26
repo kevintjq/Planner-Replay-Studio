@@ -27,11 +27,10 @@ Enable any layer under **Spatial overlays** and refresh the preview. Topics and 
 | --- | --- |
 | Planned trajectory | `nav_msgs/Path` or `visualization_msgs/Marker[Array]` |
 | Safety corridor | `visualization_msgs/Marker[Array]` with line strips, line lists, triangle lists or cubes |
-| Camera FOV | `CameraInfo` intrinsics and optical frame (+Z forward) |
-| LiDAR FOV | Sensor-local PointCloud2 or Livox CustomMsg observed envelope, or the planar angles in `LaserScan` |
-| Current scan | Latest PointCloud2, Livox CustomMsg or LaserScan, highlighted separately from the accumulated map |
+| Camera FOV | Compact wireframe based on `CameraInfo` and optical TF |
+| Current LiDAR scan | Highlights the latest PointCloud2, Livox CustomMsg or LaserScan frame |
 
-Record the planner visualization topics together with the bag. Use the TF tree or the extrinsics JSON to connect sensor frames to the world frame. FOV outlines use a short display range. An envelope estimated from point returns depends on the recorded scene. Layers without matching data or TF are skipped. If a dedicated scan is unavailable, the latest main input frame is highlighted.
+Record the planner visualization topics together with the bag. Use the TF tree or the extrinsics JSON to connect sensor frames to the world frame. Set actual and planned trajectory widths independently under **Quality**. Layers without matching data or TF are skipped. If a dedicated scan is unavailable, the latest main input frame is highlighted.
 
 ## CLI
 

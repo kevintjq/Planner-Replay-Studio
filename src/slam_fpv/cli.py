@@ -11,7 +11,8 @@ from .cloud import CloudMap
 from .geometry import stabilized_fpv_pose
 from .composition import SpeedHistory, compose, estimated_speed
 from .sources import BagSource, DemoSource, TrailDemoSource, inspect_bag
-from .spatial import SpatialOverlays, sensor_settings
+from .spatial import SpatialOverlays, camera_settings
+from .sensor_topics import suggested_topic
 from .encoding import h264_encoder
 from .footage import FULL_FRAME, FlightVideo, VideoEdit, composite
 
@@ -59,7 +60,9 @@ def parser(parser_class=argparse.ArgumentParser):
         x.add_argument('--slam-view',action='store_true',help='Unlit LiDAR points and foreground trajectory')
         x.add_argument('--cloud-color',type=hex_color,default='#70d9ff')
         x.add_argument('--trajectory-color',type=hex_color,default=None)
-        x.add_argument('--trajectory-width',type=float,default=3)
+        x.add_argument('--trajectory-width',type=float,default=3,help='Actual flight path width in pixels')
+        if name != 'listen':
+            x.add_argument('--plan-width',type=float,default=3,help='Planned trajectory width in pixels')
         x.add_argument('--supersample',type=int,choices=(1,2),default=1)
         x.add_argument('--crf',type=int,choices=range(0,52),default=None,metavar='0–51')
         x.add_argument('--encoder',choices=('auto','cpu','nvenc'),default='cpu')
@@ -68,17 +71,16 @@ def parser(parser_class=argparse.ArgumentParser):
             x.add_argument('--corridor-topic', help='Safety corridor Marker or MarkerArray')
             x.add_argument('--scan-topic', help='Separate PointCloud2, LaserScan or Livox CustomMsg topic for the latest scan')
             x.add_argument('--camera-info-topic', help='Override the automatically selected CameraInfo topic')
-            x.add_argument('--lidar-fov-topic', help='Override the automatically selected LiDAR topic')
+            x.add_argument('--lidar-fov-topic', dest='scan_topic', help=argparse.SUPPRESS)
         if name == 'demo':
             x.add_argument('--show-plan', action='store_true')
             x.add_argument('--show-corridor', action='store_true')
         if name != 'listen':
-            x.add_argument('--show-scan', action='store_true', help='Highlight the latest map input frame')
+            x.add_argument('--show-scan', action='store_true', help='Highlight the latest scan')
             x.add_argument('--show-camera-fov', action='store_true', help='Show the FOV detected from CameraInfo')
-            x.add_argument('--show-lidar-fov', action='store_true', help='Show the detected LiDAR scan envelope')
+            x.add_argument('--show-lidar-fov', dest='show_scan', action='store_true', help=argparse.SUPPRESS)
             x.add_argument('--scan-max-age', type=float, default=.5, help='Hide scans older than this many seconds')
             x.add_argument('--camera-fov', nargs=4, metavar=('FRAME','HFOV','VFOV','DEPTH'))
-            x.add_argument('--lidar-fov', nargs=5, metavar=('FRAME','HFOV','VFOV','RADIUS','ELEVATION'))
             x.add_argument('--video',type=Path)
             x.add_argument('--video-in',type=float,default=0)
             x.add_argument('--video-out',type=float)
@@ -117,7 +119,7 @@ def make_renderer(a, *, clean=False, view_modes=None, main_mode="rear", view_wid
     return Renderer(a.width,a.height,not a.no_edl and not a.slam_view,a.axis,a.axis_pixels,a.point_size,
                     a.distance,a.camera_height,a.side,a.fov,a.inset_distance,a.inset_height,
                     supersample=a.supersample,cloud_color=solid,trajectory_color=trajectory,
-                    trajectory_width=a.trajectory_width,clean=clean,slam_view=a.slam_view,view_modes=view_modes,
+                    trajectory_width=a.trajectory_width, plan_width=getattr(a, 'plan_width', 3.), clean=clean,slam_view=a.slam_view,view_modes=view_modes,
                     main_mode=main_mode,view_widths=view_widths)
 
 
@@ -263,14 +265,18 @@ def render(a, source, *, preview=None, preview_offset=0, progress=None, check_ca
 def open_source(a, check_cancel=None, metadata=None):
     if a.command == 'demo':
         return (TrailDemoSource if a.demo_scene == "trail" else DemoSource)(a.seconds)
+    auto_camera = a.show_camera_fov and camera_settings(a) is None
+    auto_scan = a.show_scan and not a.scan_topic
+    if metadata is None and (auto_camera or auto_scan):
+        metadata = inspect_bag(a.bag, check_cancel)
+    scan_topic = a.scan_topic
+    if auto_scan:
+        scan_topic = suggested_topic(metadata["topics"], "scan", a.world.lstrip("/"), a.body.lstrip("/"))
     source = BagSource(a.bag, a.cloud_topic, a.odom_topic, a.world, a.body, a.pose_source,
-                       a.max_gap, extrinsics(a.extrinsics), plan_topic=getattr(a, 'plan_topic', None),
-                       corridor_topic=getattr(a, 'corridor_topic', None),
-                       scan_topic=getattr(a, 'scan_topic', None)).index(check_cancel)
-    requests = {name: getattr(a, field, None) for name, field in
-                (("camera", "camera_info_topic"), ("lidar", "lidar_fov_topic"))
-                if getattr(a, "show_" + name + "_fov", False) and sensor_settings(a, name) is None}
-    source.detect_sensors(requests, check_cancel, metadata)
+                       a.max_gap, extrinsics(a.extrinsics), plan_topic=a.plan_topic,
+                       corridor_topic=a.corridor_topic, scan_topic=scan_topic).index(check_cancel)
+    if auto_camera:
+        source.detect_camera(a.camera_info_topic, metadata)
     return source
 
 
@@ -296,8 +302,9 @@ def validate(a):
         raise ValueError('--max-gap must be positive')
 
     if a.command != 'listen':
-        for name in ("camera", "lidar"):
-            sensor_settings(a, name)
+        camera_settings(a)
+        if not np.isfinite(a.plan_width) or a.plan_width <= 0:
+            raise ValueError("规划轨迹线宽须大于 0。")
         if not np.isfinite(a.scan_max_age) or a.scan_max_age <= 0:
             raise ValueError('扫描保留时间须是大于 0 的有限值。')
         video_edit(a)

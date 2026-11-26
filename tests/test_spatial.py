@@ -5,20 +5,16 @@ import pytest
 
 from slam_fpv.cli import parser
 from slam_fpv.sources import DemoSource
-from slam_fpv.spatial import SensorView, SpatialOverlays, sensor_edges
+from slam_fpv.spatial import CameraView, SpatialOverlays, camera_edges
 
 
-def test_sensor_geometry_and_scan_expiry():
-    camera = SensorView("optical", (90, 90), 3., True)
-    corners = sensor_edges(camera).reshape(-1, 3)
+def test_camera_geometry_and_scan_expiry():
+    camera = CameraView("optical", (90, 90), 3.)
+    corners = camera_edges(camera).reshape(-1, 3)
     np.testing.assert_allclose(corners.max(axis=0), [3, 3, 3])
     np.testing.assert_allclose(corners.min(axis=0), [-3, -3, 0])
-    lidar = SensorView("lidar", (360, 40), 5., False, 10.)
-    points = sensor_edges(lidar).reshape(-1, 3)
-    np.testing.assert_allclose(np.linalg.norm(points, axis=1), 5.)
-    assert points[:, 2].max() == pytest.approx(2.5)
     with pytest.raises(ValueError):
-        SensorView("lidar", (360, 40), 5., False, 80.)
+        CameraView("optical", (180, 90))
 
     args = parser().parse_args(["demo", "--output", "preview.png", "--show-scan",
                                "--scan-max-age", ".2", "--show-plan", "--show-corridor"])
@@ -34,14 +30,11 @@ def test_sensor_geometry_and_scan_expiry():
         assert frame.plan and frame.corridor
 
 
-def test_raw_cloud_estimate_crosses_azimuth_wrap_and_ignores_map():
-    from slam_fpv.sensor_topics import cloud_view, sensor_choices
+def test_suggested_scan_prefers_raw_livox_over_world_and_unlabelled_cloud():
+    from slam_fpv.sensor_topics import LIVOX_TYPES, suggested_topic
     from slam_fpv.spatial import CLOUD
-    theta = np.deg2rad(np.linspace(-17, 23, 300))
-    xyz = np.column_stack((np.cos(theta), np.sin(theta), np.linspace(-.15, .22, len(theta))))
-    sensor = cloud_view("livox", [xyz])
-    assert sensor.angles[0] == pytest.approx(42)
-    assert 0 <= sensor.azimuth <= 6
-    assert sensor.elevation > 0
-    assert sensor_choices([{"type": CLOUD, "topic": "/cloud_registered", "frame": "map",
-                            "view": sensor}], "lidar", "map", "body") == []
+    topics = [{"type": CLOUD, "topic": "/cloud_registered", "frame": "map"},
+              {"type": CLOUD, "topic": "/cloud", "frame": "sensor"},
+              {"type": LIVOX_TYPES[0], "topic": "/livox/lidar", "frame": "livox"}]
+    assert suggested_topic(topics, "scan", "map", "body") == "/livox/lidar"
+    assert suggested_topic(topics[:1], "scan", "map", "body") == ""

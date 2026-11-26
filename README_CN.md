@@ -27,11 +27,10 @@
 | --- | --- |
 | 规划轨迹 | `nav_msgs/Path` 或 `visualization_msgs/Marker[Array]` |
 | 飞行安全走廊 | `visualization_msgs/Marker[Array]`，支持折线、线段集、三角面和立方体 |
-| 相机 FOV | `CameraInfo` 内参和光学坐标系（+Z 向前） |
-| 雷达 FOV | 用雷达局部坐标中的 PointCloud2 或 Livox CustomMsg 估计观测范围，也可读取 `LaserScan` 的平面扫描角 |
-| 当前扫描点云 | 高亮最近一帧 PointCloud2、Livox CustomMsg 或 LaserScan，与累计地图分开渲染 |
+| 相机 FOV | 根据 `CameraInfo` 和光学 TF 绘制紧凑的细线视锥 |
+| 雷达当前帧高亮 | 高亮最近一帧 PointCloud2、Livox CustomMsg 或 LaserScan |
 
-录包时一并录制规划器的可视化话题。传感器坐标系通过 TF 或外参 JSON 连到世界坐标系。FOV 使用较短的绘制距离，点云估计的范围随录制场景变化。缺少数据或 TF 时跳过相应图层。找不到单帧扫描时，高亮主点云话题的最新一帧。
+录包时一并录制规划器的可视化话题。传感器坐标系通过 TF 或外参 JSON 连到世界坐标系。已飞轨迹和规划轨迹的线宽在「画质」中分别调整。缺少数据或 TF 时跳过相应图层。找不到单帧扫描时，高亮主点云话题的最新一帧。
 
 ## 命令行
 

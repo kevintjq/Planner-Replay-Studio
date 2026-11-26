@@ -115,22 +115,18 @@ def test_detect_sensor_topics_and_frames(bag):
     from slam_fpv.cli import open_source, parser
     from slam_fpv.sources import inspect_bag
     from slam_fpv.sensor_topics import pose_frames
-    from slam_fpv.spatial import sensor_edges
+    from slam_fpv.spatial import camera_edges
 
     metadata = inspect_bag(bag)
     assert pose_frames(metadata["topics"], metadata["tf_pairs"], "/odom", "/points") == ("map", "body")
     args = parser().parse_args(["bag", str(bag), "--cloud-topic", "/points", "--odom-topic", "/odom",
                                "--world", "map", "--body", "body", "--output", "preview.png",
-                               "--show-camera-fov", "--show-lidar-fov", "--scan-topic", "/laser"])
+                               "--show-camera-fov", "--scan-topic", "/laser"])
     source = open_source(args, metadata=metadata)
-    camera = source.detected_sensors["camera"]
+    camera = source.detected_camera
     assert camera.frame == "camera_optical"
     assert camera.angles[0] == pytest.approx(np.degrees(np.arctan(360/400)+np.arctan(280/400)))
-    assert sensor_edges(camera)[:, :, 0].max() == pytest.approx(4.5)
-    lidar = source.detected_sensors["lidar"]
-    assert lidar.frame == "lidar"
-    assert lidar.angles == pytest.approx((np.rad2deg(3.), 0))
-    assert lidar.azimuth == pytest.approx(np.rad2deg(.5))
+    assert camera_edges(camera)[:, :, 0].max() == pytest.approx(.765)
     (stamp, points), = list(source.scans())
     assert stamp == source.first
     assert len(points) == 2 and np.allclose(points[:, 2], 0)

@@ -48,8 +48,7 @@ def line_actor(points, color, width=3):
 SPATIAL_COLORS = {
     "plan": (.20, .92, .50),
     "corridor": (.30, .70, 1.),
-    "camera": (.78, .53, 1.),
-    "lidar": (.98, .60, .26),
+    "camera": (.78, .65, .94),
     "scan": (118, 246, 255),
 }
 
@@ -141,7 +140,7 @@ def view_camera(pose, mode, rear, oblique, elapsed, fpv_pose=None):
 class Renderer:
     def __init__(self,width=1280,height=720,edl=True,axis=.48,axis_pixels=28,point_size=2,
                  distance=3.8,camera_height=1.35,side=0.,fov=65,inset_distance=10,inset_height=6.7,
-                 *, supersample=1, cloud_color=None, trajectory_color=(1,.73,.18), trajectory_width=3, clean=False, slam_view=False, view_modes=None, main_mode="rear", view_widths=None):
+                 *, supersample=1, cloud_color=None, trajectory_color=(1,.73,.18), trajectory_width=3, plan_width=3, clean=False, slam_view=False, view_modes=None, main_mode="rear", view_widths=None):
         self.output_size = (width, height)
         self.scale = supersample
         self.edl = edl
@@ -153,6 +152,7 @@ class Renderer:
         self.cloud_color = cloud_color
         self.trajectory_color = trajectory_color
         self.trajectory_width = trajectory_width * supersample
+        self.plan_width = plan_width * supersample
         self.camera_args=(distance,camera_height,side)
         self.inset_args=(inset_distance,inset_height,0.)
         self.windows=[]
@@ -230,17 +230,19 @@ class Renderer:
 
         planned = lines(frame.plan)
         if planned:
-            for color, width in (((.027, .085, .048), 7.), (SPATIAL_COLORS["plan"], 4.5)):
-                actor = overlay_lines(planned, color, width*self.scale)
+            for color, width in (((.027, .085, .048), self.plan_width + 2 * self.scale),
+                                 (SPATIAL_COLORS["plan"], self.plan_width)):
+                actor = overlay_lines(planned, color, width)
                 overlay.AddViewProp(actor)
                 self.dynamic.append((overlay, actor))
         add(lines(frame.corridor), "corridor", 2.)
         triangles = tuple(triangle for shape in frame.corridor for group in shape.triangles for triangle in group)
         add(triangles, "corridor", 1., surface=True)
-        for name in ("camera", "lidar"):
-            segments = getattr(frame, name)
-            if segments is not None:
-                add(tuple(segments), name, 2.)
+        if frame.camera is not None:
+            for color, width in (((.12, .09, .20), 3.2), (SPATIAL_COLORS["camera"], 1.6)):
+                actor = overlay_lines(tuple(frame.camera), color, width*self.scale)
+                overlay.AddViewProp(actor)
+                self.dynamic.append((overlay, actor))
 
     def frame(self,pose,trajectory,label,elapsed=0.,fpv_pose=None, spatial=None):
         for renderer,actor in self.dynamic: renderer.RemoveActor(actor)

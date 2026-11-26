@@ -147,3 +147,22 @@ def test_fpv_hides_trajectory_and_indicator_shows_unsmoothed_attitude():
         assert np.count_nonzero(np.asarray(raw["fpv_raw"]) != np.asarray(raw_rolled["fpv_raw"])) > 10
     finally:
         renderer.close()
+
+
+def test_actual_and_planned_trajectory_use_independent_widths():
+    from slam_fpv.renderer import SPATIAL_COLORS
+    from slam_fpv.spatial import Geometry, SpatialFrame
+
+    source = DemoSource(1)
+    path = np.array([[.5, 0, 1.], [1., 0, 1.]])
+    spatial = SpatialFrame((Geometry(lines=(path,)),), (), None, None)
+    renderer = Renderer(320, 180, edl=False, slam_view=True, view_modes=(),
+                        trajectory_width=2., plan_width=6.)
+    try:
+        renderer.frame(source.pose(source.first), path, "", spatial=spatial)
+        widths = {actor.GetProperty().GetColor(): actor.GetProperty().GetLineWidth()
+                  for _, actor in renderer.dynamic if isinstance(actor, vtk.vtkActor2D)}
+        assert widths[renderer.trajectory_color] == 2.
+        assert widths[SPATIAL_COLORS["plan"]] == 6.
+    finally:
+        renderer.close()

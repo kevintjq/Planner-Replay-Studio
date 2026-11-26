@@ -15,58 +15,31 @@ PLAN_TYPES = (PATH, MARKER, MARKERS)
 CORRIDOR_TYPES = (MARKER, MARKERS)
 
 
+CAMERA_DISPLAY_DEPTH = .85
+
+
 @dataclass(frozen=True)
-class SensorView:
+class CameraView:
     frame: str
     angles: tuple
-    distance: float
-    camera: bool
-    elevation: float = 0.
-    azimuth: float = 0.
+    distance: float = CAMERA_DISPLAY_DEPTH
     image_bounds: tuple | None = None
 
     def __post_init__(self):
-        if not self.frame.strip("/") or not all(isfinite(v) for v in (*self.angles, self.distance, self.elevation, self.azimuth)):
-            raise ValueError("传感器坐标系、视场角、距离必须有效。")
-        horizontal, vertical = self.angles
-        if not (0 < horizontal <= 360 and 0 <= vertical <= 180 and self.distance > 0):
-            raise ValueError("水平视场须在 (0, 360]°，垂直视场须在 [0, 180]°，距离须大于 0。")
-        if self.camera and (horizontal >= 180 or not 0 < vertical < 180):
-            raise ValueError("相机的两个视场角均须小于 180°。")
-        if not self.camera and abs(self.elevation) + vertical / 2 > 90:
-            raise ValueError("雷达中心仰角 ± 半个垂直视场须在 [-90, 90]° 内。")
+        if not self.frame.strip("/") or not all(isfinite(v) for v in (*self.angles, self.distance)):
+            raise ValueError("相机坐标系、视场角和距离必须有效。")
+        if not all(0 < angle < 180 for angle in self.angles) or self.distance <= 0:
+            raise ValueError("相机视场角须在 (0, 180)° 内，距离须大于 0。")
 
 
-def sensor_edges(sensor):
-    """Return local line segments in optical (+Z) or LiDAR (+X) convention."""
-    h, v = np.deg2rad(np.array(sensor.angles) / 2)
-    if sensor.camera:
-        x, y = np.tan([h, v])
-        left, right, top, bottom = sensor.image_bounds or (-x, x, -y, y)
-        ring = np.array([[left,top], [right,top], [right,bottom], [left,bottom]]) * sensor.distance
-        ring = np.column_stack((ring, np.full(4, sensor.distance)))
-        return np.concatenate((np.stack((ring, np.roll(ring, 1, axis=0)), axis=1),
-                               np.stack((np.zeros_like(ring), ring), axis=1)))
-    azimuth = np.deg2rad(sensor.azimuth) + np.linspace(-h, h, max(3, int(np.ceil(sensor.angles[0] / 10)) + 1))
-    low, high = np.deg2rad(sensor.elevation) + np.array([-v, v])
-    rims = np.array([np.column_stack((np.cos(azimuth)*np.cos(e),
-                                    np.sin(azimuth)*np.cos(e),
-                                    np.full_like(azimuth, np.sin(e))))
-                     for e in (low, high)]) * sensor.distance
-    segments = [np.stack((row[:-1], row[1:]), axis=1) for row in rims]
-    full = sensor.angles[0] == 360
-    if not v:
-        ring = rims[0]
-        if full:
-            return segments[0]
-        boundary = ring[[0, -1]]
-        return np.concatenate((segments[0], np.stack((np.zeros_like(boundary), boundary), axis=1)))
-    ribs = np.linspace(0, len(azimuth)-1, 9 if full else 5, dtype=int)
-    segments.append(rims[:, ribs[:-1] if full else ribs].transpose(1, 0, 2))
-    if not full:
-        boundary = rims[:, (0,-1)].reshape(-1, 3)
-        segments.append(np.stack((np.zeros_like(boundary), boundary), axis=1))
-    return np.concatenate(segments)
+def camera_edges(camera):
+    """Camera frustum lines in the optical frame (+Z forward)."""
+    x, y = np.tan(np.deg2rad(np.array(camera.angles) / 2))
+    left, right, top, bottom = camera.image_bounds or (-x, x, -y, y)
+    ring = np.array([[left, top, 1.], [right, top, 1.],
+                     [right, bottom, 1.], [left, bottom, 1.]]) * camera.distance
+    return np.concatenate((np.stack((ring, np.roll(ring, 1, axis=0)), axis=1),
+                           np.stack((np.zeros_like(ring), ring), axis=1)))
 
 
 @dataclass(frozen=True)
@@ -199,17 +172,15 @@ class SpatialFrame:
     plan: tuple
     corridor: tuple
     camera: np.ndarray | None
-    lidar: np.ndarray | None
     scan: np.ndarray | None
 
 
-def sensor_settings(args, name):
-    values = getattr(args, name + "_fov", None)
+def camera_settings(args):
+    values = getattr(args, "camera_fov", None)
     if values is None:
         return None
-    frame, horizontal, vertical, distance, *elevation = values
-    return SensorView(frame, (float(horizontal), float(vertical)), float(distance),
-                      name == "camera", float(elevation[0]) if elevation else 0.)
+    frame, horizontal, vertical, distance = values
+    return CameraView(frame, (float(horizontal), float(vertical)), float(distance))
 
 
 class SpatialOverlays:
@@ -220,32 +191,25 @@ class SpatialOverlays:
         self.corridor = getattr(args, "corridor_topic", None) or getattr(args, "show_corridor", False)
         self.show_scan = getattr(args, "show_scan", False) or getattr(args, "scan_topic", None)
         self.scan_age = round(getattr(args, "scan_max_age", .5) * 1e9)
-        self.sensors = {}
-        for name in ("camera", "lidar"):
-            sensor = sensor_settings(args, name)
-            if sensor is None and getattr(args, "show_" + name + "_fov", False):
-                if self.demo:
-                    sensor = (SensorView("camera_optical_frame", (82, 53), 6., True) if name == "camera"
-                              else SensorView("lidar", (360, 40), 4., False))
-                else:
-                    sensor = source.detected_sensors.get(name)
-            if sensor is not None:
-                self.sensors[name] = sensor, sensor_edges(sensor).reshape(-1, 3)
+        self.camera = camera_settings(args)
+        if self.camera is None and getattr(args, "show_camera_fov", False):
+            self.camera = (CameraView("camera_optical_frame", (82, 53)) if self.demo
+                           else source.detected_camera)
+        self.camera_points = camera_edges(self.camera).reshape(-1, 3) if self.camera else None
         self.scans = None
         self.pending = None
         self.latest = (0, None)
-        if getattr(args, "scan_topic", None) and args.scan_topic != args.cloud_topic:
+        if not self.demo and source.scan_topic and source.scan_topic != source.cloud_topic:
             self.scans = source.scans()
             stack.callback(self.scans.close)
             self.pending = next(self.scans, None)
-        if self.sensors and not self.demo:
+        if self.camera and not self.demo:
             frames = {source.world, source.body, *(frame for pair in source.tree.edges for frame in pair)}
-            for sensor, _ in self.sensors.values():
-                if sensor.frame.lstrip("/") not in frames:
-                    raise ValueError(f"找不到传感器坐标系 {sensor.frame}，请检查 TF 或外参 JSON。")
+            if self.camera.frame.lstrip("/") not in frames:
+                raise ValueError(f"找不到相机坐标系 {self.camera.frame}，请检查 TF 或外参 JSON。")
 
     def __bool__(self):
-        return bool(self.plan or self.corridor or self.show_scan or self.sensors)
+        return bool(self.plan or self.corridor or self.show_scan or self.camera)
 
     def update_map_scan(self, stamp, xyz):
         if self.show_scan and self.scans is None:
@@ -266,24 +230,20 @@ class SpatialOverlays:
             plan = self.source.mission_shapes("plan", stamp) if self.plan else ()
             corridor = self.source.mission_shapes("corridor", stamp) if self.corridor else ()
 
-        def sensor_frame(name):
-            if name not in self.sensors:
-                return None
-            sensor, points = self.sensors[name]
-            if self.demo:
-                offset = np.eye(4)
-                if sensor.camera:
-                    # Optical right, down, forward in a body with +X forward and +Z up.
-                    offset[:3,:3] = [[0,0,1], [-1,0,0], [0,-1,0]]
-                    offset[:3,3] = [.27, 0, .06]
-                else:
-                    offset[:3,3] = [0, 0, .18]
-                pose = body_pose @ offset
-            else:
-                try:
-                    pose = self.source.sensor_pose(sensor, stamp)
-                except LookupError:
-                    return None
-            return transform_points(pose, points).reshape(-1, 2, 3)
+        return SpatialFrame(plan, corridor, self.camera_frame(stamp, body_pose), scan)
 
-        return SpatialFrame(plan, corridor, sensor_frame("camera"), sensor_frame("lidar"), scan)
+    def camera_frame(self, stamp, body_pose):
+        if self.camera is None:
+            return None
+        if self.demo:
+            offset = np.eye(4)
+            # Optical right, down, forward in a body with +X forward and +Z up.
+            offset[:3, :3] = [[0, 0, 1], [-1, 0, 0], [0, -1, 0]]
+            offset[:3, 3] = [.27, 0, .06]
+            pose = body_pose @ offset
+        else:
+            try:
+                pose = self.source.sensor_pose(self.camera, stamp)
+            except LookupError:
+                return None
+        return transform_points(pose, self.camera_points).reshape(-1, 2, 3)

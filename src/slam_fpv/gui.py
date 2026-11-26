@@ -23,7 +23,7 @@ from .layer_controls import LayerControls
 from .video_editor import VideoEditor
 from .sources import inspect_bag
 from .spatial import CORRIDOR_TYPES, PLAN_TYPES
-from .sensor_topics import CAMERA_INFO, LASER_SCAN, SCAN_TYPES, connected_frames, pose_frames, sensor_choices, suggested_topic
+from .sensor_topics import SCAN_TYPES, camera_choices, connected_frames, pose_frames, suggested_topic
 
 
 class FormParser(ArgumentParser):
@@ -159,12 +159,13 @@ class RendererApp(LayerControls):
         self.field(quality, 7, "点云着色", "color", "SLAM 高度彩虹", ("SLAM 高度彩虹", "原始 RGB", "按高度", "自选纯色"))
         self.color_field(quality, 8, "点云纯色", "cloud_color", "#70d9ff")
         self.color_field(quality, 9, "轨迹颜色", "trajectory_color", "#f9d74b")
-        self.field(quality, 10, "轨迹线宽 (px)", "trajectory_width", "3")
-        self.field(quality, 11, "高度范围 (m)", "height_range", "")
+        self.field(quality, 10, "已飞轨迹线宽 (px)", "trajectory_width", "3")
+        self.field(quality, 11, "规划轨迹线宽 (px)", "plan_width", "3")
+        self.field(quality, 12, "高度范围 (m)", "height_range", "")
         self.edl = tk.BooleanVar(value=True)
         self.slam_view = tk.BooleanVar(value=True)
         render_styles = ttk.Frame(quality)
-        render_styles.grid(row=12, column=0, columnspan=2, sticky="w", pady=4)
+        render_styles.grid(row=13, column=0, columnspan=2, sticky="w", pady=4)
         ttk.Checkbutton(render_styles, text="SLAM 原貌", variable=self.slam_view).pack(side="left", padx=(0, 8))
         edl_toggle = ttk.Checkbutton(render_styles, text="EDL", variable=self.edl)
         edl_toggle.pack(side="left")
@@ -172,7 +173,7 @@ class RendererApp(LayerControls):
             edl_toggle.state(["disabled" if self.slam_view.get() else "!disabled"])
         self.slam_view.trace_add("write", update_edl)
         update_edl()
-        self.field(quality, 13, "MP4 编码器", "encoder", "自动", ("自动", "CPU", "NVIDIA NVENC"))
+        self.field(quality, 14, "MP4 编码器", "encoder", "自动", ("自动", "CPU", "NVIDIA NVENC"))
 
         for row, (label, key, value) in enumerate((
             ("跟随距离 (m)", "distance", "8.5"),
@@ -203,8 +204,7 @@ class RendererApp(LayerControls):
         self.spatial_details = {}
         for index, (name, label, color) in enumerate((
             ("plan", "规划轨迹", "#33EB80"), ("corridor", "飞行安全走廊", "#4DB3FF"),
-            ("scan", "当前扫描点云", "#76F6FF"), ("camera", "相机 FOV", "#C787FF"),
-            ("lidar", "雷达 FOV", "#FA9942"),
+            ("scan", "雷达当前帧高亮", "#76F6FF"), ("camera", "相机 FOV", "#C7A6F0"),
         )):
             row = index * 3
             flag = self.spatial_toggles[name] = tk.BooleanVar(value=False)
@@ -219,7 +219,7 @@ class RendererApp(LayerControls):
                 row=row+2, column=0, columnspan=2, sticky="w", pady=(1, 3))
         self.spatial_hint = tk.StringVar()
         ttk.Label(panel, textvariable=self.spatial_hint, style="Quiet.TLabel", wraplength=300).grid(
-            row=15, column=0, columnspan=2, sticky="w", pady=(12, 2))
+            row=12, column=0, columnspan=2, sticky="w", pady=(12, 2))
         self.sync_spatial()
 
     def spatial_source(self, name):
@@ -229,8 +229,8 @@ class RendererApp(LayerControls):
         world, body = self.values["world"].get(), self.values["body"].get()
         picked = self.values[name+"_topic"].get()
         topic = "" if picked == "自动识别" else picked
-        if name in ("camera", "lidar"):
-            candidates = sensor_choices(topics, name, world, body)
+        if name == "camera":
+            candidates = camera_choices(topics)
             pairs = list(self.bag_metadata["tf_pairs"])
             if self.values["pose_source"].get() == "Odometry":
                 odom = self.values["odom_topic"].get()
@@ -258,17 +258,16 @@ class RendererApp(LayerControls):
                 detail = "内置模拟数据"
             elif self.bag_path is None:
                 detail = "打开 ROS1 bag 后识别"
-            elif row and "view" in row and name in ("camera", "lidar"):
+            elif row and name == "camera":
                 view = row["view"]
-                info = {CAMERA_INFO: "标定", LASER_SCAN: "平面扫描"}.get(row["type"], "观测范围估计")
-                detail = f"{topic} · {view.frame} · {view.angles[0]:.0f}° × {view.angles[1]:.0f}° · {info}"
+                detail = f"{topic} · {view.frame} · {view.angles[0]:.0f}° × {view.angles[1]:.0f}°"
             elif topic:
                 frame = row.get("frame") if row else None
                 detail = f"{topic} · {frame}" if frame else topic
             elif name == "scan":
                 detail = "使用主点云的最新一帧"
             else:
-                detail = "没有可用话题或 TF，此图层将跳过" if name in ("camera", "lidar") else "未匹配话题，可从列表选择"
+                detail = "没有可用话题或 TF，此图层将跳过" if name == "camera" else "未匹配话题，可从列表选择"
             self.spatial_details[name].set(detail)
         self.spatial_hint.set("勾选图层后重新生成预览。传感器坐标系读取自消息和 TF。")
 
@@ -277,11 +276,10 @@ class RendererApp(LayerControls):
             if not enabled.get():
                 continue
             topic, _ = self.spatial_source(name)
-            if name in ("camera", "lidar"):
-                args.append("--show-" + name + "-fov")
-                if self.bag_path and values[name+"_topic"] != "自动识别":
-                    option = "--camera-info-topic" if name == "camera" else "--lidar-fov-topic"
-                    args.extend((option, values[name+"_topic"]))
+            if name == "camera":
+                args.append("--show-camera-fov")
+                if self.bag_path and values["camera_topic"] != "自动识别":
+                    args.extend(("--camera-info-topic", values["camera_topic"]))
             elif topic:
                 args.extend(("--" + name + "-topic", topic))
             elif self.bag_path is None or name == "scan":
@@ -369,10 +367,9 @@ class RendererApp(LayerControls):
             choices = sorted({row["topic"] for row in topics if row["type"] in types})
             self.spatial_topics[name].configure(values=("自动识别", *choices))
             self.spatial_topics[name].set("自动识别")
-        for name in ("camera", "lidar"):
-            choices = tuple(dict.fromkeys(row["topic"] for row in sensor_choices(topics, name)))
-            self.spatial_topics[name].configure(values=("自动识别", *choices))
-            self.spatial_topics[name].set("自动识别")
+        choices = tuple(dict.fromkeys(row["topic"] for row in camera_choices(topics)))
+        self.spatial_topics["camera"].configure(values=("自动识别", *choices))
+        self.spatial_topics["camera"].set("自动识别")
         self.sync_spatial()
         self.status.set(f"已读取 {len(clouds)} 个点云话题，{len(odometry)} 个里程计话题")
 
@@ -443,7 +440,7 @@ class RendererApp(LayerControls):
         args = ["demo", "--demo-scene", "trail"] if self.bag_path is None else ["bag", str(self.bag_path)]
         args += ["--output", str(destination), "--width", width, "--height", height]
         keys = ("start", "seconds", "fps", "supersample", "crf", "voxel", "max_points", "point_size",
-                "cloud_color", "trajectory_color", "trajectory_width", "distance", "camera_height",
+                "cloud_color", "trajectory_color", "trajectory_width", "plan_width", "distance", "camera_height",
                 "side", "fov", "inset_distance", "inset_height", "axis", "axis_pixels")
         if self.bag_path is not None:
             if not values["cloud_topic"] or not values["world"] or not values["body"]:

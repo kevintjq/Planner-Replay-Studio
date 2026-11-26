@@ -5,7 +5,7 @@ from rosbags.highlevel import AnyReader
 from .geometry import TransformTree, transform_points
 from .cloud import decode
 from .spatial import CLOUD, CORRIDOR_TYPES, PLAN_TYPES, GeometryTimeline
-from .sensor_topics import SCAN_TYPES, connected_frames, inspect_metadata, scan_points, sensor_choices
+from .sensor_topics import SCAN_TYPES, camera_choices, connected_frames, inspect_metadata, scan_points
 
 
 def inspect_bag(path, check_cancel=None):
@@ -47,7 +47,7 @@ class BagSource:
         self.odom_topic = odom_topic
         self.extrinsics = extrinsics
         self.scan_topic = scan_topic
-        self.detected_sensors = {}
+        self.detected_camera = None
         self.mission = {key: (topic, types, GeometryTimeline()) for key, topic, types in
                         (("plan", plan_topic, PLAN_TYPES), ("corridor", corridor_topic, CORRIDOR_TYPES))
                         if topic}
@@ -113,19 +113,13 @@ class BagSource:
             timeline.prepare()
         return self
 
-    def detect_sensors(self, requests, check_cancel=None, metadata=None):
-        if not requests:
-            return
-        if metadata is None:
-            metadata = inspect_bag(self.path, check_cancel)
+    def detect_camera(self, topic, metadata):
         frames = connected_frames(self.world, self.tree.edges)
-        for name, topic in requests.items():
-            choices = sensor_choices(metadata["topics"], name, self.world, self.body)
-            for item in choices:
-                view = item["view"]
-                if (not topic or topic == item["topic"]) and view.frame in frames:
-                    self.detected_sensors[name] = view
-                    break
+        for item in camera_choices(metadata["topics"]):
+            view = item["view"]
+            if (not topic or topic == item["topic"]) and view.frame in frames:
+                self.detected_camera = view
+                break
 
     def mission_shapes(self, name, t):
         layer = self.mission.get(name)

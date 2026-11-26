@@ -1,10 +1,10 @@
-"""Read ROS1 topic metadata and estimate display envelopes in sensor-local frames."""
+"""Inspect recorded ROS1 topics and decode current scans."""
 from collections import defaultdict
 
 import numpy as np
 
 from .cloud import decode
-from .spatial import CLOUD, PATH, PLAN_TYPES, CORRIDOR_TYPES, SensorView, coordinates
+from .spatial import CAMERA_DISPLAY_DEPTH, CLOUD, PATH, PLAN_TYPES, CORRIDOR_TYPES, CameraView, coordinates
 
 CAMERA_INFO = "sensor_msgs/msg/CameraInfo"
 LASER_SCAN = "sensor_msgs/msg/LaserScan"
@@ -33,20 +33,12 @@ def camera_view(message):
     angles = np.rad2deg(np.diff(np.arctan(bounds).reshape(2, 2), axis=1).ravel())
     if not all(0 < angle < 180 for angle in angles):
         return None
-    return SensorView(frame, tuple(map(float, angles)), 5., True, image_bounds=bounds)
+    # Preserve the angles while keeping very wide lenses compact in the scene.
+    depth = CAMERA_DISPLAY_DEPTH / max(1., max(map(abs, bounds)))
+    return CameraView(frame, tuple(map(float, angles)), depth, bounds)
 
 
-def laser_view(message):
-    frame = message.header.frame_id.strip("/")
-    span = float(np.rad2deg(message.angle_max - message.angle_min))
-    center = float(np.rad2deg((message.angle_max + message.angle_min) / 2))
-    radius = min(8., float(message.range_max))
-    if not frame or not np.isfinite((span, center, radius)).all() or span <= 0 or radius <= 0:
-        return None
-    return SensorView(frame, (min(360., span), 0.), radius, False, azimuth=center)
-
-
-def scan_points(message, limit=None):
+def scan_points(message):
     kind = message.__msgtype__
     if kind == LASER_SCAN:
         ranges = np.asarray(message.ranges, dtype=float)
@@ -55,42 +47,14 @@ def scan_points(message, limit=None):
         ranges = ranges[keep]
         return np.column_stack((ranges*np.cos(angles), ranges*np.sin(angles), np.zeros(len(ranges))))
     if kind in LIVOX_TYPES:
-        points = message.points
-        stride = max(1, (len(points)+limit-1)//limit) if limit else 1
-        xyz = coordinates(points[::stride])
+        xyz = coordinates(message.points)
         return xyz[np.isfinite(xyz).all(axis=1)]
     xyz, _ = decode(message)
-    stride = max(1, (len(xyz)+limit-1)//limit) if limit else 1
-    return xyz[::stride]
-
-
-def cloud_view(frame, samples):
-    xyz = np.concatenate(samples)
-    if len(xyz) < 30 or not frame:
-        return None
-    radius = np.linalg.norm(xyz, axis=1)
-    xyz, radius = xyz[radius > .05], radius[radius > .05]
-    if len(xyz) < 30:
-        return None
-    azimuth = np.mod(np.rad2deg(np.arctan2(xyz[:, 1], xyz[:, 0])), 360.)
-    # Find the smallest circular sector containing the occupied 2° bins.
-    occupied = np.unique((azimuth / 2).astype(int))
-    if len(occupied) < 2:
-        return None
-    gaps = np.diff(np.r_[occupied, occupied[0]+180])
-    gap = int(gaps.argmax())
-    span = float(360 - max(0, gaps[gap]-1)*2)
-    if span >= 350:
-        span = 360.
-    center = float((occupied[(gap+1) % len(occupied)]*2 + span/2) % 360)
-    elevation = np.rad2deg(np.arctan2(xyz[:, 2], np.hypot(xyz[:, 0], xyz[:, 1])))
-    low, high = map(float, np.percentile(elevation, [.5, 99.5]))
-    return SensorView(frame, (span, high-low), min(8., float(np.percentile(radius, 95))), False,
-                      (low+high)/2, center)
+    return xyz
 
 
 def inspect_metadata(reader, check_cancel=None):
-    """Read only a few early packets per topic, keeping world clouds out of FOV inference."""
+    """Read early headers and the first valid camera calibration."""
     topics, pairs = [], set()
     for connection in reader.connections:
         topic, kind = connection.topic, connection.msgtype
@@ -98,8 +62,7 @@ def inspect_metadata(reader, check_cancel=None):
         topics.append(info)
         if kind not in (*SCAN_TYPES, ODOM, TF, CAMERA_INFO) or not connection.msgcount:
             continue
-        samples = defaultdict(list)
-        limit = 6 if kind in (*SCAN_TYPES, CAMERA_INFO) else (12 if kind == TF else 1)
+        limit = 6 if kind == CAMERA_INFO else (12 if kind == TF else 1)
         for index, (_, _, raw) in enumerate(reader.messages(connections=[connection]), 1):
             if check_cancel is not None:
                 check_cancel()
@@ -112,23 +75,13 @@ def inspect_metadata(reader, check_cancel=None):
                 info.setdefault("frame", frame)
                 if kind == ODOM:
                     info["child"] = msg.child_frame_id.strip("/")
-                elif kind in (CAMERA_INFO, LASER_SCAN):
-                    sensor = camera_view(msg) if kind == CAMERA_INFO else laser_view(msg)
-                    if sensor:
-                        info["view"] = sensor
-                        break
-                elif kind in POINT_TYPES and is_lidar_cloud(info):
-                    try:
-                        samples[frame].append(scan_points(msg, limit=3000))
-                    except ValueError:
+                elif kind == CAMERA_INFO:
+                    view = camera_view(msg)
+                    if view:
+                        info["view"] = view
                         break
             if index >= limit:
                 break
-        if len(samples) == 1:
-            frame, points = next(iter(samples.items()))
-            sensor = cloud_view(frame, points)
-            if sensor:
-                info["view"] = sensor
     return topics, sorted(pairs)
 
 
@@ -142,21 +95,18 @@ def is_lidar_cloud(info, world="", body=""):
             and not any(word in topic for word in ("camera", "depth", "stereo")))
 
 
-def sensor_choices(topics, name, world="", body=""):
-    matches = [row for row in topics if row.get("view")
-               and (row["type"] == CAMERA_INFO if name == "camera"
-                    else row["type"] == LASER_SCAN or (row["type"] in POINT_TYPES and is_lidar_cloud(row, world, body)))]
-    return sorted(matches, key=lambda row: (
-        row["type"] == LASER_SCAN,
-        not any(word in row["topic"].lower() for word in ("lidar", "livox", "velodyne", "ouster", "color")),
-        row["topic"]))
+def camera_choices(topics):
+    matches = (row for row in topics if row["type"] == CAMERA_INFO and row.get("view"))
+    return sorted(matches, key=lambda row: ("color" not in row["topic"].lower(), row["topic"]))
 
 
 def suggested_topic(topics, name, world="", body=""):
     ordered = sorted(topics, key=lambda row: row["topic"])
     if name == "scan":
         native = [row for row in ordered if row["type"] in POINT_TYPES and is_lidar_cloud(row, world, body)]
-        row = next((row for row in native if row.get("view")), native[0] if native else None)
+        row = min(native, key=lambda row: (row["type"] not in LIVOX_TYPES,
+                  not any(word in row["topic"].lower() for word in ("lidar", "livox", "velodyne", "ouster")),
+                  row["topic"])) if native else None
         row = row or next((row for row in ordered if row["type"] == LASER_SCAN and row.get("frame")), None)
     elif name == "plan":
         candidates = [row for row in ordered if row["type"] in PLAN_TYPES and

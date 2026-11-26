@@ -20,3 +20,6 @@ def test_fixed_camera_tracking_uses_selected_start_and_end(tmp_path):
     assert 83 < result.points[-1][0] < 96
     assert abs(result.points[-1][1]-78) < 5
     assert result.start == .25 and result.end == 1.25
+    rendered = np.asarray(result.image)
+    assert rendered[74:82, 84:92].mean() > 25
+    assert rendered[:48].max() < 20 and rendered[105:].max() < 20

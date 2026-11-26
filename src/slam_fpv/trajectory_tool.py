@@ -58,7 +58,7 @@ class TrajectoryTool:
 
         footer = ttk.Frame(panel)
         footer.pack(fill="x", pady=(10, 0))
-        self.status = tk.StringVar(value="适用于固定机位，轨迹按画面中的位置绘制。")
+        self.status = tk.StringVar(value="适用于固定机位，输出半透明无人机拖影。")
         ttk.Label(panel, textvariable=self.status, wraplength=710).pack(anchor="w", pady=(5,0))
         self.start_button = ttk.Button(footer, text="生成轨迹", style="Primary.TButton", command=self.start)
         self.start_button.pack(side="left")

@@ -76,7 +76,7 @@ Scroll over a point-cloud view to zoom it. Each view also has a camera zoom perc
 
 ## Fixed-camera trajectory image
 
-Open **Fixed-camera trajectory** and choose a stationary-camera video. Seek to a clear frame, draw a box around the drone, generate the trajectory, then review and save the PNG. Leave the end blank to track to the end of the clip. The path follows image coordinates and stops if the tracker loses the target.
+Open **Fixed-camera trajectory** and choose a stationary-camera video. Seek to a clear frame, draw a box around the drone, generate the trajectory, then review and save the PNG. Leave the end blank to track to the end of the clip. The PNG layers translucent drone silhouettes from the same camera. Tracking stops if the target is lost.
 
 ## Save and export
 

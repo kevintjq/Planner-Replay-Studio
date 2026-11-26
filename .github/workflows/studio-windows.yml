@@ -74,6 +74,11 @@ jobs:
             '--hidden-import', 'imageio.plugins.pillow', 'packaging/windows/studio_entry.py')
           python -m PyInstaller @options
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $frozenApp = (Resolve-Path dist/PlannerReplayStudio/PlannerReplayStudio.exe).Path
+          $frozenLog = Join-Path $env:RUNNER_TEMP 'planner-replay-studio-frozen.txt'
+          $check = Start-Process -FilePath $frozenApp -ArgumentList '--smoke', ('"' + $frozenLog + '"') -Wait -PassThru
+          if (Test-Path $frozenLog) { Get-Content $frozenLog }
+          if ($check.ExitCode -ne 0) { throw "Frozen workspace smoke test failed with $($check.ExitCode)." }
           Copy-Item LICENSE, docs/studio.md, docs/studio.zh-CN.md dist/PlannerReplayStudio/
           $nsis = Get-Command makensis.exe -ErrorAction SilentlyContinue
           $compiler = if ($nsis) { $nsis.Source } else { "${env:ProgramFiles(x86)}\NSIS\makensis.exe" }

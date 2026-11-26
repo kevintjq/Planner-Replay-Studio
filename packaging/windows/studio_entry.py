@@ -65,13 +65,15 @@ def smoke():
                                   texts=restored.texts, show_speed=True)
         project = ProjectFile(composition, {}, {}, "bag", bag)
         manifest, _, _ = save_workspace_folder(folder / "项目", project, create=True)
-        moved = folder / "移动后的项目"
+        moved = manifest.parent.with_name("移动后的项目")
         manifest.parent.rename(moved)
         for original in project.media():
             original.unlink()
         reopened = load_project(moved / manifest.name)
         assert reopened.portable and (moved / "cache").is_dir() and (moved / "exports").is_dir()
-        assert all(item.is_file() and item.is_relative_to(moved / "media") for item in reopened.media())
+        for item in reopened.media():
+            assert item.is_file(), f"Missing relocated media: {item}"
+            assert item.is_relative_to(moved / "media"), f"Media escaped {moved / 'media'}: {item}"
         with av.open(str(reopened.composition.videos[0].path)) as video:
             assert video.streams.video[0].average_rate == 60
         with AnyReader([reopened.bag]) as reader:

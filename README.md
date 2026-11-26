@@ -1,4 +1,4 @@
-<h1 align="center">SLAM FPV Renderer</h1>
+<h1 align="center">Planner Replay Studio</h1>
 
 <p align="center">SLAM point clouds · Multi-video alignment · 60 fps export</p>
 
@@ -23,7 +23,7 @@
 
 A Windows workspace for composing multi-view videos from ROS1 SLAM point clouds, poses and flight footage.
 
-![SLAM FPV workspace using simulated data](docs/studio-preview.png)
+![Planner Replay workspace using simulated data](docs/studio-preview.png)
 
 | Feature | Description |
 | --- | --- |
@@ -34,7 +34,7 @@ A Windows workspace for composing multi-view videos from ROS1 SLAM point clouds,
 ## Quick start
 
 1. Install 64-bit Python 3.10 or newer with Tcl/Tk.
-2. Clone the repository and double-click [Start_SLAM_FPV.cmd](Start_SLAM_FPV.cmd). The first launch downloads dependencies.
+2. Clone the repository and double-click [Start_Planner_Replay.cmd](Start_Planner_Replay.cmd). The first launch downloads dependencies.
 3. Open a ROS1 `.bag` under **Data** or choose **Use simulated data**. Pick views and layers, then generate a preview.
 
 ## Multi-video alignment
@@ -82,9 +82,9 @@ Export checks sample pose, TF, planner layers and clip coverage. Source audio fo
 <summary>Command line</summary>
 
 ```powershell
-.\.venv\Scripts\slam-fpv.exe inspect run.bag
-.\.venv\Scripts\slam-fpv.exe bag run.bag --output captures/run.mp4 --cloud-topic /cloud_registered --odom-topic /Odometry --world camera_init --body body
-.\.venv\Scripts\slam-fpv.exe bag --help
+.\.venv\Scripts\planner-replay.exe inspect run.bag
+.\.venv\Scripts\planner-replay.exe bag run.bag --output captures/run.mp4 --cloud-topic /cloud_registered --odom-topic /Odometry --world camera_init --body body
+.\.venv\Scripts\planner-replay.exe bag --help
 ```
 
 [ROS1 live bridge](examples/ros1_bridge.py) · [Validation](docs/VALIDATION.md)

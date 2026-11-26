@@ -1,4 +1,4 @@
-<h1 align="center">SLAM FPV Renderer</h1>
+<h1 align="center">Planner Replay Studio</h1>
 
 <p align="center">SLAM 点云渲染 · 多路实飞对齐 · 60 fps 合成导出</p>
 
@@ -23,7 +23,7 @@
 
 在 Windows 上把 ROS1 SLAM 点云、位姿和实飞视频合成多视角画面。
 
-![SLAM FPV 工作台模拟效果](docs/studio-preview.png)
+![Planner Replay 工作台模拟效果](docs/studio-preview.png)
 
 | 功能 | 说明 |
 | --- | --- |
@@ -34,7 +34,7 @@
 ## 快速开始
 
 1. 安装带 Tcl/Tk 的 64 位 Python 3.10 或更高版本。
-2. 克隆仓库，双击 [Start_SLAM_FPV.cmd](Start_SLAM_FPV.cmd)。首次启动会下载依赖。
+2. 克隆仓库，双击 [Start_Planner_Replay.cmd](Start_Planner_Replay.cmd)。首次启动会下载依赖。
 3. 在「数据」打开 ROS1 `.bag`，或点「使用模拟数据」查看效果。选择机位和图层后点「生成预览」。
 
 ## 多路视频对齐
@@ -82,9 +82,9 @@ SUPER 优先识别 `visualization/exp_traj` 和 `visualization/exp_sfc`。EGO �
 <summary>命令行</summary>
 
 ```powershell
-.\.venv\Scripts\slam-fpv.exe inspect run.bag
-.\.venv\Scripts\slam-fpv.exe bag run.bag --output captures/run.mp4 --cloud-topic /cloud_registered --odom-topic /Odometry --world camera_init --body body
-.\.venv\Scripts\slam-fpv.exe bag --help
+.\.venv\Scripts\planner-replay.exe inspect run.bag
+.\.venv\Scripts\planner-replay.exe bag run.bag --output captures/run.mp4 --cloud-topic /cloud_registered --odom-topic /Odometry --world camera_init --body body
+.\.venv\Scripts\planner-replay.exe bag --help
 ```
 
 [ROS1 实时桥接](examples/ros1_bridge.py) · [验证记录](docs/VALIDATION.md)

@@ -19,7 +19,7 @@ from .export_media import mux_audio
 
 
 def parser(parser_class=argparse.ArgumentParser):
-    p=parser_class(description='SLAM-FPV dual view EDL renderer')
+    p=parser_class(description='Planner Replay Studio: ROS1 planning and flight replay')
     sub=p.add_subparsers(dest='command',required=True)
     inspect=sub.add_parser('inspect',help='List bag topics, types, counts and storage time')
     inspect.add_argument('bag',type=Path)

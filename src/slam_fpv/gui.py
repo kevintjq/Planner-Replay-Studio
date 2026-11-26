@@ -71,7 +71,7 @@ class RendererApp(LayerControls):
         self.demo_selected = False
         self.disabled_controls = []
 
-        root.title("SLAM FPV Renderer")
+        root.title("Planner Replay Studio")
         root.geometry("1310x850")
         root.minsize(1000, 720)
         root.protocol("WM_DELETE_WINDOW", self.close)
@@ -83,8 +83,8 @@ class RendererApp(LayerControls):
         workspace.rowconfigure(1, weight=1)
         header = ttk.Frame(workspace, style="Shell.TFrame")
         header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 15))
-        ttk.Label(header, text="SLAM FPV", style="Title.TLabel").pack(side="left")
-        ttk.Label(header, text="合成工作台", style="Subtitle.TLabel").pack(side="left", padx=13)
+        ttk.Label(header, text="Planner Replay", style="Title.TLabel").pack(side="left")
+        ttk.Label(header, text="无人机规划回放与视频合成", style="Subtitle.TLabel").pack(side="left", padx=13)
         ttk.Button(header, text="主视角", command=lambda: self.edit_cloud_view("main", 0),
                    style="Shell.TButton").pack(side="right")
         ttk.Button(header, text="线条与标记", command=self.edit_render_marks,
@@ -397,7 +397,7 @@ class RendererApp(LayerControls):
         if self.busy:
             return
         path = filedialog.asksaveasfilename(parent=self.root, title="保存项目", defaultextension=".slamfpv",
-                                            filetypes=(("SLAM FPV 项目", "*.slamfpv"),))
+                                            filetypes=(("Planner Replay 项目", "*.slamfpv"),))
         if not path:
             return
         values = {name: value.get() for name, value in self.values.items() if name != "extrinsics"}
@@ -417,7 +417,7 @@ class RendererApp(LayerControls):
         if self.busy:
             return
         path = filedialog.askopenfilename(parent=self.root, title="打开项目",
-                                          filetypes=(("SLAM FPV 项目", "*.slamfpv"),))
+                                          filetypes=(("Planner Replay 项目", "*.slamfpv"),))
         if not path:
             return
         try:
@@ -743,7 +743,7 @@ class RendererApp(LayerControls):
             return
         destination = Path("preview.png")
         if not preview:
-            path = filedialog.asksaveasfilename(parent=self.root, defaultextension=".mp4", initialfile="slam-fpv",
+            path = filedialog.asksaveasfilename(parent=self.root, defaultextension=".mp4", initialfile="planner-replay",
                                                filetypes=(("MP4 视频", "*.mp4"), ("PNG 图片", "*.png")))
             if not path:
                 return

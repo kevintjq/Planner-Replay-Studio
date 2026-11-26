@@ -34,8 +34,8 @@ Reproduce on a bag with the same topics/frames and point order:
 
 ```bash
 python examples/validate_real_bag.py /absolute/path/run.bag
-slam-fpv bag /absolute/path/run.bag --start 1 --seconds 4 --output captures/real-odom.mp4
-slam-fpv bag /absolute/path/run.bag --cloud-topic /cloud_registered_body --pose-source tf \
+planner-replay bag /absolute/path/run.bag --start 1 --seconds 4 --output captures/real-odom.mp4
+planner-replay bag /absolute/path/run.bag --cloud-topic /cloud_registered_body --pose-source tf \
   --start 1 --seconds 4 --width 960 --height 540 --output captures/real-tf.mp4
 ```
 

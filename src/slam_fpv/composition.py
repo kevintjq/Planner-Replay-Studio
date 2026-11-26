@@ -34,6 +34,25 @@ class VideoLayer:
 
 
 @dataclass(frozen=True)
+class ImageLayer:
+    path: Path
+    start: float
+    end: float
+    width: float = .28
+    position: tuple = (.94, .08)
+    transparent: bool = True
+    id: str = field(default_factory=lambda: uuid4().hex)
+
+    def __post_init__(self):
+        if not isfinite(self.start) or not isfinite(self.end) or not 0 <= self.start < self.end:
+            raise ValueError("图片结束时间须晚于非负的开始时间。")
+        if not .05 <= self.width <= 1.:
+            raise ValueError("图片宽度须为 5–100%。")
+        if len(self.position) != 2 or not all(0 <= coordinate <= 1 for coordinate in self.position):
+            raise ValueError("图片位置须为 0–100%。")
+
+
+@dataclass(frozen=True)
 class TextLayer:
     text: str
     start: float
@@ -158,7 +177,7 @@ class LayerMotion:
     large_position: tuple = (.5, .5)
 
     def __post_init__(self):
-        if self.kind not in {"main", "view", "video", "text", "speed"}:
+        if self.kind not in {"main", "view", "video", "image", "text", "speed"}:
             raise ValueError("未知的缩窗图层。")
         if not isfinite(self.start) or not isfinite(self.time) or not 0 <= self.start <= self.time:
             raise ValueError("放大时间须为非负数，且不能晚于缩窗时间。")
@@ -208,6 +227,7 @@ class Composition:
     compare_plans: bool = False
     markers: tuple = ()
     motions: tuple = ()
+    images: tuple = ()
 
     def __post_init__(self):
         if any(left.time >= right.time for left, right in zip(self.markers, self.markers[1:])):
@@ -233,7 +253,7 @@ class Composition:
         if self.speed_end is not None and (not isfinite(self.speed_end) or self.speed_end <= self.speed_start):
             raise ValueError("速度表结束时间须晚于开始时间。")
         targets = {("main", None), ("speed", None)}
-        for kind, layers in (("video", self.videos), ("view", self.views), ("text", self.texts)):
+        for kind, layers in (("video", self.videos), ("view", self.views), ("text", self.texts), ("image", self.images)):
             keys = {(kind, layer.id) for layer in layers}
             if len(keys) != len(layers):
                 raise ValueError("图层标识重复。")
@@ -250,7 +270,7 @@ class Composition:
         kind, index = selection
         if kind in {"main", "speed"}:
             return kind, None
-        layers = {"view": self.views, "video": self.videos, "text": self.texts}[kind]
+        layers = {"view": self.views, "video": self.videos, "image": self.images, "text": self.texts}[kind]
         return kind, layers[index].id
 
     def motion_at(self, target, elapsed):
@@ -454,7 +474,51 @@ def inset_tile(source, size, transparent, radius, stroke, *, crop_to_fit=False):
     return rounded_tile(tile, transparent, radius) if radius else tile
 
 
-def compose(base, project, videos, elapsed, speed, cloud_views=None, *, alpha=None):
+def load_overlay_image(path):
+    try:
+        stat = path.stat()
+        return decoded_overlay(path, stat.st_mtime_ns, stat.st_size)
+    except (OSError, Image.DecompressionBombError) as error:
+        raise OSError(f"无法打开图片：{path.name}") from error
+
+
+@lru_cache(maxsize=8)
+def decoded_overlay(path, modified, size):
+    with Image.open(path) as source:
+        image = ImageOps.exif_transpose(source).convert("RGBA")
+        image.thumbnail((4096, 4096), Image.Resampling.LANCZOS)
+        return image
+
+
+def paint_images(canvas, project, elapsed, *, tolerate_missing=False):
+    bounds = {}
+    for index, layer in enumerate(project.images):
+        if not layer.start <= elapsed < layer.end:
+            continue
+        try:
+            source = load_overlay_image(layer.path)
+        except OSError:
+            if tolerate_missing:
+                continue
+            raise
+        width, height = canvas.size
+        factor = min(width * layer.width / source.width, height / source.height)
+        w, h = max(1, round(source.width*factor)), max(1, round(source.height*factor))
+        rect = round((width-w)*layer.position[0]), round((height-h)*layer.position[1]), w, h
+        motion = project.motion_at(("image", layer.id), elapsed)
+        x, y, w, h = motion_rect(canvas.size, rect, motion, elapsed)
+        tile = source.resize((w, h), Image.Resampling.LANCZOS)
+        if not layer.transparent:
+            tile = rounded_tile(tile, False, max(2, round(height*.016)))
+        if canvas.mode == "RGBA":
+            canvas.alpha_composite(tile, (x, y))
+        else:
+            canvas.paste(tile, (x, y), tile.getchannel("A"))
+        bounds["image", index] = x, y, w, h
+    return bounds
+
+
+def compose(base, project, videos, elapsed, speed, cloud_views=None, *, alpha=None, tolerate_missing_images=False):
     """Render a scene and return the draggable layer rectangles."""
     scene = base if isinstance(base, Image.Image) else Image.fromarray(base)
     color = scene.getpixel((0, 0)) if scene.mode == "RGBA" else None
@@ -466,9 +530,11 @@ def compose(base, project, videos, elapsed, speed, cloud_views=None, *, alpha=No
                         if layer.id == cue.video_id), None)
         if footage is not None:
             image = footage if isinstance(footage, Image.Image) else Image.fromarray(footage)
-            return ImageOps.fit(image.convert("RGBA" if alpha else "RGB"), scene.size, Image.Resampling.LANCZOS), {}
+            full = ImageOps.fit(image.convert("RGBA" if alpha else "RGB"), scene.size, Image.Resampling.LANCZOS)
+            return full, paint_images(full, project, elapsed, tolerate_missing=tolerate_missing_images)
     if cue and cue.mode == "cloud":
-        project = replace(project, videos=(), layouts=(), motions=(), audio_id=None, views=(), texts=(), show_speed=False,
+        project = replace(project, videos=(), layouts=(), motions=tuple(m for m in project.motions if m.kind == "image"),
+                          audio_id=None, views=(), texts=(), show_speed=False,
                           main_view=replace(project.main_view, width=1., position=(.5, .5)))
     image = Image.new("RGBA" if alpha else "RGB", scene.size, (0, 0, 0, 0) if alpha else fallback)
     behind = None
@@ -582,6 +648,8 @@ def compose(base, project, videos, elapsed, speed, cloud_views=None, *, alpha=No
         tile = inset_tile(inset, (w, h), layer.transparent, radius, stroke)
         paste(tile, (x, y), layer.opacity)
         bounds["video", index] = x, y, w, h
+
+    bounds.update(paint_images(image, project, elapsed, tolerate_missing=tolerate_missing_images))
 
     for index, layer in enumerate(project.texts):
         if layer.start <= elapsed < layer.end:

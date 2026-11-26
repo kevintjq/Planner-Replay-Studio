@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from .composition import Composition, LayerMotion, LayoutCue, PointCloudView, TextLayer, TimelineMarker, VideoLayer
+from .composition import Composition, ImageLayer, LayerMotion, LayoutCue, PointCloudView, TextLayer, TimelineMarker, VideoLayer
 from .footage import VideoEdit
 
 
@@ -20,12 +20,14 @@ class ProjectFile:
 
     def media(self):
         return tuple(dict.fromkeys(path for path in (self.bag, self.extrinsics,
-                                   *(layer.path for layer in self.composition.videos)) if path))
+                                   *(layer.path for layer in (*self.composition.videos, *self.composition.images))) if path))
 
     def relink(self, replacements):
         videos = tuple(replace(layer, path=replacements.get(layer.path, layer.path))
                        for layer in self.composition.videos)
-        return replace(self, composition=replace(self.composition, videos=videos),
+        images = tuple(replace(layer, path=replacements.get(layer.path, layer.path))
+                       for layer in self.composition.images)
+        return replace(self, composition=replace(self.composition, videos=videos, images=images),
                        bag=replacements.get(self.bag, self.bag),
                        extrinsics=replacements.get(self.extrinsics, self.extrinsics))
 
@@ -44,7 +46,7 @@ def save_project(path, project):
             return str(media.resolve())
 
     composition = asdict(project.composition)
-    for layer in composition["videos"]:
+    for layer in (*composition["videos"], *composition["images"]):
         layer["path"] = reference(layer["path"])
     data = {"version": 1, "source": project.source, "bag": reference(project.bag),
             "extrinsics": reference(project.extrinsics), "values": project.values,
@@ -104,6 +106,14 @@ def load_project(path):
             item.update(path=video_path, edit=VideoEdit(**edit))
             videos.append(VideoLayer(**vectors(item, "position", "backdrop_position")))
         composition["videos"] = tuple(videos)
+        images = []
+        for item in composition.get("images", ()):
+            image_path = media(item["path"])
+            if image_path is None:
+                raise ValueError("项目缺少图片路径。")
+            item["path"] = image_path
+            images.append(ImageLayer(**vectors(item, "position")))
+        composition["images"] = tuple(images)
         composition["layouts"] = tuple(LayoutCue(**vectors(item, "position")) for item in composition.get("layouts", ()))
         composition["motions"] = tuple(LayerMotion(**vectors(item, "large_position"))
                                        for item in composition.get("motions", ()))

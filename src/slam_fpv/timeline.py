@@ -7,6 +7,7 @@ import tkinter as tk
 TRACK_COLORS = {
     "video": ("#D9E7FD", "#3872CB"),
     "text": ("#F0E5FC", "#8356AD"),
+    "image": ("#FFEAD9", "#935D30"),
     "speed": ("#DEF1EC", "#267867"),
 }
 

@@ -1,4 +1,5 @@
 from dataclasses import replace
+from pathlib import Path
 import json
 
 from slam_fpv.composition import Composition, LayerMotion, LayoutCue, PointCloudView, TimelineMarker, VideoLayer
@@ -35,3 +36,17 @@ def test_round_trip_keeps_per_clip_anchors_and_per_view_overlays(tmp_path):
     relinked = restored.relink({second: replacement})
     assert relinked.composition.videos[0] == saved.composition.videos[0]
     assert relinked.composition.videos[1] == replace(saved.composition.videos[1], path=replacement)
+
+
+def test_image_layers_save_relative_paths_and_relink(tmp_path):
+    from slam_fpv.composition import ImageLayer
+
+    asset = tmp_path / "assets" / "徽标.png"
+    project = ProjectFile(Composition(images=(ImageLayer(asset, 1., 2.),)), {}, {}, "none")
+    file = tmp_path / "saved.slamfpv"
+    save_project(file, project)
+    assert Path(json.loads(file.read_text(encoding="utf-8"))["composition"]["images"][0]["path"]) == Path("assets") / "徽标.png"
+    restored = load_project(file)
+    assert restored == project and restored.media() == (asset,)
+    moved = tmp_path / "new.png"
+    assert restored.relink({asset: moved}).media() == (moved,)

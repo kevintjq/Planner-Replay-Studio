@@ -64,6 +64,7 @@ Scroll over a point-cloud view to zoom it. Each view also has a camera zoom perc
 
 ## Timeline
 
+- Add a PNG or JPG from **Layers**. Drag to position or resize it in the preview. Drag either timeline edge or double-click the layer to set exact display times. PNG alpha is preserved.
 - Use **Play** for continuous proxy preview. With timeline focus, Space pauses or plays and arrow keys step one frame. Drag the playhead to scrub. Export retains the configured resolution and frame rate.
 - Select a video and press S to split or Delete to remove the segment at the playhead. The clip menu offers the same actions. Cuts preserve the bag-time alignment and mute the selected source audio in removed ranges. Use Ctrl+Z / Ctrl+Y to undo or redo, and **Snap** to align to markers and segment edges.
 - Click a purple layout marker to jump or drag it to change its time. Right-click a **Footage inset** marker to adjust its own size, position and 0–5 second transition.
@@ -72,6 +73,10 @@ Scroll over a point-cloud view to zoom it. Each view also has a camera zoom perc
 - Video, captions and the speed gauge have separate tracks. Drag an edge to trim, or drag the body of a video segment to move its visibility window on the aligned bag timeline. Enable previous-plan comparison to show a dashed grey path.
 - Set a layout marker at the playhead to switch between the composition, full-screen point cloud, and full-screen footage. Click a purple marker to jump back to it.
 - Keep the cloud layer transparent and add **Footage backdrop** then **Footage inset** markers for the same clip. The second marker starts a 0.4-second transition by default.
+
+## Fixed-camera trajectory image
+
+Open **Fixed-camera trajectory** and choose a stationary-camera video. Seek to a clear frame, draw a box around the drone, generate the trajectory, then review and save the PNG. Leave the end blank to track to the end of the clip. The path follows image coordinates and stops if the tracker loses the target.
 
 ## Save and export
 

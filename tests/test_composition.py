@@ -171,3 +171,26 @@ def test_all_visible_windows_shrink_independently_with_eased_geometry():
         assert widths[3]-widths[4] < widths[2]-widths[3]
         assert hold[key][:2] == (0, 0)
     assert all(image.mode == "RGBA" for image, _ in snapshots)
+
+
+def test_timed_image_alpha_fullscreen_and_motion(tmp_path):
+    from slam_fpv.composition import ImageLayer, LayerMotion
+
+    asset = tmp_path / "logo.png"
+    logo = Image.new("RGBA", (40, 20))
+    logo.paste((255, 0, 0, 128), (10, 3, 30, 17))
+    logo.save(asset)
+    overlay = ImageLayer(asset, 1., 3., width=.2, position=(0., 0.))
+    clip = VideoLayer(tmp_path / "flight.mp4")
+    frame = Image.new("RGB", (200, 100), "#0000FF")
+    project = Composition(videos=(clip,), views=(), layouts=(LayoutCue(0., "video", clip.id),),
+                          images=(overlay,))
+    for time in (.99, 3.):
+        image, bounds = compose(frame, project, (frame,), time, None)
+        assert not bounds and image.getpixel((20, 10)) == (0, 0, 255)
+    image, bounds = compose(frame, project, (frame,), 1., None)
+    assert bounds["image", 0] == (0, 0, 40, 20)
+    assert image.getpixel((0, 0)) == (0, 0, 255)
+    assert image.getpixel((20, 10)) == (128, 0, 127)
+    animated = replace(project, motions=(LayerMotion("image", overlay.id, 1., 1.5),))
+    assert compose(frame, animated, (frame,), 1.55, None)[1]["image", 0][2] > 40

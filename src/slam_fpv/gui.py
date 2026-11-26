@@ -24,7 +24,8 @@ from .composition import (
 from .desktop_style import INK, desktop_style
 from .timeline import Timeline
 from .preview_transport import PreviewTransport
-from .layer_controls import LayerControls
+from .layer_controls import VIDEO_FILES, LayerControls
+from .trajectory_tool import TrajectoryTool
 from .video_editor import VideoEditor
 from .sources import inspect_bag
 from .project_file import ProjectFile, load_project, save_project
@@ -69,6 +70,7 @@ class RendererApp(LayerControls):
         self.resize_handle = None
         self.base_cache = None
         self.video_editor = None
+        self.trajectory_tool = None
         self.layer_bounds = {}
         self.view_bounds = None
         self.zoom_job = None
@@ -91,6 +93,8 @@ class RendererApp(LayerControls):
         header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 15))
         ttk.Label(header, text="Planner Replay", style="Title.TLabel").pack(side="left")
         ttk.Label(header, text="无人机规划回放与视频合成", style="Subtitle.TLabel").pack(side="left", padx=13)
+        ttk.Button(header, text="固定机位轨迹图", command=self.open_trajectory_tool,
+                   style="Shell.TButton").pack(side="right", padx=(6, 0))
         ttk.Button(header, text="主视角", command=lambda: self.edit_cloud_view("main", 0),
                    style="Shell.TButton").pack(side="right")
         ttk.Button(header, text="线条与标记", command=self.edit_render_marks,
@@ -290,7 +294,8 @@ class RendererApp(LayerControls):
                 self.set_layout("inset", layer.id, time=time)
                 self.status.set("已添加 0.4 秒缩窗。结束后可直接拖动小窗。")
                 return
-        if active and active.mode in {"video", "cloud"} and not (active.mode == "cloud" and kind == "main"):
+        if (active and active.mode in {"video", "cloud"} and kind != "image"
+                and not (active.mode == "cloud" and kind == "main")):
             self.status.set("请先在「添加布局标记」切回当前合成，再给选中图层添加缩窗。")
             return
 
@@ -301,8 +306,8 @@ class RendererApp(LayerControls):
         start = max(self.timeline_range()[0], max((m.end for m in self.project.motions
                                                   if m.target == target and m.end <= time), default=0.))
         project = self.project
-        if kind == "text":
-            layer = project.texts[index]
+        if kind in {"text", "image"}:
+            layer = self.layers(kind)[index]
             start = max(start, layer.start)
             stop = layer.end
         elif kind == "speed":
@@ -980,6 +985,18 @@ class RendererApp(LayerControls):
         self.preview_label.configure(text="画面预览")
         self.draw_preview()
 
+    def open_trajectory_tool(self):
+        if self.busy:
+            return
+        self.transport.stop()
+        path = filedialog.askopenfilename(parent=self.root, title="选择固定机位视频", filetypes=VIDEO_FILES)
+        if not path:
+            return
+        try:
+            self.trajectory_tool = TrajectoryTool(self, Path(path))
+        except (OSError, ValueError, av.FFmpegError) as error:
+            messagebox.showerror("无法打开轨迹视频", str(error), parent=self.root)
+
     def open_video_editor(self):
         if self.busy or self.selection is None or self.selection[0] != "video":
             return
@@ -1021,7 +1038,7 @@ class RendererApp(LayerControls):
         args.seconds = max(args.seconds, seconds + 1 / args.fps)
         args.width, args.height, args.supersample = 960, 540, 1
 
-        project = replace(self.project, videos=(), layouts=(), motions=(), audio_id=None, views=(), texts=(), show_speed=False)
+        project = replace(self.project, videos=(), layouts=(), motions=(), audio_id=None, views=(), texts=(), images=(), show_speed=False)
         metadata = self.bag_metadata
 
         def work():
@@ -1040,7 +1057,7 @@ class RendererApp(LayerControls):
         args.start, args.seconds, args.fps = start, end-start, 10
         args.width, args.height, args.supersample = 480, 270, 1
         metadata = self.bag_metadata
-        project = replace(self.project, videos=(), layouts=(), motions=(), audio_id=None, views=(), texts=(), show_speed=False)
+        project = replace(self.project, videos=(), layouts=(), motions=(), audio_id=None, views=(), texts=(), images=(), show_speed=False)
 
         def work():
             source = open_source(args, self.check_cancel, metadata)
@@ -1126,7 +1143,7 @@ class RendererApp(LayerControls):
                 args.width, args.height, args.fps, args.encoder = 1920, 1080, 60, "auto"
                 project = replace(project, play_rate=1.)
             outputs = {destination.resolve(), destination.with_suffix(".json").resolve()}
-            if not preview and any(layer.path.resolve() in outputs for layer in project.videos):
+            if not preview and any(layer.path.resolve() in outputs for layer in (*project.videos, *project.images)):
                 raise ValueError("导出位置不能覆盖已导入的素材。")
             if preview and args.width > 1440:
                 args.height = round(args.height * 1440 / args.width / 2) * 2
@@ -1298,6 +1315,12 @@ class RendererApp(LayerControls):
         try:
             while True:
                 kind, value = self.events.get_nowait()
+                if kind == "track_progress":
+                    elapsed, total = value
+                    if self.trajectory_tool is not None:
+                        self.trajectory_tool.status.set(f"已跟踪 {elapsed:.1f} s" if total is None
+                                                        else f"已跟踪 {elapsed:.1f} / {total:.1f} s")
+                    continue
                 if kind == "progress":
                     done, total = value
                     if self.progress["mode"] == "indeterminate":
@@ -1321,6 +1344,15 @@ class RendererApp(LayerControls):
                     self.transport.finish(kind, value)
                     if kind == "error":
                         self.status.set(f"预览失败 · {value}")
+                    continue
+                tool = self.trajectory_tool
+                if tool is not None and tool.working:
+                    tool.finish(value if kind == "trajectory" else None)
+                    self.status.set("轨迹已生成。" if kind == "trajectory" else "跟踪已停止。")
+                    if kind == "error":
+                        messagebox.showerror("生成轨迹失败", value, parent=tool.window)
+                    continue
+                if kind == "trajectory":
                     continue
                 editor = self.video_editor
                 if editor is not None and not editor.window.winfo_exists():
@@ -1392,7 +1424,12 @@ class RendererApp(LayerControls):
             self.base_cache = self.frame.convert("RGB").resize(size, Image.Resampling.LANCZOS)
             if self.frame.mode == "RGBA":
                 self.base_cache.putalpha(self.frame.getchannel("A").resize(size, Image.Resampling.LANCZOS))
-        image, bounds = compose(self.base_cache, self.project, self.footages, self.elapsed, self.speed, self.cloud_views)
+        try:
+            image, bounds = compose(self.base_cache, self.project, self.footages, self.elapsed, self.speed, self.cloud_views)
+        except OSError as error:
+            self.status.set(str(error))
+            image, bounds = compose(self.base_cache, self.project, self.footages, self.elapsed, self.speed, self.cloud_views,
+                                    tolerate_missing_images=True)
         if image.mode == "RGBA":
             if self.checkerboard is None or self.checkerboard.size != size:
                 self.checkerboard = Image.new("RGBA", size, "#E9EBEF")
@@ -1538,7 +1575,7 @@ class RendererApp(LayerControls):
             elif kind == "video" and self.is_video_backdrop(layer):
                 layer = replace(layer, backdrop_scale=clamp(factor, .2, 2.))
             else:
-                minimum, maximum = (.05, .9) if kind == "video" else (.12, 1.5)
+                minimum, maximum = {"video": (.05, .9), "image": (.05, 1.)}.get(kind, (.12, 1.5))
                 layer = replace(layer, width=clamp(factor, minimum, maximum))
             self.replace_layer(kind, index, layer, redraw=False)
 

@@ -6,7 +6,9 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import colorchooser, filedialog, messagebox, ttk
 
-from .composition import POINT_CLOUD_VIEWS, VIEW_OVERLAYS, PointCloudView, TextLayer, VideoLayer, view_overlays
+from .composition import (
+    POINT_CLOUD_VIEWS, VIEW_OVERLAYS, ImageLayer, PointCloudView, TextLayer, VideoLayer, load_overlay_image, view_overlays,
+)
 from .footage import VideoEdit
 from .timeline import Track
 
@@ -30,6 +32,7 @@ class LayerControls:
         toolbar.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 7))
         ttk.Button(toolbar, text="+ 视频", command=self.add_videos).pack(side="left")
         ttk.Button(toolbar, text="+ 文字", command=self.edit_text).pack(side="left", padx=4)
+        ttk.Button(toolbar, text="+ 图片", command=self.add_image).pack(side="left", padx=(0, 4))
         ttk.Button(toolbar, text="+ 速度表", command=self.edit_speed).pack(side="left")
         self.add_view_button = ttk.Button(toolbar, text="+ 视角", command=self.choose_view)
         self.add_view_button.pack(side="left", padx=(4,0))
@@ -74,7 +77,7 @@ class LayerControls:
     def layers(self, kind):
         if kind == "main":
             return (self.project.main_view,)
-        return getattr(self.project, {"video":"videos", "text":"texts", "view":"views"}[kind])
+        return getattr(self.project, {"video":"videos", "text":"texts", "view":"views", "image":"images"}[kind])
 
     def replace_layer(self, kind, index, layer, *, redraw=True):
         if kind == "main":
@@ -82,7 +85,7 @@ class LayerControls:
         else:
             values = list(self.layers(kind))
             values[index] = layer
-            name = {"video":"videos", "text":"texts", "view":"views"}[kind]
+            name = {"video":"videos", "text":"texts", "view":"views", "image":"images"}[kind]
             self.project = replace(self.project, **{name:tuple(values)})
         if redraw:
             self.refresh_layers()
@@ -104,6 +107,8 @@ class LayerControls:
         for i, view in enumerate(self.project.views):
             listing.insert("", "end", iid=f"view-{i}", text=f"点云视角   {POINT_CLOUD_VIEWS[view.kind][0]}")
         self.add_view_button.state(["disabled" if len(self.project.views) == len(POINT_CLOUD_VIEWS) else "!disabled"])
+        for i, layer in enumerate(self.project.images):
+            listing.insert("", "end", iid=f"image-{i}", text=f"图片   {layer.path.name}")
         for i, layer in enumerate(self.project.texts):
             name = " ".join(layer.text.split())
             listing.insert("", "end", iid=f"text-{i}", text=f"文字 {i+1}   {name}")
@@ -165,6 +170,9 @@ class LayerControls:
             view = self.layers(kind)[i]
             style = MATTE_OPTIONS[0 if view.transparent else 1]
             message = f"{POINT_CLOUD_VIEWS[view.kind][0]}  ·  宽 {view.width:.0%}  ·  {style}"
+        elif kind == "image":
+            layer = self.project.images[i]
+            message = f"{layer.start:.3f} – {layer.end:.3f} s  ·  宽 {layer.width:.0%}"
         elif kind == "text":
             layer = self.project.texts[i]
             message = f"{layer.start:.3f} – {layer.end:.3f} s  ·  字号 {layer.size}"
@@ -220,6 +228,46 @@ class LayerControls:
             self.open_video_editor()
         else:
             self.status.set("视频已导入。打开 bag 后，在图层面板选择「裁剪 / 对齐」。")
+
+    def add_image(self):
+        if self.busy:
+            return
+        path = filedialog.askopenfilename(parent=self.root, title="添加图片",
+                                          filetypes=(("图片", "*.png *.jpg *.jpeg *.webp *.bmp"),))
+        if not path:
+            return
+        path = Path(path)
+        try:
+            load_overlay_image(path)
+        except OSError as error:
+            messagebox.showerror("无法添加图片", str(error), parent=self.root)
+            return
+        start, duration = self.timeline_range()
+        now = max(start, self.timeline.time)
+        layer = ImageLayer(path, now, max(now+.1, min(now+3., start+duration)))
+        self.selection = "image", len(self.project.images)
+        self.project = replace(self.project, images=(*self.project.images, layer))
+        self.refresh_layers()
+        self.status.set("已添加图片。拖动画面调整位置，拖动时间轴两端调整显示区间。")
+
+    def edit_image(self, index):
+        layer = self.project.images[index]
+
+        def save(values):
+            updated = replace(layer, start=float(values["start"]), end=float(values["end"]),
+                              width=float(values["width"])/100.,
+                              position=(float(values["x"])/100., float(values["y"])/100.),
+                              transparent=values["background"] == MATTE_OPTIONS[0])
+            self.replace_layer("image", index, updated)
+
+        self.layer_dialog("图片图层", (
+            ("start", "开始时间 (s)", f"{layer.start:.3f}"),
+            ("end", "结束时间 (s)", f"{layer.end:.3f}"),
+            ("width", "图片宽度 (%)", f"{layer.width*100:g}"),
+            ("x", "横向位置 (%)", f"{layer.position[0]*100:g}"),
+            ("y", "纵向位置 (%)", f"{layer.position[1]*100:g}"),
+            background_field(layer.transparent),
+        ), save)
 
     def replace_video(self):
         if self.busy or not self.selection or self.selection[0] != "video":
@@ -277,6 +325,9 @@ class LayerControls:
         elif kind == "view":
             self.project = replace(self.project, views=self.project.views[:index]+self.project.views[index+1:],
                                    motions=motions)
+        elif kind == "image":
+            images = self.project.images
+            self.project = replace(self.project, images=images[:index]+images[index+1:], motions=motions)
         else:
             self.project = replace(self.project, texts=self.project.texts[:index]+self.project.texts[index+1:],
                                    motions=motions)
@@ -286,7 +337,9 @@ class LayerControls:
         if not self.selection:
             return
         kind, index = self.selection
-        if kind == "text":
+        if kind == "image":
+            self.edit_image(index)
+        elif kind == "text":
             self.edit_text(index)
         elif kind == "speed":
             self.edit_speed()
@@ -461,6 +514,8 @@ class LayerControls:
             first, last = (ranges[0][0], ranges[-1][1]) if ranges else (start, start)
             tracks.append(Track(("video", i), first, last, f"{i+1}. {layer.path.name}", ranges,
                                 (clip.bag_time(0.), media_end)))
+        tracks.extend(Track(("image", i), layer.start, layer.end, layer.path.name)
+                      for i, layer in enumerate(self.project.images))
         tracks.extend(Track(("text", i), layer.start, layer.end, " ".join(layer.text.split()))
                       for i, layer in enumerate(self.project.texts))
         if self.project.show_speed:
@@ -518,8 +573,8 @@ class LayerControls:
             except ValueError as error:
                 self.status.set(str(error))
                 self.update_timeline()
-        elif kind == "text":
-            self.replace_layer(kind, index, replace(self.project.texts[index], start=max(0.,start), end=end))
+        elif kind in {"text", "image"}:
+            self.replace_layer(kind, index, replace(self.layers(kind)[index], start=max(0., start), end=end))
         elif kind == "speed":
             self.project = replace(self.project, speed_start=max(0.,start), speed_end=end)
             self.refresh_layers()

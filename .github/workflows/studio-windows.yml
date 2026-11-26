@@ -46,6 +46,7 @@ jobs:
           $options = @('--noconfirm', '--clean', '--onedir', '--windowed', '--noupx',
             '--name', 'PlannerReplayStudio', '--workpath', 'build/studio', '--specpath', 'build/studio',
             '--distpath', 'dist', '--collect-all', 'vtkmodules', '--collect-all', 'imageio_ffmpeg',
+            '--collect-submodules', 'rosbags.typesys.stores',
             '--recursive-copy-metadata', 'slam-fpv-renderer', '--hidden-import', 'imageio.plugins.ffmpeg',
             '--hidden-import', 'imageio.plugins.pillow', 'packaging/windows/studio_entry.py')
           python -m PyInstaller @options
@@ -105,6 +106,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.package.outputs.version }}
         run: |
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
+          if [ "$current" != "$GITHUB_SHA" ]; then
+            echo "A newer main commit superseded this build."
+            exit 0
+          fi
           tag="studio-v$VERSION"
           if assets=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name'); then
             if ! grep -Fxq PlannerReplayStudio-Setup.exe <<< "$assets"; then

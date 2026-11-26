@@ -6,7 +6,7 @@ English · [简体中文](README_CN.md)
 
 ## Complete Windows workspace
 
-[Download the complete Windows workspace installer](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.2.0/PlannerReplayStudio-Setup.exe). Install it and open **Planner Replay Studio Full** from the Start menu.
+[Download the complete Windows workspace installer](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.2.1/PlannerReplayStudio-Setup.exe). Install it and open **Planner Replay Studio Full** from the Start menu.
 
 The installer bundles Python and Tk. It includes video alignment, planner overlays, motion ghosts, existing `.slamfpv` projects and 1080p/60 fps export.
 

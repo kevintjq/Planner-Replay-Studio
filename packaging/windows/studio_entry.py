@@ -15,15 +15,17 @@ def smoke():
     import cv2
     import imageio.v2 as imageio
     import numpy as np
-    import rosbags.highlevel
     import vtk
     from PIL import Image
+    from rosbags.highlevel import AnyReader
+    from rosbags.rosbag1 import Writer
+    from rosbags.typesys import Stores, get_typestore
     from slam_fpv.composition import Composition, TextLayer, compose
     from slam_fpv.gui import RendererApp
     from slam_fpv.project_file import ProjectFile, load_project, save_project
 
     assert vtk.vtkVersion.GetVTKMajorVersion() >= 9
-    assert callable(rosbags.highlevel.AnyReader) and cv2.TrackerCSRT_create() is not None
+    assert cv2.TrackerCSRT_create() is not None
     root = tk.Tk()
     try:
         root.withdraw()
@@ -35,6 +37,16 @@ def smoke():
 
     with TemporaryDirectory() as folder:
         folder = Path(folder)
+        bag = folder / "smoke.bag"
+        schema = get_typestore(Stores.ROS1_NOETIC)
+        kind = "std_msgs/msg/String"
+        with Writer(bag) as writer:
+            topic = writer.add_connection("/smoke", kind, typestore=schema)
+            writer.write(topic, 10**9, schema.serialize_ros1(schema.types[kind]("replay"), kind))
+        with AnyReader([bag]) as reader:
+            topic, _, raw = next(reader.messages())
+            assert reader.deserialize(raw, topic.msgtype).data == "replay"
+
         project = Composition(show_speed=True, texts=(TextLayer("Smoke", 0., 1.),))
         project_path = folder / "smoke.slamfpv"
         save_project(project_path, ProjectFile(project, {}, {}, "demo"))
@@ -58,7 +70,7 @@ if __name__ == "__main__":
                 log.write_text(traceback.format_exc(), encoding="utf-8")
             raise SystemExit(1)
         if log is not None:
-            log.write_text("Workspace, project round-trip, overlays and 60 fps encode/decode passed.\n",
+            log.write_text("Workspace, ROS1 bag, project round-trip, overlays and 60 fps encode/decode passed.\n",
                            encoding="utf-8")
     else:
         main()

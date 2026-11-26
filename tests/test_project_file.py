@@ -31,7 +31,7 @@ def test_round_trip_keeps_per_clip_anchors_and_per_view_overlays(tmp_path):
     saved = ProjectFile(composition, {"encoder": "CPU", "cloud_topic": "/registered"},
                         {"scan": True, "camera": False}, "bag", bag, extrinsics)
     save_project(path, saved)
-    assert json.loads(path.read_text())["composition"]["videos"][0]["path"] == first.name
+    assert json.loads(path.read_text(encoding="utf-8"))["composition"]["videos"][0]["path"] == first.name
     restored = load_project(path)
     assert restored == saved
     replacement = folder / "moved.mp4"

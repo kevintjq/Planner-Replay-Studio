@@ -69,6 +69,11 @@ jobs:
           if (!(Test-Path $exe) -or !(Test-Path $uninstaller) -or !(Test-Path $shortcut)) {
             throw 'The installed application, uninstaller or Start menu shortcut is missing.'
           }
+          $registry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\PlannerReplayNative'
+          $command = Get-ItemPropertyValue -Path $registry -Name UninstallString -ErrorAction Stop
+          if ($command -ne ('"' + $uninstaller + '"')) {
+            throw 'Windows Apps settings does not have a valid uninstall command.'
+          }
           $originalPath = $env:PATH
           try {
             $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
@@ -79,8 +84,8 @@ jobs:
             $env:PATH = $originalPath
           }
           $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru
-          if ($uninstall.ExitCode -ne 0 -or (Test-Path $exe) -or (Test-Path $shortcut)) {
-            throw 'The uninstaller did not remove the application and shortcut.'
+          if ($uninstall.ExitCode -ne 0 -or (Test-Path $exe) -or (Test-Path $shortcut) -or (Test-Path $registry)) {
+            throw 'The uninstaller did not remove the application, shortcut and registry entry.'
           }
       - uses: actions/upload-artifact@v4
         with:
@@ -107,6 +112,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.package.outputs.version }}
         run: |
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
+          if [ "$current" != "$GITHUB_SHA" ]; then
+            echo "A newer main commit superseded this release build."
+            exit 0
+          fi
           tag="native-v$VERSION"
           if assets=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name'); then
             if ! grep -Fxq PlannerReplayNative-Setup.exe <<< "$assets"; then

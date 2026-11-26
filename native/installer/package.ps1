@@ -41,5 +41,5 @@ $makensis = Get-Command makensis.exe -ErrorAction SilentlyContinue
 $nsis = if ($makensis) { $makensis.Source } else { "${env:ProgramFiles(x86)}\NSIS\makensis.exe" }
 if (!(Test-Path $nsis)) { throw 'NSIS was not found.' }
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $SetupFile) | Out-Null
-& $nsis "/DAPP_DIR=$AppDirectory" "/DSETUP_FILE=$SetupFile" "/DVERSION=$Version" "$PSScriptRoot/windows.nsi"
+& $nsis /WX "/DAPP_DIR=$AppDirectory" "/DSETUP_FILE=$SetupFile" "/DVERSION=$Version" "$PSScriptRoot/windows.nsi"
 if ($LASTEXITCODE -ne 0 -or !(Test-Path $SetupFile)) { throw 'NSIS did not produce the setup executable.' }

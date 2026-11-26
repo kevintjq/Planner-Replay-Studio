@@ -1,40 +1,71 @@
-# SLAM FPV Renderer
+<h1 align="center">SLAM FPV Renderer</h1>
 
-把 ROS1 SLAM 点云和位姿做成多机位飞行画面，可叠加实飞视频、文字、速度表和可选的规划、传感器图层。
+<p align="center">SLAM 点云渲染 · 多路实飞对齐 · 60 fps 合成导出</p>
 
-[English](README.md) · [验证记录](docs/VALIDATION.md)
+<p align="center">
+  <img src="https://img.shields.io/badge/Platform-Windows-0078D4?style=flat-square" alt="Windows">
+  <img src="https://img.shields.io/badge/Input-ROS1%20bag-22314E?style=flat-square" alt="ROS1 bag">
+  <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT License">
+</p>
 
-![工作台模拟效果，包含空间叠加面板、飞行安全走廊和稳定 FPV](docs/studio-preview.png)
+<p align="center"><a href="README.md">English</a> · 简体中文</p>
 
-*截图使用模拟数据。*
+<p align="center">
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#多路视频对齐">多路视频对齐</a> ·
+  <a href="#输入与叠加">输入与叠加</a> ·
+  <a href="#保存与导出">保存与导出</a>
+</p>
 
-## Windows 启动
+---
 
-安装带 Tcl/Tk 的 64 位 Python 3.10 或更高版本。克隆仓库后，双击 [Start_SLAM_FPV.cmd](Start_SLAM_FPV.cmd)。首次启动会联网安装依赖。想先看效果，可以直接点「使用模拟数据」。
+在 Windows 上把 ROS1 SLAM 点云、位姿和实飞视频合成多视角画面。
 
-## 合成流程
+![SLAM FPV 工作台模拟效果](docs/studio-preview.png)
 
-1. **读取数据。** 在「数据」打开 ROS1 `.bag`，自动读取点云、里程计话题及坐标系，可用下拉框更换，再设置导出起点与时长。
-2. **选机位。** 右上角选择主视角，从「图层 → + 视角」添加小窗。共有 12 个机位可选，包括稳定 FPV、原始 FPV、高位斜视、左右跟随和环绕。每个视角可单独选择叠加项。两种 FPV 都隐藏实飞和规划轨迹线，角落三轴显示原始机体姿态。
-3. **组合图层。** 实拍可作为底片或画中画。每路视频可独立裁剪和记录双锚点，使用共同时间轴、逐帧微调和「检查中段」核对同步。可添加定时文字和 m/s 速度表。选中图层后，拖动位置，拉右下角缩放，也可以切换透明底或深色底。
-4. **导出。** 支持 MP4 和 PNG，视频默认 1080p、60 FPS。勾选预览右上角的「透明画布」，PNG 保留 Alpha 通道；MP4 使用实色底。自动检测 NVIDIA NVENC，必要时回退到 CPU H.264。
-
-点击「保存项目」将源文件引用、对齐锚点、图层和导出参数存入 `.slamfpv`。素材移动后，打开项目时可重新定位文件。
-
-## 空间叠加
-
-在「空间叠加」按需勾选，重新生成预览。话题和传感器坐标系自动识别，也可从下拉列表更换。
-
-| 图层 | 数据来源 |
+| 功能 | 说明 |
 | --- | --- |
-| 规划轨迹 | `nav_msgs/Path` 或 `visualization_msgs/Marker[Array]` |
-| 飞行安全走廊 | `visualization_msgs/Marker[Array]`，支持折线、线段集、三角面和立方体 |
-| 相机 FOV | 根据 `CameraInfo` 和光学 TF 绘制紧凑的细线视锥 |
-| 雷达当前帧高亮 | 高亮最近一帧 PointCloud2、Livox CustomMsg 或 LaserScan |
+| 点云视角 | 12 种机位，含稳定 FPV、后方跟随和高位斜视 |
+| 多路视频 | 每路独立裁剪、对齐和布局，可作为底片或画中画 |
+| 可选叠加 | 规划轨迹、安全走廊、相机 FOV、雷达当前帧、速度表和定时文字 |
 
-录包时一并录制规划器的可视化话题。传感器坐标系通过 TF 或外参 JSON 连到世界坐标系。已飞轨迹和规划轨迹的线宽在「画质」中分别调整。预览会提示扫描来源、帧龄、缺失的 TF 或 CameraInfo。找不到单帧扫描时，高亮主点云话题的最新一帧。
+## 快速开始
 
-## 命令行
+1. 安装带 Tcl/Tk 的 64 位 Python 3.10 或更高版本。
+2. 克隆仓库，双击 [Start_SLAM_FPV.cmd](Start_SLAM_FPV.cmd)。首次启动会下载依赖。
+3. 在「数据」打开 ROS1 `.bag`，或点「使用模拟数据」查看效果。选择机位和图层后点「生成预览」。
+
+## 多路视频对齐
+
+1. 在「图层 → + 视频」选择多个视频。逐路选中视频，点「裁剪 / 对齐」。
+2. 在共同时间轴上定位 SLAM 里的同一动作，再逐帧找到该动作对应的实拍画面，记录锚点并点「应用」。
+3. 有明显时钟漂移时，在片尾附近再选一个两边都看得见的动作作为第二锚点，用「检查中段」核对同步。
+
+所有视频以同一份 bag 为时间基准，各自保留裁剪范围和锚点。一个锚点校正时间偏移，两个锚点还可校正线性时钟漂移。
+
+## 输入与叠加
+
+| 数据 | 话题或格式 |
+| --- | --- |
+| 地图与位姿 | `PointCloud2` + `Odometry` 或 TF |
+| 规划轨迹 | `Path`、`Marker` 或 `MarkerArray` |
+| 安全走廊 | `Marker` 或 `MarkerArray`，支持折线、线段、三角面和立方体 |
+| 相机 FOV | `CameraInfo` 与光学坐标系 TF |
+| 雷达当前帧 | `PointCloud2`、Livox `CustomMsg` 或 `LaserScan` |
+
+话题和坐标系自动识别，可从下拉列表更换。先在「空间叠加」启用数据，再到各视角的设置里选要显示的叠加项。「画质」可分别调整已飞和规划轨迹的线宽。预览会提示扫描来源、帧龄和缺失的数据。
+
+## 保存与导出
+
+| 项目 | 说明 |
+| --- | --- |
+| `.slamfpv` | 保存素材路径、裁剪、锚点、图层布局和导出参数，素材移动后可重新定位 |
+| MP4 | 默认 1080p、60 fps，自动选择 NVIDIA NVENC 或 CPU H.264 |
+| PNG | 勾选「透明画布」保留透明通道 |
+
+<details>
+<summary>命令行</summary>
 
 ```powershell
 .\.venv\Scripts\slam-fpv.exe inspect run.bag
@@ -42,6 +73,10 @@
 .\.venv\Scripts\slam-fpv.exe bag --help
 ```
 
-使用 TF 时选 `--pose-source tf`，按需录制 `/tf` 与 `/tf_static`。实时订阅与回放见 [ROS1 桥接](examples/ros1_bridge.py)。实录 bag、导入素材和导出视频保存在本地。
+[ROS1 实时桥接](examples/ros1_bridge.py) · [验证记录](docs/VALIDATION.md)
 
-[MIT 许可](LICENSE)
+</details>
+
+## 许可证
+
+[MIT License](LICENSE)

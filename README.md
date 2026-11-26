@@ -1,40 +1,71 @@
-# SLAM FPV Renderer
+<h1 align="center">SLAM FPV Renderer</h1>
 
-A Windows desktop workspace for turning ROS1 SLAM point clouds and poses into multi-view flight videos. Combine point-cloud cameras with real flight footage, captions, a speed gauge and optional planner or sensor overlays.
+<p align="center">SLAM point clouds · Multi-video alignment · 60 fps export</p>
 
-[简体中文](README_CN.md) · [Validation](docs/VALIDATION.md)
+<p align="center">
+  <img src="https://img.shields.io/badge/Platform-Windows-0078D4?style=flat-square" alt="Windows">
+  <img src="https://img.shields.io/badge/Input-ROS1%20bag-22314E?style=flat-square" alt="ROS1 bag">
+  <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT License">
+</p>
 
-![SLAM FPV workspace with the spatial overlays panel, a flight corridor and a stabilized FPV inset](docs/studio-preview.png)
+<p align="center">English · <a href="README_CN.md">简体中文</a></p>
 
-*The workspace screenshot uses simulated data.*
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#multi-video-alignment">Multi-video alignment</a> ·
+  <a href="#inputs-and-overlays">Inputs and overlays</a> ·
+  <a href="#save-and-export">Save and export</a>
+</p>
 
-## Start on Windows
+---
 
-Install 64-bit Python 3.10 or newer with Tcl/Tk. Clone the repository, then double-click [Start_SLAM_FPV.cmd](Start_SLAM_FPV.cmd). The first launch downloads dependencies. Open **Use simulated data** to try the workspace before loading a bag.
+A Windows workspace for composing multi-view videos from ROS1 SLAM point clouds, poses and flight footage.
 
-## Make a composition
+![SLAM FPV workspace using simulated data](docs/studio-preview.png)
 
-1. Open a ROS1 `.bag` under **Data**. The app selects point-cloud and odometry topics and reads their frame IDs. Adjust the dropdowns or export interval as needed.
-2. Choose the main camera and add secondary views in **Layers → + View**. Pick from 12 presets, including stabilized FPV, raw FPV, oblique, side, chase and orbit. Each view has its own overlay switches. Both FPV modes hide the actual and planned flight paths and show the original body attitude on the corner triad.
-3. Add flight footage as a backdrop or an inset. Trim and align each clip independently. Use the shared timeline, step through the footage, and check the midpoint between two anchors. Add timed captions or a speed gauge. Drag layers, resize them by the corner, and choose a transparent or dark background.
-4. Export MP4 or PNG. Enable **Transparent canvas** to preserve alpha in PNG. MP4 uses a solid canvas. The default video settings are 1080p at 60 fps, with automatic NVIDIA NVENC or CPU H.264 encoding.
-
-Use **Save project** to store media references, anchors, layer settings and export options in a `.slamfpv` file. You can relink moved media when reopening a project.
-
-## Spatial overlays
-
-Enable any layer under **Spatial overlays** and refresh the preview. Topics and sensor frames are detected automatically, and the dropdowns let you choose another recorded source.
-
-| Layer | Input |
+| Feature | Description |
 | --- | --- |
-| Planned trajectory | `nav_msgs/Path` or `visualization_msgs/Marker[Array]` |
-| Safety corridor | `visualization_msgs/Marker[Array]` with line strips, line lists, triangle lists or cubes |
-| Camera FOV | Compact wireframe based on `CameraInfo` and optical TF |
-| Current LiDAR scan | Highlights the latest PointCloud2, Livox CustomMsg or LaserScan frame |
+| Point-cloud views | 12 presets, including stabilized FPV, chase and oblique views |
+| Multiple videos | Trim, align and place each clip as a backdrop or picture-in-picture |
+| Optional overlays | Planned paths, safety corridors, camera FOV, latest LiDAR scan, speed gauge and timed captions |
 
-Record the planner visualization topics together with the bag. Use the TF tree or the extrinsics JSON to connect sensor frames to the world frame. Set actual and planned trajectory widths independently under **Quality**. The preview reports the scan source and age, missing TF, and unavailable camera calibration. If a dedicated scan is unavailable, the latest main input frame is highlighted.
+## Quick start
 
-## CLI
+1. Install 64-bit Python 3.10 or newer with Tcl/Tk.
+2. Clone the repository and double-click [Start_SLAM_FPV.cmd](Start_SLAM_FPV.cmd). The first launch downloads dependencies.
+3. Open a ROS1 `.bag` under **Data** or choose **Use simulated data**. Pick views and layers, then generate a preview.
+
+## Multi-video alignment
+
+1. Use **Layers → + Video** to select multiple clips. Select a clip and open **Trim / Align**.
+2. Find a recognizable event on the SLAM timeline, step through the footage to match it, then record an anchor and apply.
+3. For noticeable clock drift, add a second matching event near the end. Use **Check midpoint** to verify the result.
+
+All clips use the same bag timeline and keep their own trim ranges and anchors. One anchor sets the time offset. Two also correct linear clock drift.
+
+## Inputs and overlays
+
+| Data | ROS topic type |
+| --- | --- |
+| Map and pose | `PointCloud2` + `Odometry` or TF |
+| Planned path | `Path`, `Marker` or `MarkerArray` |
+| Safety corridor | `Marker` or `MarkerArray` with line strips, line lists, triangles or cubes |
+| Camera FOV | `CameraInfo` and optical-frame TF |
+| Latest LiDAR scan | `PointCloud2`, Livox `CustomMsg` or `LaserScan` |
+
+Topics and frames are detected automatically and can be changed in the dropdowns. Enable data under **Spatial overlays**, then choose what each view shows. Adjust actual and planned path widths under **Quality**. The preview reports scan source, age and missing data.
+
+## Save and export
+
+| Format | Description |
+| --- | --- |
+| `.slamfpv` | Stores media paths, trims, anchors, layer layout and export settings. Moved media can be relinked. |
+| MP4 | Defaults to 1080p at 60 fps with automatic NVIDIA NVENC or CPU H.264 encoding |
+| PNG | Enable **Transparent canvas** to export an alpha channel |
+
+<details>
+<summary>Command line</summary>
 
 ```powershell
 .\.venv\Scripts\slam-fpv.exe inspect run.bag
@@ -42,6 +73,10 @@ Record the planner visualization topics together with the bag. Use the TF tree o
 .\.venv\Scripts\slam-fpv.exe bag --help
 ```
 
-For TF, use `--pose-source tf` and include `/tf` and `/tf_static` as needed. See the [ROS1 bridge](examples/ros1_bridge.py) for live or replay use. Keep recorded bags, imported footage and video exports local.
+[ROS1 live bridge](examples/ros1_bridge.py) · [Validation](docs/VALIDATION.md)
+
+</details>
+
+## License
 
 [MIT License](LICENSE)

@@ -196,6 +196,27 @@ def test_actual_and_planned_trajectory_use_independent_widths():
         renderer.close()
 
 
+def test_scan_highlight_preserves_map_colors_when_it_overlaps_the_map():
+    from slam_fpv.spatial import SpatialFrame
+
+    source = DemoSource(1)
+    stamp, points, _ = next(source.clouds())
+    cloud = CloudMap(0)
+    cloud.add(points, np.broadcast_to([230, 35, 35], points.shape).astype("u1"))
+    renderer = Renderer(320, 180, edl=False, slam_view=True, view_modes=())
+    try:
+        renderer.update_cloud(cloud)
+        plain, _ = renderer.frame(source.pose(stamp), (), "")
+        highlighted, _ = renderer.frame(source.pose(stamp), (), "", spatial=SpatialFrame((), (), None, points))
+        map_pixels = (plain[..., :3] == (230, 35, 35)).all(axis=2)
+        updated = highlighted[map_pixels, :3].astype(int)
+        assert len(updated) > 1000
+        assert np.count_nonzero(updated[:, 0] > updated[:, 1] + 30) > .8 * len(updated)
+        assert np.count_nonzero(updated[:, 1] > 50) > .8 * len(updated)
+    finally:
+        renderer.close()
+
+
 def test_per_view_filters_keep_scan_out_of_selected_fpvs():
     from slam_fpv.spatial import Geometry, SpatialFrame
 

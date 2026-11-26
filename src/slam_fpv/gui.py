@@ -487,10 +487,21 @@ class RendererApp(LayerControls):
             panel.columnconfigure(1, weight=1)
         self.data_nav = ttk.Notebook(data)
         self.data_nav.pack(fill="both", expand=True)
-        source, spatial = (ttk.Frame(self.data_nav, padding=(8, 5)) for _ in range(2))
-        for panel, label in ((source, "数据来源"), (spatial, "空间叠加")):
-            self.data_nav.add(panel, text=label)
-            panel.columnconfigure(1, weight=1)
+        source = ttk.Frame(self.data_nav, padding=(8, 5))
+        source.columnconfigure(1, weight=1)
+        self.data_nav.add(source, text="数据来源")
+        self.spatial_tab = ttk.Frame(self.data_nav)
+        self.data_nav.add(self.spatial_tab, text="空间叠加")
+        spatial_canvas = tk.Canvas(self.spatial_tab, bg="#FFFFFF", highlightthickness=0, width=1, height=1)
+        spatial_scroll = ttk.Scrollbar(self.spatial_tab, orient="vertical", command=spatial_canvas.yview)
+        spatial_canvas.configure(yscrollcommand=spatial_scroll.set)
+        spatial_scroll.pack(side="right", fill="y")
+        spatial_canvas.pack(side="left", fill="both", expand=True)
+        spatial = ttk.Frame(spatial_canvas, padding=(8, 5))
+        spatial.columnconfigure(1, weight=1)
+        spatial_window = spatial_canvas.create_window(0, 0, anchor="nw", window=spatial)
+        spatial.bind("<Configure>", lambda _: spatial_canvas.configure(scrollregion=spatial_canvas.bbox("all")))
+        spatial_canvas.bind("<Configure>", lambda event: spatial_canvas.itemconfigure(spatial_window, width=event.width))
 
         self.bag_name = tk.StringVar(value="未选择 ROS1 bag")
         ttk.Button(source, text="打开 .bag", command=self.select_bag).grid(
@@ -561,6 +572,10 @@ class RendererApp(LayerControls):
 
         self.make_layer_panel(footage)
         self.make_spatial_panel(spatial)
+        for widget in (spatial_canvas, spatial, *spatial.winfo_children()):
+            if not isinstance(widget, ttk.Combobox):
+                widget.bind("<MouseWheel>", lambda event: spatial_canvas.yview_scroll(
+                    -1 if event.delta > 0 else 1, "units"))
 
         actions = ttk.Frame(self.form, style="Shell.TFrame")
         actions.pack(fill="x", pady=(10, 0))

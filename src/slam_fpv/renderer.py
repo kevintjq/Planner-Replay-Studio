@@ -296,7 +296,9 @@ class Renderer:
             for (scene, _), visible in zip(self.views, self.visible_overlays):
                 if "scan" not in visible:
                     continue
-                actor = point_actor(sample, rgb, self.point_size + 1.7 * self.scale)
+                actor = point_actor(sample, rgb, self.point_size)
+                # Preserve the map's distance colors where the current scan overlaps it.
+                actor.GetProperty().SetOpacity(.25)
                 actor.GetMapper().SetResolveCoincidentTopologyToPolygonOffset()
                 actor.GetMapper().SetRelativeCoincidentTopologyPointOffsetParameter(-4)
                 scene.AddActor(actor)

@@ -20,7 +20,8 @@ def test_round_trip_keeps_per_clip_anchors_and_per_view_overlays(tmp_path):
         transparent_canvas=True,
     )
     clip = composition.videos[1]
-    composition = replace(composition, layouts=(LayoutCue(1., "video", clip.id), LayoutCue(2.5, "mix")),
+    composition = replace(composition, layouts=(LayoutCue(1., "backdrop", clip.id),
+                                               LayoutCue(2.5, "inset", clip.id), LayoutCue(5., "mix")),
                           audio_id=clip.id, play_rate=.5, compare_plans=True, markers=(TimelineMarker(1.2, '入口'),))
     saved = ProjectFile(composition, {"encoder": "CPU", "cloud_topic": "/registered"},
                         {"scan": True, "camera": False}, "bag", bag, extrinsics)

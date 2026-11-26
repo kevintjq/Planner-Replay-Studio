@@ -107,7 +107,12 @@ class PointCloudView:
             raise ValueError("视角宽度应为 12–150%。")
 
 
-LAYOUT_NAMES = {"mix": "当前合成", "video": "实拍全屏", "cloud": "点云全屏"}
+LAYOUT_NAMES = {
+    "mix": "当前合成", "video": "实拍全屏", "cloud": "点云全屏",
+    "backdrop": "实拍作底片（保留叠加）", "inset": "实拍切到小窗",
+}
+VIDEO_LAYOUTS = ("video", "backdrop", "inset")
+INSET_TRANSITION_SECONDS = .4
 
 
 @dataclass(frozen=True)
@@ -119,8 +124,8 @@ class LayoutCue:
     def __post_init__(self):
         if not isfinite(self.time) or self.time < 0 or self.mode not in LAYOUT_NAMES:
             raise ValueError("布局标记无效。")
-        if (self.mode == "video") != bool(self.video_id):
-            raise ValueError("实拍全屏须选一路视频。")
+        if (self.mode in VIDEO_LAYOUTS) != bool(self.video_id):
+            raise ValueError("实拍布局须选一路视频。")
 
 
 @dataclass(frozen=True)
@@ -180,6 +185,21 @@ class Composition:
 
     def layout_at(self, elapsed):
         return next((cue for cue in reversed(self.layouts) if cue.time <= elapsed), None)
+
+    def backdrop_id(self, cue):
+        if cue and cue.mode == "backdrop":
+            return cue.video_id
+        inset_id = cue.video_id if cue and cue.mode == "inset" else None
+        return next((layer.id for layer in self.videos if layer.backdrop and layer.id != inset_id), None)
+
+    def inset_transition(self, cue, elapsed):
+        if not cue or cue.mode != "inset" or elapsed >= cue.time + INSET_TRANSITION_SECONDS:
+            return None
+        previous = next((item for item in reversed(self.layouts) if item.time < cue.time), None)
+        if (previous and previous.mode in ("video", "cloud")) or self.backdrop_id(previous) != cue.video_id:
+            return None
+        fraction = (elapsed - cue.time) / INSET_TRANSITION_SECONDS
+        return fraction * fraction * (3. - 2. * fraction)
 
 
 class SpeedHistory:
@@ -324,6 +344,21 @@ def rounded_tile(tile, transparent, radius):
     return tile
 
 
+def inset_tile(source, size, transparent, radius, stroke, *, crop_to_fit=False):
+    w, h = size
+    content = (w - 2 * stroke, h - 2 * stroke)
+    source = source.convert("RGBA")
+    if crop_to_fit:
+        tile = ImageOps.fit(source, content, Image.Resampling.LANCZOS)
+    else:
+        tile = source.resize(content, Image.Resampling.LANCZOS)
+    if stroke:
+        panel = Image.new("RGBA", size, MATTE)
+        panel.paste(tile, (stroke, stroke))
+        tile = panel
+    return rounded_tile(tile, transparent, radius) if radius else tile
+
+
 def compose(base, project, videos, elapsed, speed, cloud_views=None, *, alpha=None):
     """Render a scene and return the draggable layer rectangles."""
     scene = base if isinstance(base, Image.Image) else Image.fromarray(base)
@@ -341,31 +376,60 @@ def compose(base, project, videos, elapsed, speed, cloud_views=None, *, alpha=No
         project = replace(project, videos=(), layouts=(), audio_id=None, views=(), texts=(), show_speed=False,
                           main_view=replace(project.main_view, width=1., position=(.5, .5)))
     image = Image.new("RGBA" if alpha else "RGB", scene.size, (0, 0, 0, 0) if alpha else fallback)
+    behind = None
 
-    def paste(tile, position, opacity=1.):
+    def paste(tile, position, opacity=1., *, canvases=None):
+        if canvases is None:
+            canvases = (image, behind) if behind is not None else (image,)
         mask = tile.getchannel("A")
         if opacity != 1.:
             mask = mask.point(lambda value: round(value * opacity))
-        if alpha:
-            if opacity != 1.:
+            if alpha:
+                tile = tile.copy()
                 tile.putalpha(mask)
-            image.alpha_composite(tile, position)
-        else:
-            image.paste(tile, position, mask)
+        for canvas in canvases:
+            if alpha:
+                canvas.alpha_composite(tile, position)
+            else:
+                canvas.paste(tile, position, mask)
 
     bounds = {}
     radius = max(2, round(image.height * .016))
+    backdrop_id = project.backdrop_id(cue)
+    progress = project.inset_transition(cue, elapsed)
+    pairs = tuple(zip(project.videos, videos))
+    moving_index = None
+    if progress is not None:
+        moving_index = next((i for i, (layer, frame) in enumerate(pairs)
+                             if layer.id == cue.video_id and frame is not None), None)
 
-    for index, (layer, footage) in enumerate(zip(project.videos, videos)):
-        if layer.backdrop and footage is not None:
+    for index, (layer, footage) in enumerate(pairs):
+        if layer.id == backdrop_id and footage is not None:
             source = footage if isinstance(footage, Image.Image) else Image.fromarray(footage)
             x, y, w, h = scaled_rect(image.size, image.size, layer.backdrop_scale, layer.backdrop_position)
             video = ImageOps.fit(source.convert("RGBA"), (w, h), Image.Resampling.LANCZOS)
             if layer.backdrop_scale < 1.:
                 video = rounded_tile(video, layer.transparent, radius)
-            paste(video, (x, y), layer.opacity)
+            opacity = layer.opacity if moving_index is None else layer.opacity * progress
+            paste(video, (x, y), opacity)
             bounds["video", index] = x, y, w, h
             break
+
+    motion = None
+    if moving_index is not None:
+        layer, footage = pairs[moving_index]
+        source = footage if isinstance(footage, Image.Image) else Image.fromarray(footage)
+        start = scaled_rect(image.size, image.size, layer.backdrop_scale, layer.backdrop_position)
+        end = video_rect(image.size, source.size, layer.width, layer.position)
+        x, y, w, h = (round(a + (b - a) * progress) for a, b in zip(start, end))
+        start_radius = radius if layer.backdrop_scale < 1. else 0
+        corner = round(start_radius + (radius - start_radius) * progress)
+        stroke = 0 if layer.transparent else min(round(radius // 2 * progress), (min(w, h) - 1) // 2)
+        tile = inset_tile(source, (w, h), layer.transparent or corner == 0, corner, stroke, crop_to_fit=True)
+        behind = image.copy()
+        paste(tile, (x, y), layer.opacity, canvases=(behind,))
+        motion = tile, (x, y)
+        bounds["video", moving_index] = x, y, w, h
 
     main = project.main_view
     x, y, w, h = scaled_rect(image.size, scene.size, main.width, main.position)
@@ -389,19 +453,29 @@ def compose(base, project, videos, elapsed, speed, cloud_views=None, *, alpha=No
         paste(tile, (x, y))
         bounds["view", index] = x, y, w, h
 
-    for index, (layer, footage) in enumerate(zip(project.videos, videos)):
-        if footage is None or layer.backdrop:
+    for index, (layer, footage) in enumerate(pairs):
+        if footage is None or layer.id == backdrop_id:
+            continue
+        if index == moving_index:
+            # Blend the two stacking orders while the same frame moves into its inset.
+            tile, position = motion
+            if progress == 0:
+                image, behind = behind, None
+                continue
+            paste(tile, position, layer.opacity, canvases=(image,))
+            x, y = position
+            box = (max(x, 0), max(y, 0), min(x + tile.width, image.width), min(y + tile.height, image.height))
+            if box[0] < box[2] and box[1] < box[3]:
+                mode = "RGBa" if alpha else "RGB"
+                bottom = behind.crop(box).convert(mode)
+                top = image.crop(box).convert(mode)
+                image.paste(Image.blend(bottom, top, progress).convert(image.mode), box[:2])
+            behind = None
             continue
         inset = footage if isinstance(footage, Image.Image) else Image.fromarray(footage)
         x, y, w, h = video_rect(image.size, inset.size, layer.width, layer.position)
-        if layer.transparent:
-            tile = inset.convert("RGBA").resize((w, h), Image.Resampling.LANCZOS)
-        else:
-            # Visible matte makes the opaque background option clear for RGB footage.
-            tile = Image.new("RGBA", (w, h), MATTE)
-            stroke = min(radius // 2, (min(w, h) - 1) // 2)
-            tile.paste(inset.resize((w - 2 * stroke, h - 2 * stroke), Image.Resampling.LANCZOS), (stroke, stroke))
-        tile = rounded_tile(tile, layer.transparent, radius)
+        stroke = 0 if layer.transparent else min(radius // 2, (min(w, h) - 1) // 2)
+        tile = inset_tile(inset, (w, h), layer.transparent, radius, stroke)
         paste(tile, (x, y), layer.opacity)
         bounds["video", index] = x, y, w, h
 

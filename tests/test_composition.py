@@ -4,7 +4,9 @@ from pathlib import Path
 from PIL import Image
 import numpy as np
 
-from slam_fpv.composition import Composition, PointCloudView, SpeedHistory, TextLayer, VideoLayer, compose, estimated_speed
+from slam_fpv.composition import (
+    Composition, LayoutCue, PointCloudView, SpeedHistory, TextLayer, VideoLayer, compose, estimated_speed,
+)
 from slam_fpv.sources import DemoSource
 
 
@@ -88,8 +90,6 @@ def test_transparent_canvas_keeps_real_alpha_and_can_flatten_for_mp4():
 
 
 def test_layout_cues_switch_at_source_time_and_retain_video_identity():
-    from slam_fpv.composition import LayoutCue
-
     base = Image.new("RGB", (160, 90), (40, 75, 120))
     first, second = VideoLayer(Path("left.mp4")), VideoLayer(Path("right.mp4"))
     red = Image.new("RGB", (160, 90), (210, 30, 40))
@@ -102,3 +102,27 @@ def test_layout_cues_switch_at_source_time_and_retain_video_identity():
     assert set(cloud) == {("main", 0)}
     _, mix = compose(base, project, (green, red), 3., None)
     assert set(mix) == {("main", 0), ("video", 0), ("video", 1)}
+
+
+def test_one_clip_shrinks_from_behind_the_cloud_to_its_inset():
+    scene = Image.new("RGBA", (320, 180), (20, 25, 30, 0))
+    scene.putpixel((160, 90), (30, 210, 60, 255))
+    footage = Image.new("RGB", (160, 90), (210, 45, 55))
+    clip = VideoLayer(Path("flight.mp4"), width=.25, position=(1., 1.), opacity=1.)
+    project = Composition(videos=(clip,), views=(), audio_id=clip.id,
+                          layouts=(LayoutCue(1., "backdrop", clip.id), LayoutCue(5., "inset", clip.id)))
+    for alpha in (False, True):
+        source, initial = compose(scene, project, (footage,), 4.99, None, alpha=alpha)
+        start, start_bounds = compose(scene, project, (footage,), 5., None, alpha=alpha)
+        assert initial == start_bounds
+        assert start.tobytes() == source.tobytes()
+        assert source.getpixel((0, 0))[:3] == (210, 45, 55)
+        assert source.getpixel((160, 90))[:3] == (30, 210, 60)
+        widths = [compose(scene, project, (footage,), t, None, alpha=alpha)[1]["video", 0][2]
+                  for t in (5., 5.1, 5.2, 5.3, 5.4)]
+        np.testing.assert_allclose(widths, [320, 282.5, 200, 117.5, 80], atol=.5)
+        finish, final = compose(scene, project, (footage,), 5.4, None, alpha=alpha)
+        assert final["video", 0] == (240, 135, 80, 45)
+        assert finish.getpixel((280, 155))[:3] == (210, 45, 55)
+        assert finish.getpixel((160, 90))[:3] == (30, 210, 60)
+        assert ("video", 0) not in compose(scene, project, (None,), 5.2, None, alpha=alpha)[1]

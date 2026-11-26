@@ -298,7 +298,7 @@ class LayerControls:
                     self.invalidate_video(index)
                     if self.frame is not None:
                         self.root.after_idle(lambda: self.start_render(True))
-            size_field = (("scale", "底片缩放 (%)", f"{layer.backdrop_scale*100:g}") if layer.backdrop
+            size_field = (("scale", "底片缩放 (%)", f"{layer.backdrop_scale*100:g}") if self.is_video_backdrop(layer)
                           else ("width", "画面宽度 (%)", f"{layer.width*100:g}"))
             self.layer_dialog("视频图层设置", (size_field, background_field(layer.transparent),
                 ("opacity", "不透明度 (%)", f"{layer.opacity*100:g}"),

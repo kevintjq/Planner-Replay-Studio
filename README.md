@@ -67,6 +67,7 @@ Scroll over a point-cloud view to zoom it. Each view also has a camera zoom perc
 - Add a marker at the playhead with **+ Event**. Right-click it to rename or delete it. Click a marker or pick an event from the list to jump.
 - Video, captions and the speed gauge have separate tracks. Select a clip and drag either edge to trim it. Footage retains its alignment anchors. Enable previous-plan comparison to show a dashed grey path.
 - Set a layout marker at the playhead to switch between the composition, full-screen point cloud, and full-screen footage. Click a purple marker to jump back to it.
+- Keep the cloud layer transparent and add **Footage backdrop** then **Footage inset** markers for the same clip. The second marker starts a 0.4-second transition into the clip’s inset position.
 
 ## Save and export
 

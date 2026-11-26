@@ -17,7 +17,8 @@ from PIL import Image, ImageDraw, ImageTk
 
 from .cli import extrinsics, open_source, parser, render, validate
 from .composition import (
-    LAYOUT_NAMES, MAX_CAMERA_ZOOM, MIN_CAMERA_ZOOM, Composition, LayoutCue, TimelineMarker, compose, placement_axis, rounded_mask,
+    LAYOUT_NAMES, VIDEO_LAYOUTS, MAX_CAMERA_ZOOM, MIN_CAMERA_ZOOM, Composition, LayoutCue, TimelineMarker, compose,
+    placement_axis, rounded_mask,
 )
 from .desktop_style import INK, desktop_style
 from .timeline import Timeline
@@ -137,7 +138,7 @@ class RendererApp(LayerControls):
                         command=self.toggle_plan_comparison).pack(side="left")
         self.layout_button = ttk.Menubutton(transport, text="添加布局标记")
         self.layout_menu = tk.Menu(self.layout_button, tearoff=False, postcommand=self.make_layout_menu)
-        self.layout_video_menu = tk.Menu(self.layout_menu, tearoff=False)
+        self.layout_video_menus = {mode: tk.Menu(self.layout_menu, tearoff=False) for mode in VIDEO_LAYOUTS}
         self.layout_button.configure(menu=self.layout_menu)
         self.layout_button.pack(side="right")
         self.layout_status = tk.StringVar(value="当前合成")
@@ -554,11 +555,16 @@ class RendererApp(LayerControls):
             self.layout_menu.add_command(label=LAYOUT_NAMES[mode], state=state,
                                          command=lambda key=mode: self.set_layout(key))
         if self.project.videos:
-            self.layout_video_menu.delete(0, "end")
-            for i, layer in enumerate(self.project.videos, 1):
-                self.layout_video_menu.add_command(label=f"{i}. {layer.path.name}",
-                                                   command=lambda id=layer.id: self.set_layout("video", id))
-            self.layout_menu.add_cascade(label=LAYOUT_NAMES["video"], menu=self.layout_video_menu, state=state)
+            for mode, menu in self.layout_video_menus.items():
+                if len(self.project.videos) == 1:
+                    self.layout_menu.add_command(label=LAYOUT_NAMES[mode], state=state,
+                        command=lambda key=mode: self.set_layout(key, self.project.videos[0].id))
+                    continue
+                menu.delete(0, "end")
+                for i, layer in enumerate(self.project.videos, 1):
+                    menu.add_command(label=f"{i}. {layer.path.name}",
+                                     command=lambda key=mode, video_id=layer.id: self.set_layout(key, video_id))
+                self.layout_menu.add_cascade(label=LAYOUT_NAMES[mode], menu=menu, state=state)
         self.layout_menu.add_separator()
         self.layout_menu.add_command(label="移除当前时刻的标记", state=state, command=lambda: self.set_layout(None))
 
@@ -992,6 +998,10 @@ class RendererApp(LayerControls):
         image.putalpha(rounded_mask(image.size, 16))
         self.base_photo = ImageTk.PhotoImage(image)
         self.canvas.create_image(x, y, image=self.base_photo, anchor="nw")
+        cue = self.project.layout_at(self.elapsed)
+        if self.project.inset_transition(cue, self.elapsed) is not None:
+            index = next(i for i, layer in enumerate(self.project.videos) if layer.id == cue.video_id)
+            bounds.pop(("video", index), None)
         self.layer_bounds = {key: (x+left, y+top, w, h) for key, (left, top, w, h) in bounds.items()}
         selected = self.layer_bounds.get(self.selection)
         if selected is not None:
@@ -1056,6 +1066,10 @@ class RendererApp(LayerControls):
         if not self.busy and self.frame is not None:
             self.start_render(True)
 
+    def is_video_backdrop(self, layer):
+        cue = self.project.layout_at(self.elapsed) if self.elapsed is not None else None
+        return layer.id == self.project.backdrop_id(cue)
+
     def start_drag(self, event):
         if self.busy:
             return
@@ -1068,7 +1082,7 @@ class RendererApp(LayerControls):
                 return
         keys = list(reversed(self.layer_bounds))
         if (self.selection in self.layer_bounds and self.selection[0] == "video"
-                and self.project.videos[self.selection[1]].backdrop):
+                and self.is_video_backdrop(self.project.videos[self.selection[1]])):
             # An explicitly selected bottom layer can be dragged through the layers above it.
             keys.remove(self.selection)
             keys.insert(0, self.selection)
@@ -1088,7 +1102,7 @@ class RendererApp(LayerControls):
         layer = self.layers(kind)[index]
         if kind == "text":
             return layer.size
-        return layer.backdrop_scale if kind == "video" and layer.backdrop else layer.width
+        return layer.backdrop_scale if kind == "video" and self.is_video_backdrop(layer) else layer.width
 
     def resize_selected(self, factor):
         kind, index = self.selection
@@ -1099,7 +1113,7 @@ class RendererApp(LayerControls):
             layer = self.layers(kind)[index]
             if kind == "text":
                 layer = replace(layer, size=clamp(round(factor), 12, 120))
-            elif kind == "video" and layer.backdrop:
+            elif kind == "video" and self.is_video_backdrop(layer):
                 layer = replace(layer, backdrop_scale=clamp(factor, .2, 2.))
             else:
                 minimum, maximum = (.05, .9) if kind == "video" else (.12, 1.5)
@@ -1120,7 +1134,8 @@ class RendererApp(LayerControls):
         dx, dy = self.drag_offset
         kind, index = self.selection
         layer = None if kind == "speed" else self.layers(kind)[index]
-        can_pan = kind in {"main", "view"} or (kind == "video" and layer.backdrop)
+        backdrop = kind == "video" and self.is_video_backdrop(layer)
+        can_pan = kind in {"main", "view"} or backdrop
         position = []
         for p, space, size in ((event.x-dx-x, fw, w), (event.y-dy-y, fh, h)):
             offset, travel = placement_axis(space, size) if can_pan else (0, max(1, space-size))
@@ -1128,7 +1143,7 @@ class RendererApp(LayerControls):
         position = tuple(position)
         if kind == "speed":
             self.project = replace(self.project, speed_position=position)
-        elif kind == "video" and layer.backdrop:
+        elif backdrop:
             self.replace_layer(kind, index, replace(layer, backdrop_position=position), redraw=False)
         else:
             self.replace_layer(kind, index, replace(layer, position=position), redraw=False)

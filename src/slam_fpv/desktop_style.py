@@ -24,6 +24,8 @@ def desktop_style(root):
     style.configure("Subtitle.TLabel", background=SHELL, foreground=MUTED, font=(font, 10))
     style.configure("PanelTitle.TLabel", font=(font, 12, "bold"), foreground=INK)
     style.configure("Quiet.TLabel", foreground=MUTED, font=(font, 9))
+    style.configure("LayerReady.TLabel", foreground="#17734A", font=(font, 9))
+    style.configure("LayerWarning.TLabel", foreground="#9B4E13", font=(font, 9))
     style.configure("TNotebook", background=SHELL, borderwidth=0, tabmargins=(0, 0, 0, 5))
     style.configure("TNotebook.Tab", padding=(11, 5), borderwidth=0, background=SHELL, foreground=MUTED)
     style.map("TNotebook.Tab", background=[("selected", PANEL), ("active", "#E7E9EE")],

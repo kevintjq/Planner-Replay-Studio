@@ -1,6 +1,6 @@
 """Optional recorded mission geometry and sensor overlays for offline rendering."""
 from bisect import bisect_right
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import isfinite
 from hashlib import blake2b
 
@@ -153,17 +153,24 @@ class GeometryTimeline:
         self.times = []
         self.active = {}
         self.cursor = 0
+        self.first_message = None
+
+    def note_message(self, stamp):
+        if self.first_message is None or stamp < self.first_message:
+            self.first_message = stamp
 
     def add(self, typename, message, recorded):
         if typename in EGO_SPLINES:
+            t = stamp_ns(message.start_time) or recorded
+            self.note_message(t)
             shape = ego_curve(message)
             if shape is not None:
-                t = stamp_ns(message.start_time) or recorded
                 self.events.append((t, "", 0, "path", self.plan_frame, shape, False, 0, False))
                 self.record_update(t, [(self.plan_frame, shape)])
             return
         if typename in (PATH, POSE_STAMPED, POINT_STAMPED):
             t = stamp_ns(message.header.stamp) or recorded
+            self.note_message(t)
             if typename == PATH:
                 points = coordinates(item.pose.position for item in message.poses)
                 shape = Geometry(lines=(points,)) if len(points) >= 2 else None
@@ -175,6 +182,7 @@ class GeometryTimeline:
             self.record_update(t, [(message.header.frame_id, shape)])
             return
         markers = message.markers if typename == MARKERS else (message,)
+        self.note_message(min((stamp_ns(marker.header.stamp) or recorded for marker in markers), default=recorded))
         native_goal = self.native_goal or (self.goal and any(marker.ns == "goal_line" for marker in markers))
         if native_goal:
             # SUPER publishes [goal sphere, vehicle sphere, connecting line].
@@ -229,7 +237,7 @@ class GeometryTimeline:
         self.events.sort(key=lambda event: event[0])
         self.times = [event[0] for event in self.events]
 
-    def shapes(self, tree, world, now):
+    def shapes(self, tree, world, now, *, missing_tf=None):
         end = bisect_right(self.times, now)
         if end < self.cursor:
             self.cursor = 0
@@ -252,7 +260,8 @@ class GeometryTimeline:
             try:
                 yield shape.transformed(tree.lookup(world, frame, now if locked else t))
             except LookupError:
-                continue
+                if missing_tf is not None:
+                    missing_tf.add(frame or "未标注坐标系")
 
 
 def demo_plan(source, t):
@@ -289,6 +298,14 @@ class SpatialFrame:
     scan: np.ndarray | None
     goal: tuple = ()
     previous_plan: tuple = ()
+    missing_tf: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class LayerStatus:
+    label: str
+    detail: str = ""
+    tone: str = "Quiet"
 
 
 def camera_settings(args):
@@ -348,13 +365,26 @@ class SpatialOverlays:
             plan = (Geometry(lines=(path,)),) if self.plan and len(path) >= 2 else ()
             corridor = (demo_corridor(path),) if self.corridor else ()
             goal = (Geometry(goals=(self.source.pose(self.source.last)[:3, 3][None, :],)),) if self.goal else ()
+            missing_tf = {}
         else:
             self.update_comparison(stamp)
-            plan = self.source.mission_shapes("plan", stamp) if self.plan else ()
-            corridor = self.source.mission_shapes("corridor", stamp) if self.corridor else ()
-            goal = self.source.mission_shapes("goal", stamp) if self.goal else ()
+            missing_tf = {}
 
-        return SpatialFrame(plan, corridor, self.camera_frame(stamp, body_pose), scan, goal, self.previous_plan)
+            def read(name, enabled):
+                if not enabled:
+                    return ()
+                missing = set()
+                shapes = self.source.mission_shapes(name, stamp, missing_tf=missing)
+                if missing:
+                    missing_tf[name] = sorted(missing)
+                return shapes
+
+            plan = read("plan", self.plan)
+            corridor = read("corridor", self.corridor)
+            goal = read("goal", self.goal)
+
+        return SpatialFrame(plan, corridor, self.camera_frame(stamp, body_pose), scan, goal,
+                            self.previous_plan, missing_tf)
 
     def update_comparison(self, stamp):
         index = bisect_right(self.plan_updates, stamp) - 1
@@ -365,37 +395,51 @@ class SpatialOverlays:
             self.comparison_stamp = event
             self.previous_plan = self.source.mission_shapes("plan", event-1) if event is not None else ()
 
-    def status(self, stamp, frame):
-        lines = []
+    def diagnostics(self, stamp, frame):
+        layers = {}
         if self.show_scan:
-            topic = "模拟扫描" if self.demo else (self.source.scan_topic or self.source.cloud_topic)
             last, points = self.latest
             if last == 0:
-                state = "等待首帧"
-            elif stamp - last > self.scan_age:
-                state = f"扫描已过期 ({(stamp-last)/1e9:.2f} s)"
-            elif points is None:
-                state = "当前帧缺少 TF"
-            elif not len(points):
-                state = "当前帧无有效点"
+                scan = LayerStatus("等待首帧")
             else:
-                state = f"{len(points):,} 点 · 帧龄 {(stamp-last)/1e6:.0f} ms"
-            lines.append(f"雷达 {topic}  ·  {state}")
+                age = f"帧龄 {(stamp-last)/1e6:.0f} ms"
+                if stamp - last > self.scan_age:
+                    scan = LayerStatus("扫描已过期", age, "Warning")
+                elif points is None:
+                    scan = LayerStatus("缺少 TF", "当前扫描无法转换到世界坐标系", "Warning")
+                elif not len(points):
+                    scan = LayerStatus("当前无数据", "当前扫描没有有效点", "Warning")
+                else:
+                    scan = LayerStatus("已读取", f"{len(points):,} 点 · {age}", "Ready")
+            layers["scan"] = scan
         if self.wants_camera:
             if self.camera is None:
-                state = self.source.camera_issue
+                issue = self.source.camera_issue
+                state = LayerStatus("缺少 TF" if self.source.camera_missing_frame else "缺少标定",
+                                    issue, "Warning")
             elif frame is None or frame.camera is None:
-                state = f"{self.camera.frame} 当前缺少 TF"
+                state = LayerStatus("缺少 TF", f"{self.camera.frame} → {self.source.world}", "Warning")
             else:
-                topic = "模拟标定" if self.demo else (self.source.camera_topic or "手动标定")
-                state = f"{topic} · {self.camera.frame}"
-            lines.append(f"相机 {state}")
-        for name, enabled, label in (("plan", self.plan, "规划轨迹"), ("corridor", self.corridor, "安全走廊"),
-                                     ("goal", self.goal, "目标点")):
-            if enabled and (frame is None or not any(shape.lines or shape.segments or shape.triangles or shape.goals
-                                                     for shape in getattr(frame, name))):
-                lines.append(f"{label}当前无可绘制数据")
-        return tuple(lines)
+                state = LayerStatus("已读取", tone="Ready")
+            layers["camera"] = state
+        for name, enabled in (("plan", self.plan), ("corridor", self.corridor), ("goal", self.goal)):
+            if not enabled:
+                continue
+            missing = frame.missing_tf.get(name, ()) if frame else ()
+            drawable = frame and any(shape.lines or shape.segments or shape.triangles or shape.goals
+                                     for shape in getattr(frame, name))
+            if missing:
+                layers[name] = LayerStatus("部分缺 TF" if drawable else "缺少 TF",
+                                           f"{'、'.join(missing)} → {self.source.world}", "Warning")
+            elif drawable:
+                layers[name] = LayerStatus("已读取", tone="Ready")
+            else:
+                first = None if self.demo else self.source.mission[name][2].first_message
+                if first is not None and stamp < first:
+                    layers[name] = LayerStatus("等待首帧")
+                else:
+                    layers[name] = LayerStatus("当前无数据", "当前时刻无可绘制数据", "Warning")
+        return layers
 
     def camera_frame(self, stamp, body_pose):
         if self.camera is None:

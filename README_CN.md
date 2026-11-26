@@ -62,6 +62,8 @@
 
 SUPER 优先识别 `visualization/exp_traj` 和 `visualization/exp_sfc`。EGO 优先识别 `planning/bspline`，也可选择 `optimal_list`。EGO B 样条使用默认 `world` 坐标系，可在轨迹话题下方更换。规划轨迹和目标点可分别关闭。
 
+「空间叠加」在各图层旁显示当前预览位置的数据状态，包括等待首帧、当前无数据、缺少 TF 和当前视角未显示。
+
 预览时，将鼠标移到点云主画面或小窗上滚动即可拉近、拉远。各视角的设置里也可直接输入相机缩放比例，随项目保存。
 
 ## 时间轴

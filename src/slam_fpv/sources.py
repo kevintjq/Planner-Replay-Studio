@@ -53,6 +53,7 @@ class BagSource:
         self.detected_camera = None
         self.camera_topic = None
         self.camera_issue = "缺少有效 CameraInfo"
+        self.camera_missing_frame = None
         self.mission = {
             key: (topic, types, GeometryTimeline(goal=key == "goal",
                           native_goal=key == "goal" and topic.strip("/").endswith("visualization/goal"),
@@ -137,6 +138,7 @@ class BagSource:
                 self.camera_topic = item["topic"]
                 break
             self.camera_issue = f"{item['topic']} 缺少到 {view.frame} 的 TF"
+            self.camera_missing_frame = view.frame
 
     def mission_times(self, name):
         layer = self.mission.get(name)
@@ -151,9 +153,9 @@ class BagSource:
              if self.first <= stamp <= self.last]
         ))
 
-    def mission_shapes(self, name, t):
+    def mission_shapes(self, name, t, *, missing_tf=None):
         layer = self.mission.get(name)
-        return tuple(layer[2].shapes(self.tree, self.world, t)) if layer else ()
+        return tuple(layer[2].shapes(self.tree, self.world, t, missing_tf=missing_tf)) if layer else ()
 
     def sensor_pose(self, sensor, t):
         return self.tree.lookup(self.world, sensor.frame, t)

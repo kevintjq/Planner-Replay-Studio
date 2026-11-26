@@ -62,6 +62,8 @@ SUPER defaults to `visualization/exp_traj` and `visualization/exp_sfc` when pres
 
 Scroll over a point-cloud view to zoom it. Each view also has a camera zoom percentage that is saved with the project.
 
+The **Spatial overlays** panel shows each layer's status at the preview position, including waiting for data, missing TF and hidden in the current view.
+
 ## Timeline
 
 - Add a PNG or JPG from **Layers**. Drag to position or resize it in the preview. Drag either timeline edge or double-click the layer to set exact display times. PNG alpha is preserved.

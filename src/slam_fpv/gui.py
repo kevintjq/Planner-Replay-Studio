@@ -19,7 +19,7 @@ from .alignment import motion_candidates
 from .cli import extrinsics, open_source, parser, render, validate
 from .composition import (
     LAYOUT_NAMES, VIDEO_LAYOUTS, INSET_TRANSITION_SECONDS, MAX_CAMERA_ZOOM, MIN_CAMERA_ZOOM, Composition, LayerMotion, LayoutCue, TimelineMarker, compose,
-    inset_placement, placement_axis, rounded_mask,
+    inset_placement, placement_axis, rounded_mask, view_overlays,
 )
 from .desktop_style import INK, desktop_style
 from .timeline import Timeline
@@ -30,7 +30,7 @@ from .video_editor import VideoEditor
 from .sources import inspect_bag
 from .project_file import ProjectFile, load_project, save_project
 from .export_media import inspect_export
-from .spatial import CORRIDOR_TYPES, EGO_SPLINES, GOAL_TYPES, PLAN_TYPES
+from .spatial import CORRIDOR_TYPES, EGO_SPLINES, GOAL_TYPES, PLAN_TYPES, LayerStatus
 from .sensor_topics import SCAN_TYPES, camera_choices, connected_frames, planner_map_topic, pose_frames, suggested_topic
 
 
@@ -77,6 +77,8 @@ class RendererApp(LayerControls):
         self.bag_path = None
         self.bag_metadata = None
         self.demo_selected = False
+        self.spatial_diagnostics = {}
+        self.overlay_status = tk.StringVar()
         self.disabled_controls = []
 
         root.title("Planner Replay Studio")
@@ -116,7 +118,6 @@ class RendererApp(LayerControls):
         self.transparent_canvas = tk.BooleanVar(value=False)
         ttk.Checkbutton(preview_header, text="透明画布", variable=self.transparent_canvas,
                         command=self.toggle_canvas).pack(side="right")
-        self.overlay_status = tk.StringVar()
         self.overlay_label = ttk.Label(viewer, textvariable=self.overlay_status, style="Quiet.TLabel",
                                        justify="left", wraplength=700)
         self.overlay_label.pack(fill="x", pady=(0, 4))
@@ -562,6 +563,9 @@ class RendererApp(LayerControls):
         self.spatial_toggles = {}
         self.spatial_topics = {}
         self.spatial_details = {}
+        self.spatial_badges = {}
+        self.spatial_baseline = {}
+        self.spatial_labels = {}
         for index, (name, label, color) in enumerate((
             ("plan", "规划轨迹", "#33EB80"), ("goal", "目标点", "#FFCB63"),
             ("corridor", "飞行安全走廊", "#4DB3FF"), ("scan", "雷达当前帧高亮", "#76F6FF"),
@@ -571,7 +575,12 @@ class RendererApp(LayerControls):
             flag = self.spatial_toggles[name] = tk.BooleanVar(value=False)
             ttk.Checkbutton(panel, text=label, variable=flag, command=self.sync_spatial).grid(
                 row=row, column=0, sticky="w", pady=(9, 3))
-            tk.Label(panel, width=3, height=1, bg=color).grid(row=row, column=1, sticky="e")
+            header = ttk.Frame(panel)
+            header.grid(row=row, column=1, sticky="e")
+            badge = self.spatial_badges[name] = ttk.Label(header, style="Quiet.TLabel")
+            badge.pack(side="left", padx=(0, 6))
+            tk.Frame(header, width=10, height=10, bg=color).pack(side="right")
+            self.spatial_labels[name] = label
             widget = self.field(panel, row+1, "话题来源", name + "_topic", "自动识别", ("自动识别",))
             widget.bind("<<ComboboxSelected>>", lambda _: self.sync_spatial())
             self.spatial_topics[name] = widget
@@ -582,6 +591,7 @@ class RendererApp(LayerControls):
         self.ego_options.grid(row=15, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         self.ego_options.columnconfigure(1, weight=1)
         self.field(self.ego_options, 0, "EGO 轨迹坐标系", "plan_frame", "world")
+        self.values["plan_frame"].trace_add("write", lambda *_: self.sync_spatial())
         self.spatial_hint = tk.StringVar()
         ttk.Label(panel, textvariable=self.spatial_hint, style="Quiet.TLabel", wraplength=300).grid(
             row=16, column=0, columnspan=2, sticky="w", pady=(12, 2))
@@ -616,45 +626,78 @@ class RendererApp(LayerControls):
 
     def sync_spatial(self):
         for name, widget in self.spatial_topics.items():
-            enabled = self.bag_path is not None and self.spatial_toggles[name].get()
-            widget.configure(state="readonly" if enabled else "disabled")
+            enabled = self.spatial_toggles[name].get()
+            widget.configure(state="readonly" if enabled and self.bag_path is not None else "disabled")
             topic, row = self.spatial_source(name)
+            state = LayerStatus("待预览")
             if self.demo_selected:
                 detail = "内置模拟数据"
             elif self.bag_path is None:
                 detail = "打开 ROS1 bag 后识别"
+                state = LayerStatus("待导入")
             elif row and name == "camera":
                 view = row["view"]
                 detail = f"{topic} · {view.frame} · {view.angles[0]:.0f}° × {view.angles[1]:.0f}°"
-            elif topic:
-                frame = row.get("frame") if row else None
+            elif row:
+                frame = row.get("frame")
                 detail = f"{topic} · {frame}" if frame else topic
-            elif name == "scan":
+            elif name == "scan" and not topic:
                 detail = "使用主点云的最新一帧"
+            elif name == "camera":
+                picked = self.values["camera_topic"].get()
+                candidate = next((item for item in camera_choices(self.bag_metadata["topics"])
+                                  if picked == "自动识别" or picked == item["topic"]), None)
+                if candidate:
+                    detail = f"{candidate['view'].frame} → {self.values['world'].get() or '世界坐标系'}"
+                    state = LayerStatus("缺少 TF", tone="Warning")
+                else:
+                    detail = "当前话题没有有效 CameraInfo"
+                    state = LayerStatus("缺少标定", tone="Warning")
             else:
-                detail = "没有可用话题或 TF，此图层将跳过" if name == "camera" else "未匹配话题，可从列表选择"
-            self.spatial_details[name].set(detail)
+                detail = "未匹配到可用话题"
+                state = LayerStatus("无话题", tone="Warning")
+            if not enabled:
+                state = LayerStatus("未启用")
+            self.spatial_baseline[name] = state, detail
         _, plan = self.spatial_source("plan")
         if self.spatial_toggles["plan"].get() and plan and plan["type"] in EGO_SPLINES:
             self.ego_options.grid()
         else:
             self.ego_options.grid_remove()
-        self.spatial_hint.set("勾选图层后重新生成预览。传感器坐标系读取自消息和 TF。")
+        self.spatial_diagnostics = {}
+        self.update_spatial_status()
+
+    def update_spatial_status(self, visible=None):
+        warnings = []
+        for name, (baseline, source) in self.spatial_baseline.items():
+            current = self.spatial_diagnostics.get(name, baseline)
+            detail = current.detail
+            if current.tone == "Ready" and visible is not None and name not in visible:
+                current = LayerStatus("视角未显示")
+                detail = "数据已读取，请检查当前布局和视角设置"
+            style = "Quiet.TLabel" if current.tone == "Quiet" else f"Layer{current.tone}.TLabel"
+            self.spatial_badges[name].configure(text=current.label, style=style)
+            self.spatial_details[name].set(" · ".join(part for part in (source, detail) if part))
+            if current.tone == "Warning":
+                warnings.append(f"{self.spatial_labels[name]} {current.label}")
+        self.overlay_status.set("  ·  ".join(warnings))
+        self.spatial_hint.set(f"预览位置 {self.elapsed:.3f} s" if self.spatial_diagnostics
+                              else "勾选图层后生成预览，查看播放位置的数据状态。")
 
     def add_spatial_args(self, args, values):
         for name, enabled in self.spatial_toggles.items():
             if not enabled.get():
                 continue
-            topic, _ = self.spatial_source(name)
+            topic, row = self.spatial_source(name)
             if name == "camera":
                 args.append("--show-camera-fov")
                 if self.bag_path and values["camera_topic"] != "自动识别":
                     args.extend(("--camera-info-topic", values["camera_topic"]))
-            elif topic:
+            elif row:
                 args.extend(("--" + name + "-topic", topic))
                 if name == "plan":
                     args.extend(("--plan-frame", values["plan_frame"] or "world"))
-            elif self.bag_path is None or name == "scan":
+            elif self.bag_path is None or (name == "scan" and not topic):
                 args.append("--show-" + name)
 
     def field(self, panel, row, label, name, value, choices=None):
@@ -982,6 +1025,7 @@ class RendererApp(LayerControls):
 
     def reset_alignment(self, _event=None):
         self.frame = self.elapsed = self.speed = self.base_cache = self.source_duration = None
+        self.spatial_diagnostics = {}
         self.overlay_status.set("")
         self.timeline_events = ()
         self.clip_durations = {}
@@ -1411,7 +1455,7 @@ class RendererApp(LayerControls):
     def accept_preview(self, value, *, playing=False):
         frame_info, self.source_duration, diagnostics, self.timeline_events, self.clip_durations = value
         frame, videos, elapsed, self.speed, self.cloud_views = frame_info
-        self.overlay_status.set("\n".join(diagnostics))
+        self.spatial_diagnostics = diagnostics
         self.frame = Image.fromarray(frame)
         self.elapsed = elapsed
         self.base_cache = None
@@ -1446,6 +1490,11 @@ class RendererApp(LayerControls):
             self.status.set(str(error))
             image, bounds = compose(self.base_cache, self.project, self.footages, self.elapsed, self.speed, self.cloud_views,
                                     tolerate_missing_images=True)
+        views = (self.project.main_view, *self.project.views)
+        keys = (("main", 0), *(("view", index) for index in range(len(self.project.views))))
+        visible = {name for key, view in zip(keys, views) if key in bounds
+                   for name in view_overlays(view.kind, view.overlays)}
+        self.update_spatial_status(visible)
         if image.mode == "RGBA":
             if self.checkerboard is None or self.checkerboard.size != size:
                 self.checkerboard = Image.new("RGBA", size, "#E9EBEF")

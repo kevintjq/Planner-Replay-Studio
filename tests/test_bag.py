@@ -124,6 +124,30 @@ def test_native_ego_map_with_zero_header_stamp_replays_on_bag_clock(bag):
     np.testing.assert_allclose(source.pose(frames[1][0])[:3, 3], [1., 0., 0.])
 
 
+def test_overlay_diagnostics_distinguish_first_message_missing_tf_and_removed_corridor(bag):
+    from contextlib import ExitStack
+    from slam_fpv.cli import parser
+    from slam_fpv.spatial import SpatialOverlays
+
+    plan = "/planning/bspline"
+    args = parser().parse_args(["bag", str(bag), "--output", "preview.png", "--plan-topic", plan,
+                               "--corridor-topic", "/corridor"])
+    source = BagSource(bag, "/points", "/odom", "map", "body", plan_topic=plan,
+                       plan_frame="unconnected", corridor_topic="/corridor").index()
+    with ExitStack() as stack:
+        layers = SpatialOverlays(args, source, stack)
+
+        def diagnostics_at(t):
+            return layers.diagnostics(t, layers.frame(t, source.pose(t)))
+
+        assert diagnostics_at(source.first)["plan"].label == "等待首帧"
+        active = diagnostics_at(source.first + 100_000_000)
+        assert active["plan"].label == "缺少 TF"
+        assert "unconnected → map" in active["plan"].detail
+        assert active["corridor"].label == "已读取"
+        assert diagnostics_at(source.last)["corridor"].label == "当前无数据"
+
+
 def test_missing_cloud_and_frames_rejected(bag):
     with pytest.raises(ValueError): BagSource(bag,'/missing','/odom','map','body').index()
     with pytest.raises(ValueError): BagSource(bag,'/points','/odom','map','wrong_body').index()

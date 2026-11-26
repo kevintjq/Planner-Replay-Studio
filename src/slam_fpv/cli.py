@@ -248,7 +248,7 @@ def render(a, source, *, preview=None, preview_offset=0, preview_stream=False, p
                                        elapsed=elapsed, fpv_pose=camera_pose, spatial=spatial_frame)
                 if preview is not None:
                     if preview_data is not None:
-                        preview_data((source.last - source.first) / 1e9, spatial.status(t, spatial_frame))
+                        preview_data((source.last - source.first) / 1e9, spatial.diagnostics(t, spatial_frame))
                     if event_data is not None and count == 0:
                         event_data(() if is_synthetic else source.timeline_events())
                 if first_elapsed is None:
@@ -282,6 +282,10 @@ def render(a, source, *, preview=None, preview_offset=0, preview_stream=False, p
                 if a.output.suffix.lower() == '.png':
                     break
             if not count:
+                if not transformed and getattr(source, "leading_cloud_skips", 0):
+                    raise ValueError("当前区间的主点云缺少到世界坐标系的 TF，请检查点云坐标系与外参。")
+                if dropped and not is_synthetic:
+                    raise ValueError("当前区间缺少机体位姿，请检查里程计或 TF 与点云的时间范围。")
                 raise ValueError('No synchronized frames rendered')
         if audio is not None:
             mux_audio(destination, audio, first_elapsed, count/a.fps, playback, check_cancel)

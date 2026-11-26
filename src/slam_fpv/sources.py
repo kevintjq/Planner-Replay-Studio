@@ -4,7 +4,7 @@ import numpy as np
 from rosbags.highlevel import AnyReader
 from .geometry import TransformTree, transform_points
 from .cloud import decode
-from .spatial import CLOUD, CORRIDOR_TYPES, PLAN_TYPES, GeometryTimeline
+from .spatial import CLOUD, CORRIDOR_TYPES, GOAL_TYPES, PLAN_TYPES, GeometryTimeline
 from .sensor_topics import SCAN_TYPES, camera_choices, connected_frames, inspect_metadata, scan_points
 
 
@@ -39,7 +39,7 @@ def add_tf(tree, msg, static=False):
 
 class BagSource:
     def __init__(self, path, cloud_topic, odom_topic, world, body, pose_source='odom', max_gap=.5, extrinsics=(), *,
-                 plan_topic=None, corridor_topic=None, scan_topic=None):
+                 plan_topic=None, corridor_topic=None, scan_topic=None, goal_topic=None, plan_frame='world'):
         self.path, self.cloud_topic = Path(path), cloud_topic
         self.world, self.body = world.lstrip('/'), body.lstrip('/')
         self.tree = TransformTree(max_gap)
@@ -50,9 +50,13 @@ class BagSource:
         self.detected_camera = None
         self.camera_topic = None
         self.camera_issue = "缺少有效 CameraInfo"
-        self.mission = {key: (topic, types, GeometryTimeline()) for key, topic, types in
-                        (("plan", plan_topic, PLAN_TYPES), ("corridor", corridor_topic, CORRIDOR_TYPES))
-                        if topic}
+        self.mission = {
+            key: (topic, types, GeometryTimeline(goal=key == "goal",
+                          native_goal=key == "goal" and topic.strip("/").endswith("visualization/goal"),
+                          plan_frame=plan_frame))
+            for key, topic, types in (("plan", plan_topic, PLAN_TYPES), ("corridor", corridor_topic, CORRIDOR_TYPES),
+                                      ("goal", goal_topic, GOAL_TYPES)) if topic
+        }
         self.first = self.last = None
         self.count = 0
         self.leading_cloud_skips = 0

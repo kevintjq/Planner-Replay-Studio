@@ -10,6 +10,9 @@ from slam_fpv.sources import BagSource
 def bag(tmp_path):
     ts=get_typestore(Stores.ROS1_NOETIC)
     ts.register(get_types_from_msg('geometry_msgs/TransformStamped[] transforms\n','tf2_msgs/msg/TFMessage'))
+    ts.register(get_types_from_msg(
+        'int32 order\nint64 traj_id\ntime start_time\nfloat64[] knots\n'
+        'geometry_msgs/Point[] pos_pts\nfloat64[] yaw_pts\nfloat64 yaw_dt\n', 'ego_planner/msg/Bspline'))
     types=ts.types
     def make(name,*args): return types[name](*args)
     def header(i,frame): return make('std_msgs/msg/Header',i,make('builtin_interfaces/msg/Time',1,i*100000000),frame)
@@ -20,7 +23,11 @@ def bag(tmp_path):
              ('/tf','tf2_msgs/msg/TFMessage'),('/tf_static','tf2_msgs/msg/TFMessage'),
              ('/plan','nav_msgs/msg/Path'),('/corridor','visualization_msgs/msg/MarkerArray'),
              ('/scan','sensor_msgs/msg/PointCloud2'), ('/camera/info','sensor_msgs/msg/CameraInfo'),
-             ('/laser','sensor_msgs/msg/LaserScan')]}
+             ('/laser','sensor_msgs/msg/LaserScan'),
+             ('/super/visualization/exp_traj','visualization_msgs/msg/MarkerArray'),
+             ('/super/visualization/goal','visualization_msgs/msg/MarkerArray'),
+             ('/goal','geometry_msgs/msg/PoseStamped'), ('/planning/bspline','ego_planner/msg/Bspline'),
+             ('/ego_planner_node/goal_point','visualization_msgs/msg/Marker')]}
         for i in range(4):
             p=make('geometry_msgs/msg/Point',float(i),0.,0.)
             q=make('geometry_msgs/msg/Quaternion',0.,0.,0.,1.)
@@ -42,6 +49,33 @@ def bag(tmp_path):
                     for item in (pose, second_pose)])
                 messages.extend([('/plan', plan), ('/scan', cloud)])
             if i in (1, 2):
+                def native_marker(namespace, kind, ident, action=0, points=(), marker_pose=pose):
+                    zero = make('builtin_interfaces/msg/Time', 0, 0)
+                    marker_header = make('std_msgs/msg/Header', 0, zero, '') if action else header(i, 'map')
+                    return make('visualization_msgs/msg/Marker', marker_header, namespace, ident, kind, action,
+                                marker_pose, make('geometry_msgs/msg/Vector3', .3, .3, .3),
+                                make('std_msgs/msg/ColorRGBA', .12, .52, .9, 1.),
+                                make('builtin_interfaces/msg/Duration', 0, 0), False, list(points), [], '', '', False)
+                endpoint = make('geometry_msgs/msg/Point', 5.+i, -1., 2.)
+                target_pose = make('geometry_msgs/msg/Pose', endpoint, q)
+                clear = native_marker("", 0, 0, action=3)
+                # SUPER ships zero-stamped DELETEALL separately before the new MarkerArray.
+                for name, markers in (
+                    ('/super/visualization/exp_traj', [native_marker('exp_traj', 0, i, points=(v, endpoint))]),
+                    ('/super/visualization/goal', [native_marker('goal', 2, i*3, marker_pose=target_pose),
+                                                  native_marker('goal', 2, i*3+1),
+                                                  native_marker('goal_line', 5, i, points=(endpoint, p))]),
+                ):
+                    messages.extend((name, make('visualization_msgs/msg/MarkerArray', batch))
+                                    for batch in ([clear], markers))
+                messages.append(('/goal', make('geometry_msgs/msg/PoseStamped', header(i, 'map'), target_pose)))
+                if i == 1:
+                    controls = [make('geometry_msgs/msg/Point', *xyz) for xyz in
+                                [(0.,0.,0.), (1.,2.,0.), (2.,2.,0.), (3.,0.,0.)]]
+                    spline = make('ego_planner/msg/Bspline', 3, 42, header(i,'map').stamp,
+                                  np.array([0.,0.,0.,0.,2.,2.,2.,2.]), controls, np.empty(0), 0.)
+                    messages.extend([('/planning/bspline', spline),
+                                     ('/ego_planner_node/goal_point', native_marker('', 2, 0, marker_pose=target_pose))])
                 corridor = make('visualization_msgs/msg/Marker', header(i,'map'), 'corridor', 1,
                                 1, 0 if i == 1 else 2, pose,
                                 make('geometry_msgs/msg/Vector3', 1., 2., 1.),
@@ -131,3 +165,45 @@ def test_detect_sensor_topics_and_frames(bag):
     assert stamp == source.first
     assert len(points) == 2 and np.allclose(points[:, 2], 0)
     np.testing.assert_allclose(source.sensor_pose(camera, stamp)[:3, 3], [.5, 0, 0])
+
+
+def test_super_trajectory_color_and_native_goal_replace_per_replan(bag):
+    from slam_fpv.sensor_topics import suggested_topic
+    from slam_fpv.sources import inspect_bag
+
+    topics = inspect_bag(bag)["topics"]
+    plan = suggested_topic(topics, "plan")
+    goal = suggested_topic(topics, "goal")
+    assert plan == "/super/visualization/exp_traj"
+    assert goal == "/super/visualization/goal"
+    source = BagSource(bag, '/points', '/odom', 'map', 'body', plan_topic=plan, goal_topic=goal).index()
+    assert not source.mission_shapes("goal", source.first)
+    for i in (1, 2):
+        at = source.first + i*100_000_000
+        line, = source.mission_shapes("plan", at)
+        target, = source.mission_shapes("goal", at)
+        np.testing.assert_allclose(line.segments[0], [[[float(i), 0., 0.], [5.+2*i, -1., 2.]]])
+        assert line.color == pytest.approx((.12, .52, .9))
+        np.testing.assert_allclose(target.goals[0], [[5.+i, -1., 2.]])
+    direct = BagSource(bag, '/points', '/odom', 'map', 'body', goal_topic='/goal').index()
+    target, = direct.mission_shapes("goal", source.last)
+    np.testing.assert_allclose(target.goals[0], [[7., -1., 2.]])
+
+
+def test_ego_bspline_uses_start_time_and_samples_curve_in_chosen_frame(bag):
+    from slam_fpv.sensor_topics import suggested_topic
+    from slam_fpv.sources import inspect_bag
+
+    topics = [row for row in inspect_bag(bag)["topics"] if not row["topic"].startswith("/super/")]
+    plan = suggested_topic(topics, "plan")
+    goal = suggested_topic(topics, "goal")
+    assert plan == "/planning/bspline"
+    assert goal == "/ego_planner_node/goal_point"
+    source = BagSource(bag, '/points', '/odom', 'map', 'body', plan_topic=plan,
+                       goal_topic=goal, plan_frame="body").index()
+    assert not source.mission_shapes("plan", source.first)
+    curve, = source.mission_shapes("plan", source.last)
+    np.testing.assert_allclose(curve.lines[0][[0, -1]], [[1.,0.,0.], [4.,0.,0.]])
+    assert abs(curve.lines[0][:, 1].max() - 1.5) < .005
+    target, = source.mission_shapes("goal", source.last)
+    np.testing.assert_allclose(target.goals[0], [[6., -1., 2.]])

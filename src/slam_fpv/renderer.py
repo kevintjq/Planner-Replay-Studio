@@ -46,6 +46,7 @@ def line_actor(points, color, width=3):
 
 SPATIAL_COLORS = {
     "plan": (.20, .92, .50),
+    "goal": (1., .796, .388),
     "corridor": (.30, .70, 1.),
     "camera": (.78, .65, .94),
     "scan": (118, 246, 255),
@@ -70,14 +71,20 @@ def spatial_polydata(groups, surface=False):
     return poly
 
 
-def overlay_lines(groups, color, width, *, screen_space=False):
+def overlay_lines(groups, color, width, *, screen_space=False, colors=None):
     coordinate = vtk.vtkCoordinate()
     if screen_space:
         coordinate.SetCoordinateSystemToDisplay()
     else:
         coordinate.SetCoordinateSystemToWorld()
     mapper = vtk.vtkPolyDataMapper2D()
-    mapper.SetInputData(spatial_polydata(groups))
+    mesh = spatial_polydata(groups)
+    if colors is not None:
+        rgb = np.rint(np.asarray(colors) * 255).astype(np.uint8)
+        mesh.GetCellData().SetScalars(numpy_to_vtk(rgb, deep=True))
+        mapper.SetScalarModeToUseCellData()
+        mapper.SetColorModeToDirectScalars()
+    mapper.SetInputData(mesh)
     mapper.SetTransformCoordinate(coordinate)
     actor = vtk.vtkActor2D()
     actor.SetMapper(mapper)
@@ -231,13 +238,36 @@ class Renderer:
             return tuple(group for shape in shapes for group in shape.lines) + tuple(
                 segment for shape in shapes for group in shape.segments for segment in group)
 
-        planned = lines(frame.plan) if "plan" in visible else ()
-        if planned:
-            for color, width in (((.027, .085, .048), self.plan_width + 2 * self.scale),
-                                 (SPATIAL_COLORS["plan"], self.plan_width)):
-                actor = overlay_lines(planned, color, width)
+        if "plan" in visible:
+            planned, colors = [], []
+            for shape in frame.plan:
+                groups = lines((shape,))
+                planned.extend(groups)
+                colors.extend([shape.color or SPATIAL_COLORS["plan"]] * len(groups))
+            if planned:
+                actor = overlay_lines(planned, (.035, .055, .072), self.plan_width + 2 * self.scale)
                 overlay.AddViewProp(actor)
                 self.dynamic.append((overlay, actor))
+                rgb = colors if any(color != SPATIAL_COLORS["plan"] for color in colors) else None
+                actor = overlay_lines(planned, SPATIAL_COLORS["plan"], self.plan_width, colors=rgb)
+                overlay.AddViewProp(actor)
+                self.dynamic.append((overlay, actor))
+        if "goal" in visible and frame.goal:
+            # The ring is centered at the recorded XYZ, even for a goal in the air.
+            angles = np.linspace(0, tau, 33)
+            ring = .42 * np.column_stack((np.cos(angles), np.sin(angles), np.zeros_like(angles)))
+            cross = np.array([[-.22, 0, 0], [.22, 0, 0], [0, -.22, 0], [0, .22, 0]])
+            head = np.array([[-.19, 0, .32], [0, 0, .12], [.19, 0, .32], [0, 0, .71], [0, 0, .12]])
+            camera = scene.GetActiveCamera()
+            right = np.cross(camera.GetDirectionOfProjection(), camera.GetViewUp())
+            head[:, :2] = head[:, :1] * right[:2]
+            groups = tuple(point + shape for goal in frame.goal for points in goal.goals for point in points
+                           for shape in (ring, cross[:2], cross[2:], head))
+            if groups:
+                for color, width in (((.11, .067, .013), 6.), (SPATIAL_COLORS["goal"], 2.8)):
+                    actor = overlay_lines(groups, color, width*self.scale)
+                    overlay.AddViewProp(actor)
+                    self.dynamic.append((overlay, actor))
         if "corridor" in visible:
             add(lines(frame.corridor), "corridor", 2.)
             triangles = tuple(triangle for shape in frame.corridor for group in shape.triangles for triangle in group)

@@ -28,7 +28,7 @@ A Windows workspace for composing multi-view videos from ROS1 SLAM point clouds,
 | --- | --- |
 | Point-cloud views | 12 presets, including stabilized FPV, chase and oblique views |
 | Multiple videos | Trim, align and place each clip as a backdrop or picture-in-picture |
-| Optional overlays | Planned paths, safety corridors, camera FOV, latest LiDAR scan, speed gauge and timed captions |
+| Optional overlays | Planned paths, goals, safety corridors, camera FOV, latest LiDAR scan, speed gauge and timed captions |
 
 ## Quick start
 
@@ -49,12 +49,15 @@ All clips use the same bag timeline and keep their own trim ranges and anchors. 
 | Data | ROS topic type |
 | --- | --- |
 | Map and pose | `PointCloud2` + `Odometry` or TF |
-| Planned path | `Path`, `Marker` or `MarkerArray` |
+| Planned path | `Path`, `Marker[Array]`, SUPER colored `ARROW` segments or EGO `Bspline` |
+| Goal | SUPER `visualization/goal`, EGO `goal_point`, `PoseStamped` or `PointStamped` |
 | Safety corridor | `Marker` or `MarkerArray` with line strips, line lists, triangles or cubes |
 | Camera FOV | `CameraInfo` and optical-frame TF |
 | Latest LiDAR scan | `PointCloud2`, Livox `CustomMsg` or `LaserScan` |
 
 Topics and frames are detected automatically and can be changed in the dropdowns. Enable data under **Spatial overlays**, then choose what each view shows. Adjust actual and planned path widths under **Quality**. The preview reports scan source, age and missing data.
+
+SUPER defaults to `visualization/exp_traj` and `visualization/exp_sfc` when present. EGO prefers `planning/bspline` and can also use `optimal_list`. EGO B-splines default to `world`, which can be changed below the trajectory topic. Goals and trajectories switch independently.
 
 ## Save and export
 

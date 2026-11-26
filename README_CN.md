@@ -28,7 +28,7 @@
 | --- | --- |
 | 点云视角 | 12 种机位，含稳定 FPV、后方跟随和高位斜视 |
 | 多路视频 | 每路独立裁剪、对齐和布局，可作为底片或画中画 |
-| 可选叠加 | 规划轨迹、安全走廊、相机 FOV、雷达当前帧、速度表和定时文字 |
+| 可选叠加 | 规划轨迹、目标点、安全走廊、相机 FOV、雷达当前帧、速度表和定时文字 |
 
 ## 快速开始
 
@@ -49,12 +49,15 @@
 | 数据 | 话题或格式 |
 | --- | --- |
 | 地图与位姿 | `PointCloud2` + `Odometry` 或 TF |
-| 规划轨迹 | `Path`、`Marker` 或 `MarkerArray` |
+| 规划轨迹 | `Path`、`Marker[Array]`、SUPER 彩色 `ARROW` 或 EGO `Bspline` |
+| 目标点 | SUPER `visualization/goal`、EGO `goal_point`、`PoseStamped` 或 `PointStamped` |
 | 安全走廊 | `Marker` 或 `MarkerArray`，支持折线、线段、三角面和立方体 |
 | 相机 FOV | `CameraInfo` 与光学坐标系 TF |
 | 雷达当前帧 | `PointCloud2`、Livox `CustomMsg` 或 `LaserScan` |
 
 话题和坐标系自动识别，可从下拉列表更换。先在「空间叠加」启用数据，再到各视角的设置里选要显示的叠加项。「画质」可分别调整已飞和规划轨迹的线宽。预览会提示扫描来源、帧龄和缺失的数据。
+
+SUPER 优先识别 `visualization/exp_traj` 和 `visualization/exp_sfc`。EGO 优先识别 `planning/bspline`，也可选择 `optimal_list`。EGO B 样条使用默认 `world` 坐标系，可在轨迹话题下方更换。规划轨迹和目标点可分别关闭。
 
 ## 保存与导出
 

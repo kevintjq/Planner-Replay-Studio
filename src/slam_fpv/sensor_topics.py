@@ -4,7 +4,7 @@ from collections import defaultdict
 import numpy as np
 
 from .cloud import decode
-from .spatial import CAMERA_DISPLAY_DEPTH, CLOUD, PATH, PLAN_TYPES, CORRIDOR_TYPES, CameraView, coordinates
+from .spatial import CAMERA_DISPLAY_DEPTH, CLOUD, PATH, EGO_SPLINES, PLAN_TYPES, CORRIDOR_TYPES, GOAL_TYPES, CameraView, coordinates
 
 CAMERA_INFO = "sensor_msgs/msg/CameraInfo"
 LASER_SCAN = "sensor_msgs/msg/LaserScan"
@@ -102,6 +102,11 @@ def camera_choices(topics):
 
 def suggested_topic(topics, name, world="", body=""):
     ordered = sorted(topics, key=lambda row: row["topic"])
+
+    def native(types, *names):
+        return next((row for ending in names for row in ordered if row["type"] in types
+                     and (row["topic"].strip("/") == ending or row["topic"].endswith("/" + ending))), None)
+
     if name == "scan":
         native = [row for row in ordered if row["type"] in POINT_TYPES and is_lidar_cloud(row, world, body)]
         row = min(native, key=lambda row: (row["type"] not in LIVOX_TYPES,
@@ -111,12 +116,20 @@ def suggested_topic(topics, name, world="", body=""):
     elif name == "plan":
         candidates = [row for row in ordered if row["type"] in PLAN_TYPES and
                       not any(word in row["topic"].lower() for word in ("actual", "odom", "history", "slam"))]
-        row = next((row for row in candidates if any(word in row["topic"].lower()
+        row = native(PLAN_TYPES, "visualization/exp_traj", "visualization/committed_traj")
+        row = row or native(EGO_SPLINES, "planning/bspline")
+        row = row or next((row for row in candidates if row["type"] in EGO_SPLINES
+                           and "broadcast" not in row["topic"].lower()), None)
+        row = row or native(PLAN_TYPES, "optimal_list")
+        row = row or next((row for row in candidates if any(word in row["topic"].lower()
                     for word in ("traj", "plan", "path")) and not any(word in row["topic"].lower()
                     for word in ("corridor", "sfc", "polytope"))), None)
         row = row or next((row for row in candidates if row["type"] == PATH), None)
+    elif name == "goal":
+        row = native(GOAL_TYPES, "visualization/goal", "goal_point", "goal", "goal_pose", "move_base_simple/goal")
     else:
-        row = next((row for row in ordered if row["type"] in CORRIDOR_TYPES and any(
+        row = native(CORRIDOR_TYPES, "visualization/exp_sfc")
+        row = row or next((row for row in ordered if row["type"] in CORRIDOR_TYPES and any(
             word in row["topic"].lower() for word in ("corridor", "sfc", "polytope"))), None)
     return row["topic"] if row else ""
 

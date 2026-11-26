@@ -67,14 +67,17 @@ def parser(parser_class=argparse.ArgumentParser):
         x.add_argument('--crf',type=int,choices=range(0,52),default=None,metavar='0–51')
         x.add_argument('--encoder',choices=('auto','cpu','nvenc'),default='cpu')
         if name == 'bag':
-            x.add_argument('--plan-topic', help='Planned nav_msgs/Path, Marker or MarkerArray')
+            x.add_argument('--plan-topic', help='Planned Path, SUPER Marker[Array], or EGO Bspline')
             x.add_argument('--corridor-topic', help='Safety corridor Marker or MarkerArray')
+            x.add_argument('--plan-frame', default='world', help='Frame used by EGO Bspline messages without a header')
+            x.add_argument('--goal-topic', help='SUPER goal MarkerArray, PoseStamped or PointStamped')
             x.add_argument('--scan-topic', help='Separate PointCloud2, LaserScan or Livox CustomMsg topic for the latest scan')
             x.add_argument('--camera-info-topic', help='Override the automatically selected CameraInfo topic')
             x.add_argument('--lidar-fov-topic', dest='scan_topic', help=argparse.SUPPRESS)
         if name == 'demo':
             x.add_argument('--show-plan', action='store_true')
             x.add_argument('--show-corridor', action='store_true')
+            x.add_argument('--show-goal', action='store_true')
         if name != 'listen':
             x.add_argument('--show-scan', action='store_true', help='Highlight the latest scan')
             x.add_argument('--show-camera-fov', action='store_true', help='Show the FOV detected from CameraInfo')
@@ -279,7 +282,7 @@ def open_source(a, check_cancel=None, metadata=None):
         scan_topic = suggested_topic(metadata["topics"], "scan", a.world.lstrip("/"), a.body.lstrip("/"))
     source = BagSource(a.bag, a.cloud_topic, a.odom_topic, a.world, a.body, a.pose_source,
                        a.max_gap, extrinsics(a.extrinsics), plan_topic=a.plan_topic,
-                       corridor_topic=a.corridor_topic, scan_topic=scan_topic).index(check_cancel)
+                       corridor_topic=a.corridor_topic, scan_topic=scan_topic, goal_topic=a.goal_topic, plan_frame=a.plan_frame).index(check_cancel)
     if auto_camera:
         source.detect_camera(a.camera_info_topic, metadata)
     return source

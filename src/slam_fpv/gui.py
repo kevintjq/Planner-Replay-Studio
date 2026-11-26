@@ -23,7 +23,7 @@ from .layer_controls import LayerControls
 from .video_editor import VideoEditor
 from .sources import inspect_bag
 from .project_file import ProjectFile, load_project, save_project
-from .spatial import CORRIDOR_TYPES, PLAN_TYPES
+from .spatial import CORRIDOR_TYPES, EGO_SPLINES, GOAL_TYPES, PLAN_TYPES
 from .sensor_topics import SCAN_TYPES, camera_choices, connected_frames, pose_frames, suggested_topic
 
 
@@ -215,8 +215,9 @@ class RendererApp(LayerControls):
         self.spatial_topics = {}
         self.spatial_details = {}
         for index, (name, label, color) in enumerate((
-            ("plan", "规划轨迹", "#33EB80"), ("corridor", "飞行安全走廊", "#4DB3FF"),
-            ("scan", "雷达当前帧高亮", "#76F6FF"), ("camera", "相机 FOV", "#C7A6F0"),
+            ("plan", "规划轨迹", "#33EB80"), ("goal", "目标点", "#FFCB63"),
+            ("corridor", "飞行安全走廊", "#4DB3FF"), ("scan", "雷达当前帧高亮", "#76F6FF"),
+            ("camera", "相机 FOV", "#C7A6F0"),
         )):
             row = index * 3
             flag = self.spatial_toggles[name] = tk.BooleanVar(value=False)
@@ -229,9 +230,13 @@ class RendererApp(LayerControls):
             detail = self.spatial_details[name] = tk.StringVar()
             ttk.Label(panel, textvariable=detail, style="Quiet.TLabel", wraplength=300).grid(
                 row=row+2, column=0, columnspan=2, sticky="w", pady=(1, 3))
+        self.ego_options = ttk.Frame(panel)
+        self.ego_options.grid(row=15, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.ego_options.columnconfigure(1, weight=1)
+        self.field(self.ego_options, 0, "EGO 轨迹坐标系", "plan_frame", "world")
         self.spatial_hint = tk.StringVar()
         ttk.Label(panel, textvariable=self.spatial_hint, style="Quiet.TLabel", wraplength=300).grid(
-            row=12, column=0, columnspan=2, sticky="w", pady=(12, 2))
+            row=16, column=0, columnspan=2, sticky="w", pady=(12, 2))
         self.sync_spatial()
 
     def spatial_source(self, name):
@@ -281,6 +286,11 @@ class RendererApp(LayerControls):
             else:
                 detail = "没有可用话题或 TF，此图层将跳过" if name == "camera" else "未匹配话题，可从列表选择"
             self.spatial_details[name].set(detail)
+        _, plan = self.spatial_source("plan")
+        if self.spatial_toggles["plan"].get() and plan and plan["type"] in EGO_SPLINES:
+            self.ego_options.grid()
+        else:
+            self.ego_options.grid_remove()
         self.spatial_hint.set("勾选图层后重新生成预览。传感器坐标系读取自消息和 TF。")
 
     def add_spatial_args(self, args, values):
@@ -294,6 +304,8 @@ class RendererApp(LayerControls):
                     args.extend(("--camera-info-topic", values["camera_topic"]))
             elif topic:
                 args.extend(("--" + name + "-topic", topic))
+                if name == "plan":
+                    args.extend(("--plan-frame", values["plan_frame"] or "world"))
             elif self.bag_path is None or name == "scan":
                 args.append("--show-" + name)
 
@@ -471,7 +483,8 @@ class RendererApp(LayerControls):
             widget.configure(values=choices)
             widget.set(fallback if fallback in choices else (choices[0] if choices else ""))
         self.values["pose_source"].set("Odometry" if odometry else "TF")
-        for name, types in (("plan", PLAN_TYPES), ("corridor", CORRIDOR_TYPES), ("scan", SCAN_TYPES)):
+        for name, types in (("plan", PLAN_TYPES), ("goal", GOAL_TYPES), ("corridor", CORRIDOR_TYPES),
+                            ("scan", SCAN_TYPES)):
             choices = sorted({row["topic"] for row in topics if row["type"] in types})
             self.spatial_topics[name].configure(values=("自动识别", *choices))
             self.spatial_topics[name].set("自动识别")

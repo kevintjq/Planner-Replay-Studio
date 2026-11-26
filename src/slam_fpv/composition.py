@@ -69,6 +69,7 @@ POINT_CLOUD_VIEWS = {
 VIEW_OVERLAYS = {
     "actual": "已飞轨迹",
     "plan": "规划轨迹",
+    "goal": "目标点",
     "corridor": "安全走廊",
     "scan": "雷达当前帧",
     "camera": "相机 FOV",

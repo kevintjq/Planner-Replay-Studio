@@ -11,8 +11,12 @@ PATH = "nav_msgs/msg/Path"
 MARKER = "visualization_msgs/msg/Marker"
 MARKERS = "visualization_msgs/msg/MarkerArray"
 CLOUD = "sensor_msgs/msg/PointCloud2"
-PLAN_TYPES = (PATH, MARKER, MARKERS)
+EGO_SPLINES = ("ego_planner/msg/Bspline", "traj_utils/msg/Bspline", "plan_manage/msg/Bspline")
+PLAN_TYPES = (PATH, MARKER, MARKERS, *EGO_SPLINES)
 CORRIDOR_TYPES = (MARKER, MARKERS)
+POSE_STAMPED = "geometry_msgs/msg/PoseStamped"
+POINT_STAMPED = "geometry_msgs/msg/PointStamped"
+GOAL_TYPES = (MARKER, MARKERS, POSE_STAMPED, POINT_STAMPED)
 
 
 CAMERA_DISPLAY_DEPTH = .85
@@ -47,15 +51,43 @@ class Geometry:
     lines: tuple = ()
     segments: tuple = ()
     triangles: tuple = ()
+    color: tuple | None = None
+    goals: tuple = ()
 
     def transformed(self, transform):
         def move(groups):
             return tuple(transform_points(transform, item) for item in groups)
-        return Geometry(move(self.lines), move(self.segments), move(self.triangles))
+        return Geometry(move(self.lines), move(self.segments), move(self.triangles), self.color, move(self.goals))
 
 
 def coordinates(points):
     return np.array([(p.x, p.y, p.z) for p in points], dtype=float).reshape(-1, 3)
+
+
+def ego_curve(message):
+    """Evaluate EGO's ROS1 B-spline in its knot domain with de Boor's algorithm."""
+    points = coordinates(message.pos_pts)
+    knots = np.asarray(message.knots, dtype=float)
+    degree = int(message.order)
+    count = len(points)
+    if not (1 <= degree < count and degree <= 9 and len(knots) == count + degree + 1
+            and np.isfinite(knots).all() and np.isfinite(points).all() and np.all(knots[1:] >= knots[:-1])):
+        return None
+    start, end = knots[degree], knots[count]
+    if end <= start or not isfinite(end - start):
+        return None
+    size = int(np.clip(np.ceil((end-start)/.03), 16, 800)) + 1
+    parameters = np.linspace(start, end, size)
+    spans = np.clip(np.searchsorted(knots, parameters, side="right")-1, degree, count-1)
+    values = points[spans[:, None]-degree+np.arange(degree+1)]
+    for step in range(1, degree+1):
+        for j in range(degree, step-1, -1):
+            subspan = spans-degree+j
+            left = knots[subspan]
+            span = knots[subspan+degree-step+1]-left
+            fraction = np.divide(parameters-left, span, out=np.zeros_like(left), where=span > 0)[:, None]
+            values[:, j] = (1-fraction)*values[:, j-1] + fraction*values[:, j]
+    return Geometry(lines=(values[:, degree],))
 
 
 CUBE_TRIANGLES = np.array([[0,2,1], [0,3,2], [4,5,6], [4,6,7], [0,1,5], [0,5,4],
@@ -66,10 +98,24 @@ CUBE_VERTICES = np.array([[-1,-1,-1], [1,-1,-1], [1,1,-1], [-1,1,-1],
                           [-1,-1,1], [1,-1,1], [1,1,1], [-1,1,1]]) / 2
 
 
-def marker_shape(marker):
+def marker_shape(marker, *, goal=False):
     points = coordinates(marker.points)
     kind = marker.type
-    if kind == 4 and len(points) >= 2:       # LINE_STRIP
+    if goal:
+        if kind in (1, 2) or (kind == 0 and not len(points)):  # CUBE, SPHERE, pose-style ARROW
+            shape = Geometry(goals=(np.zeros((1, 3)),))
+        elif kind in (7, 8) and len(points):                  # SPHERE_LIST, POINTS
+            shape = Geometry(goals=(points,))
+        elif kind in (0, 4, 5) and len(points):              # Endpoint of a line or arrow
+            shape = Geometry(goals=(points[-1:],))
+        else:
+            return None
+    elif kind == 0 and len(points) in (0, 2):                # ARROW, including SUPER segments
+        segment = points if len(points) else np.array([[0., 0., 0.], [marker.scale.x, 0., 0.]])
+        color = (marker.color.r, marker.color.g, marker.color.b)
+        shape = Geometry(segments=(segment[None, :, :],),
+                         color=tuple(np.clip(color, 0., 1.)) if all(map(isfinite, color)) else None)
+    elif kind == 4 and len(points) >= 2:                     # LINE_STRIP
         shape = Geometry(lines=(points,))
     elif kind == 5 and len(points) >= 2:     # LINE_LIST
         shape = Geometry(segments=(points[:len(points)//2*2].reshape(-1, 2, 3),))
@@ -80,6 +126,9 @@ def marker_shape(marker):
         vertices = CUBE_VERTICES * scale
         shape = Geometry(segments=(vertices[CUBE_EDGES],), triangles=(vertices[CUBE_TRIANGLES],))
     else:
+        return None
+    if not all(np.isfinite(item).all() for group in (shape.lines, shape.segments, shape.triangles, shape.goals)
+               for item in group):
         return None
     p, q = marker.pose.position, marker.pose.orientation
     rotation = (q.x, q.y, q.z, q.w)
@@ -94,26 +143,60 @@ def stamp_ns(time):
 
 class GeometryTimeline:
     """Replay path replacement and ROS marker identities, deletion and lifetime."""
-    def __init__(self):
+    def __init__(self, *, goal=False, native_goal=False, plan_frame="world"):
+        self.goal = goal
+        self.native_goal = native_goal
+        self.plan_frame = plan_frame
         self.events = []
         self.times = []
         self.active = {}
         self.cursor = 0
 
     def add(self, typename, message, recorded):
-        if typename == PATH:
-            t = stamp_ns(message.header.stamp) or recorded
-            points = coordinates(item.pose.position for item in message.poses)
-            self.events.append((t, "", 0, "path", message.header.frame_id,
-                                Geometry(lines=(points,)) if len(points) >= 2 else None, False, 0))
+        if typename in EGO_SPLINES:
+            shape = ego_curve(message)
+            if shape is not None:
+                t = stamp_ns(message.start_time) or recorded
+                self.events.append((t, "", 0, "path", self.plan_frame, shape, False, 0, False))
             return
-        for marker in message.markers if typename == MARKERS else (message,):
-            t = stamp_ns(marker.header.stamp) or recorded
-            shape = marker_shape(marker) if marker.action == 0 else None
-            self.events.append((t, marker.ns, marker.id, marker.action, marker.header.frame_id,
-                                shape, marker.frame_locked, stamp_ns(marker.lifetime)))
+        if typename in (PATH, POSE_STAMPED, POINT_STAMPED):
+            t = stamp_ns(message.header.stamp) or recorded
+            if typename == PATH:
+                points = coordinates(item.pose.position for item in message.poses)
+                shape = Geometry(lines=(points,)) if len(points) >= 2 else None
+            else:
+                point = message.pose.position if typename == POSE_STAMPED else message.point
+                points = coordinates((point,))
+                shape = Geometry(goals=(points,)) if np.isfinite(points).all() else None
+            self.events.append((t, "", 0, "path", message.header.frame_id, shape, False, 0, False))
+            return
+        markers = message.markers if typename == MARKERS else (message,)
+        native_goal = self.native_goal or (self.goal and any(marker.ns == "goal_line" for marker in markers))
+        if native_goal:
+            # SUPER publishes [goal sphere, vehicle sphere, connecting line].
+            target = next((marker for marker in markers if marker.action == 0 and marker.type == 2
+                           and marker.ns == "goal"), None)
+            markers = [marker for marker in markers if marker.action != 0] + ([target] if target else [])
+        for marker in markers:
+            header_time = stamp_ns(marker.header.stamp)
+            shape = marker_shape(marker, goal=self.goal) if marker.action == 0 else None
+            namespace, identity = marker.ns, marker.id
+            action = "target" if native_goal and shape is not None else marker.action
+            self.events.append((header_time or recorded, namespace, identity, action,
+                                marker.header.frame_id, shape, marker.frame_locked,
+                                stamp_ns(marker.lifetime), not header_time and marker.action in (2, 3)))
 
     def prepare(self):
+        # A zero-stamped delete sent just before a replacement may be recorded after
+        # the replacement's header time. Keep the delete before that next marker.
+        next_stamp = None
+        for index in range(len(self.events)-1, -1, -1):
+            event = self.events[index]
+            if event[-1]:
+                if next_stamp is not None and next_stamp < event[0]:
+                    self.events[index] = (next_stamp, *event[1:])
+            elif event[3] in (0, "path", "target"):
+                next_stamp = event[0]
         self.events.sort(key=lambda event: event[0])
         self.times = [event[0] for event in self.events]
 
@@ -123,13 +206,15 @@ class GeometryTimeline:
             self.cursor = 0
             self.active.clear()
         for event in self.events[self.cursor:end]:
-            t, ns, key, action, frame, shape, locked, lifetime = event
+            t, ns, key, action, frame, shape, locked, lifetime, _ = event
             identity = ns, key, action == "path"
             if action == 3:
                 self.active.clear()
             elif action == 2 or shape is None:
                 self.active.pop(identity, None)
-            elif action in (0, "path"):
+            elif action in (0, "path", "target"):
+                if action == "target":
+                    self.active.clear()
                 self.active[identity] = (frame, shape, locked, t, lifetime)
         self.cursor = end
         for frame, shape, locked, t, lifetime in self.active.values():
@@ -173,6 +258,7 @@ class SpatialFrame:
     corridor: tuple
     camera: np.ndarray | None
     scan: np.ndarray | None
+    goal: tuple = ()
 
 
 def camera_settings(args):
@@ -189,6 +275,7 @@ class SpatialOverlays:
         self.demo = args.command == "demo"
         self.plan = getattr(args, "plan_topic", None) or getattr(args, "show_plan", False)
         self.corridor = getattr(args, "corridor_topic", None) or getattr(args, "show_corridor", False)
+        self.goal = getattr(args, "goal_topic", None) or getattr(args, "show_goal", False)
         self.show_scan = getattr(args, "show_scan", False) or getattr(args, "scan_topic", None)
         self.scan_age = round(getattr(args, "scan_max_age", .5) * 1e9)
         self.wants_camera = getattr(args, "show_camera_fov", False) or bool(getattr(args, "camera_fov", None))
@@ -210,7 +297,7 @@ class SpatialOverlays:
                 raise ValueError(f"找不到相机坐标系 {self.camera.frame}，请检查 TF 或外参 JSON。")
 
     def __bool__(self):
-        return bool(self.plan or self.corridor or self.show_scan or self.camera)
+        return bool(self.plan or self.corridor or self.goal or self.show_scan or self.camera)
 
     def update_map_scan(self, stamp, xyz):
         if self.show_scan and self.scans is None:
@@ -227,11 +314,13 @@ class SpatialOverlays:
             path = demo_plan(self.source, stamp) if self.plan or self.corridor else ()
             plan = (Geometry(lines=(path,)),) if self.plan and len(path) >= 2 else ()
             corridor = (demo_corridor(path),) if self.corridor else ()
+            goal = (Geometry(goals=(self.source.pose(self.source.last)[:3, 3][None, :],)),) if self.goal else ()
         else:
             plan = self.source.mission_shapes("plan", stamp) if self.plan else ()
             corridor = self.source.mission_shapes("corridor", stamp) if self.corridor else ()
+            goal = self.source.mission_shapes("goal", stamp) if self.goal else ()
 
-        return SpatialFrame(plan, corridor, self.camera_frame(stamp, body_pose), scan)
+        return SpatialFrame(plan, corridor, self.camera_frame(stamp, body_pose), scan, goal)
 
     def status(self, stamp, frame):
         lines = []
@@ -258,8 +347,9 @@ class SpatialOverlays:
                 topic = "模拟标定" if self.demo else (self.source.camera_topic or "手动标定")
                 state = f"{topic} · {self.camera.frame}"
             lines.append(f"相机 {state}")
-        for name, enabled, label in (("plan", self.plan, "规划轨迹"), ("corridor", self.corridor, "安全走廊")):
-            if enabled and (frame is None or not any(shape.lines or shape.segments or shape.triangles
+        for name, enabled, label in (("plan", self.plan, "规划轨迹"), ("corridor", self.corridor, "安全走廊"),
+                                     ("goal", self.goal, "目标点")):
+            if enabled and (frame is None or not any(shape.lines or shape.segments or shape.triangles or shape.goals
                                                      for shape in getattr(frame, name))):
                 lines.append(f"{label}当前无可绘制数据")
         return tuple(lines)

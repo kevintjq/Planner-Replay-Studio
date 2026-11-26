@@ -21,3 +21,9 @@ captures/
 *.[mM][pP][eE][gG]
 *.[oO][gG][vV]
 *.[fF][lL][vV]
+
+# Native CMake and Visual Studio build files.
+/build-native/
+/native/out/
+/native/.vs/
+CMakeUserPresets.json

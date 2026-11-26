@@ -1,12 +1,20 @@
 # Validation record
 
-Executed on **2026-11-25**. This records observed results, not support guarantees for untested platforms.
+## Native preview
 
-## Environment
+The Windows x64 workflow compiled the native app, ran its bag-reader and startup tests, and launched the packaged executable in smoke-test mode. [Windows build and test run](https://github.com/kevintjq/Planner-Replay-Studio/actions/runs/45853048677)
 
-Windows, CPython 3.13, NumPy 2.4.6, VTK 9.7.2, rosbags 0.11.4, imageio 2.37.3, imageio-ffmpeg 0.8.1, pytest 9.2.0. See `requirements-tested.txt`.
+The Linux desktop was used to check playback, seeking, rotating and zooming a sample ROS1 bag. The bag-reader check covered uncompressed, BZ2 and LZ4 versions of the same fixture. [Native preview screenshot](native-preview.png)
 
-## Automated tests
+## Video composition workspace
+
+The following checks date from **2026-11-25**.
+
+### Environment
+
+Windows, CPython 3.13, NumPy 2.4.6, VTK 9.7.2, rosbags 0.11.4, imageio 2.37.3, imageio-ffmpeg 0.8.1, pytest 9.2.0. See [requirements-tested.txt](../requirements-tested.txt).
+
+### Automated tests
 
 ```bash
 python -m pytest -q
@@ -16,7 +24,7 @@ python -m pytest -q
 
 The first restricted execution could not connect to the loopback receiver (Windows socket permission). The same suite passed with local network access enabled. Graphics tests also exposed a viewport-clearing issue; the final renderer uses two independent EDL framebuffers and composites both frames at the same timestamp. RGB axes use foreground projected lines so the X axis remains visible when its projection overlaps Z.
 
-## Real ROS1 bag checks
+### Real ROS1 bag checks
 
 One existing local bag was read without modifying it. It contains 394 world clouds, 394 body clouds, 393 `/Odometry` samples and 393 TF messages, plus other unselected topics. Raw bags and rendered real-world geometry are not distributed in this repository.
 
@@ -41,15 +49,12 @@ planner-replay bag /absolute/path/run.bag --cloud-topic /cloud_registered_body -
 
 Agreement checks validate interpretation of the two recorded paths, **not SLAM accuracy, extrinsic accuracy or ground-truth trajectory**. They are not an independent sensor accuracy experiment.
 
-## Synthetic media
+### Synthetic media
 
 [`studio-preview.png`](studio-preview.png) is a screenshot of the desktop’s synthetic point-cloud preview. It illustrates the editing controls, camera layers and simulated speed gauge.
 
-## Unverified
+### Outside the scope of these checks
 
-- Original ZIP/demo attachments were not retrievable; no source-equivalence or regression check against them.
 - Actual ROS master, rospy subscriptions, rosbag playback and physical live streams. Only the bridge transport/receiver has an end-to-end synthetic loopback test.
-- Linux/macOS, EGL/OSMesa/Xvfb deployment, different GPU backends and Python versions.
+- The composition workspace on Linux/macOS in this Windows test run, plus other GPU backends and Python versions.
 - Extremely large bags, ROS2, raw Livox CustomMsg, independent ground truth, loop-closure map correction, camera collision avoidance and per-point deskew.
-
-README presentation follows the user's existing calibration repository: centred title and badges, English/Chinese navigation, ordered commands, parameter/issue tables, explicit frames and validation limits.

@@ -20,6 +20,7 @@ def bag(tmp_path):
     with Writer(path) as writer:
         cs={topic:writer.add_connection(topic,typ,typestore=ts) for topic,typ in
             [('/points','sensor_msgs/msg/PointCloud2'),('/odom','nav_msgs/msg/Odometry'),
+             ('/vehicle/velocity','geometry_msgs/msg/TwistStamped'),
              ('/drone/grid_map/occupancy','sensor_msgs/msg/PointCloud2'),
              ('/tf','tf2_msgs/msg/TFMessage'),('/tf_static','tf2_msgs/msg/TFMessage'),
              ('/plan','nav_msgs/msg/Path'),('/corridor','visualization_msgs/msg/MarkerArray'),
@@ -47,6 +48,10 @@ def bag(tmp_path):
             writer.write(cs['/drone/grid_map/occupancy'], 1_000_000_000+i*100000000,
                          ts.serialize_ros1(map_cloud,map_cloud.__msgtype__))
             messages=[('/odom',odom),('/tf',tf),('/points',cloud)]
+            if i in (1, 2):
+                linear = make('geometry_msgs/msg/Vector3', 3.*i, 4.*i, 0.)
+                twist = make('geometry_msgs/msg/Twist', linear, v)
+                messages.append(('/vehicle/velocity', make('geometry_msgs/msg/TwistStamped', header(i, 'map'), twist)))
             if i == 1:
                 second_pose = make('geometry_msgs/msg/Pose', make('geometry_msgs/msg/Point', 3., 0., 0.), q)
                 plan = make('nav_msgs/msg/Path', header(i,'body'), [
@@ -113,6 +118,28 @@ def test_direct_bag_tf_static_and_header_sync(bag,pose_source):
     np.testing.assert_allclose(clouds[2][1],[[3.5,0,0]])
     assert s.pose(1_150_000_000)[0,3]==pytest.approx(1.5)
     with pytest.raises(LookupError): s.pose(999_000_000)
+
+
+def test_speed_topic_uses_recorded_linear_velocity_even_when_pose_comes_from_tf(bag):
+    from slam_fpv.cli import open_source, parser, render
+    from slam_fpv.composition import Composition
+
+    args = parser().parse_args(["bag", str(bag), "--output", "preview.png", "--cloud-topic", "/points",
+                               "--odom-topic", "/odom", "--world", "map", "--pose-source", "tf"])
+    automatic = open_source(args)
+    assert automatic.speed_topic == "/odom"
+    assert automatic.flight_speed(1_150_000_000) == 0.
+    args.speed_topic = "/vehicle/velocity"
+    source = open_source(args)
+    assert source.flight_speed(source.first) is None
+    assert source.flight_speed(1_100_000_000) == 5.
+    assert source.flight_speed(1_150_000_000) == 7.5
+    assert source.flight_speed(source.last) is None
+    args.width, args.height, args.fps, args.seconds = 320, 180, 20, .3
+    readings = []
+    render(args, source, preview=lambda _frame, _videos, _elapsed, speed, _views: readings.append(speed),
+           preview_offset=.15, project=Composition(views=(), show_speed=True))
+    assert readings == [(7.5, 7.5, 6.25)]
 
 
 def test_native_ego_map_with_zero_header_stamp_replays_on_bag_clock(bag):

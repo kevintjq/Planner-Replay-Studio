@@ -12,7 +12,7 @@ from .geometry import stabilized_fpv_pose
 from .composition import SpeedHistory, compose, estimated_speed
 from .sources import BagSource, DemoSource, TrailDemoSource, inspect_bag
 from .spatial import SpatialOverlays, camera_settings
-from .sensor_topics import suggested_topic
+from .sensor_topics import suggested_topic, suggested_velocity_topic
 from .encoding import h264_encoder
 from .footage import FULL_FRAME, FlightVideo, VideoEdit, composite
 from .export_media import mux_audio
@@ -71,6 +71,7 @@ def parser(parser_class=argparse.ArgumentParser):
         x.add_argument('--crf',type=int,choices=range(0,52),default=None,metavar='0–51')
         x.add_argument('--encoder',choices=('auto','cpu','nvenc'),default='cpu')
         if name == 'bag':
+            x.add_argument('--speed-topic', help='Recorded Odometry, TwistStamped or Twist for flight speed')
             x.add_argument('--plan-topic', help='Planned Path, SUPER Marker[Array], or EGO Bspline')
             x.add_argument('--corridor-topic', help='Safety corridor Marker or MarkerArray')
             x.add_argument('--plan-frame', default='world', help='Frame used by EGO Bspline messages without a header')
@@ -234,8 +235,10 @@ def render(a, source, *, preview=None, preview_offset=0, preview_stream=False, p
                     cloud.colors_from(pose[:3, 3])
                 trajectory.append(pose[:3, 3].copy())
                 elapsed = (t - source.first) / 1e9
-                speed = (speed_history.update(elapsed, estimated_speed(source, t, pose))
-                         if project is not None and (preview is not None or project.show_speed) else None)
+                speed = None
+                if project is not None and (preview is not None or project.show_speed):
+                    reading = estimated_speed(source, t, pose) if is_synthetic else source.flight_speed(t)
+                    speed = speed_history.update(elapsed, reading)
                 if preview is not None and i < preview_index:
                     continue
                 if dirty:
@@ -313,15 +316,16 @@ def open_source(a, check_cancel=None, metadata=None):
         return (TrailDemoSource if a.demo_scene == "trail" else DemoSource)(a.start + a.seconds)
     auto_camera = a.show_camera_fov and camera_settings(a) is None
     auto_scan = a.show_scan and not a.scan_topic
-    if metadata is None and (auto_camera or auto_scan):
+    if metadata is None and (auto_camera or auto_scan or not a.speed_topic):
         metadata = inspect_bag(a.bag, check_cancel)
+    speed_topic = a.speed_topic or suggested_velocity_topic(metadata["topics"], a.odom_topic, a.body.strip("/"))
     scan_topic = a.scan_topic
     if auto_scan:
         scan_topic = suggested_topic(metadata["topics"], "scan", a.world.lstrip("/"), a.body.lstrip("/"))
     source = BagSource(a.bag, a.cloud_topic, a.odom_topic, a.world, a.body, a.pose_source,
                        a.max_gap, extrinsics(a.extrinsics), plan_topic=a.plan_topic,
                        corridor_topic=a.corridor_topic, scan_topic=scan_topic, goal_topic=a.goal_topic,
-                       plan_frame=a.plan_frame).index(check_cancel)
+                       plan_frame=a.plan_frame, speed_topic=speed_topic).index(check_cancel)
     if auto_camera:
         source.detect_camera(a.camera_info_topic, metadata)
     return source

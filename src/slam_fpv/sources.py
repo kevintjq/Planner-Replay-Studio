@@ -1,11 +1,13 @@
 """Offline ROS1 bag reader using message timestamps for synchronized replay."""
+from bisect import bisect_left
+from math import hypot, isfinite
 from pathlib import Path
 import numpy as np
 from rosbags.highlevel import AnyReader
 from .geometry import TransformTree, transform_points
 from .cloud import decode
 from .spatial import CLOUD, CORRIDOR_TYPES, GOAL_TYPES, PLAN_TYPES, GeometryTimeline
-from .sensor_topics import SCAN_TYPES, camera_choices, connected_frames, inspect_metadata, planner_map_topic, scan_points
+from .sensor_topics import ODOM, SCAN_TYPES, TWIST, VELOCITY_TYPES, camera_choices, connected_frames, inspect_metadata, planner_map_topic, scan_points
 
 
 def inspect_bag(path, check_cancel=None):
@@ -41,7 +43,8 @@ def add_tf(tree, msg, static=False):
 
 class BagSource:
     def __init__(self, path, cloud_topic, odom_topic, world, body, pose_source='odom', max_gap=.5, extrinsics=(), *,
-                 plan_topic=None, corridor_topic=None, scan_topic=None, goal_topic=None, plan_frame='world'):
+                 plan_topic=None, corridor_topic=None, scan_topic=None, goal_topic=None, plan_frame='world',
+                 speed_topic=None):
         self.path, self.cloud_topic = Path(path), cloud_topic
         self.planner_map = planner_map_topic(cloud_topic)
         self.world, self.body = world.lstrip('/'), body.lstrip('/')
@@ -50,6 +53,10 @@ class BagSource:
         self.odom_topic = odom_topic
         self.extrinsics = extrinsics
         self.scan_topic = scan_topic
+        self.speed_topic = speed_topic
+        self.velocity_samples = {}
+        self.velocity_times = []
+        self.velocity_gap = round(max_gap * 1e9)
         self.detected_camera = None
         self.camera_topic = None
         self.camera_issue = "缺少有效 CameraInfo"
@@ -74,13 +81,15 @@ class BagSource:
             specifications = [(topic, types) for topic, types, _ in self.mission.values()]
             if self.scan_topic:
                 specifications.append((self.scan_topic, SCAN_TYPES))
+            if self.speed_topic:
+                specifications.append((self.speed_topic, VELOCITY_TYPES))
             for topic, types in specifications:
                 connections = [c for c in reader.connections if c.topic == topic]
                 if not connections or any(c.msgtype not in types for c in connections):
                     raise ValueError(f"{topic}: 缺少话题或消息类型不匹配 ({', '.join(types)})")
             mission_topics = {topic for topic, _, _ in self.mission.values()}
             wanted = [c for c in reader.connections if c.topic in mission_topics or c.topic in
-                      (self.cloud_topic, self.odom_topic, '/tf', '/tf_static')]
+                      (self.cloud_topic, self.odom_topic, self.speed_topic, '/tf', '/tf_static')]
             clouds = [c for c in wanted if c.topic == self.cloud_topic]
             if not clouds or any(c.msgtype != 'sensor_msgs/msg/PointCloud2' for c in clouds):
                 raise ValueError("Cloud topic missing or not sensor_msgs/PointCloud2; Livox CustomMsg needs SLAM/driver conversion")
@@ -89,6 +98,8 @@ class BagSource:
                 if check_cancel is not None:
                     check_cancel()
                 msg = reader.deserialize(raw, c.msgtype)
+                if c.topic == self.speed_topic:
+                    self.add_velocity(c.msgtype, msg, recorded)
                 for topic, _, timeline in self.mission.values():
                     if c.topic == topic:
                         timeline.add(c.msgtype, msg, recorded)
@@ -123,9 +134,35 @@ class BagSource:
                 raise ValueError("Extrinsic duplicates recorded TF")
             self.tree.add(parent, child, 0, p, q, True)
         self.tree.prepare()
+        self.velocity_times = sorted(self.velocity_samples)
         for _, _, timeline in self.mission.values():
             timeline.prepare()
         return self
+
+    def add_velocity(self, kind, msg, recorded):
+        if kind == TWIST:
+            t, linear = recorded, msg.linear
+        else:
+            try:
+                t = stamp(msg)
+            except ValueError:
+                return
+            linear = msg.twist.twist.linear if kind == ODOM else msg.twist.linear
+        speed = hypot(linear.x, linear.y, linear.z)
+        self.velocity_samples[t] = speed if isfinite(speed) else None
+
+    def flight_speed(self, t):
+        times = self.velocity_times
+        i = bisect_left(times, t)
+        if i < len(times) and times[i] == t:
+            return self.velocity_samples[t]
+        if 0 < i < len(times) and times[i] - times[i-1] <= self.velocity_gap:
+            left, right = times[i-1:i+1]
+            before, after = self.velocity_samples[left], self.velocity_samples[right]
+            if before is not None and after is not None:
+                fraction = (t-left)/(right-left)
+                return (1-fraction)*before + fraction*after
+        return None
 
     def detect_camera(self, topic, metadata):
         frames = connected_frames(self.world, self.tree.edges)

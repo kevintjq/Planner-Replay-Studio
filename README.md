@@ -55,6 +55,9 @@ All clips use the same bag timeline and keep their own trim ranges and anchors. 
 | Safety corridor | `Marker` or `MarkerArray` with line strips, line lists, triangles or cubes |
 | Camera FOV | `CameraInfo` and optical-frame TF |
 | Latest LiDAR scan | `PointCloud2`, Livox `CustomMsg` or `LaserScan` |
+| Speed gauge | 3D linear speed in m/s from `Odometry`, `TwistStamped` or `Twist` |
+
+Choose a speed topic under **Data → Data source**. Automatic selection prefers odometry for the current vehicle. The gauge shows a dash when no valid reading is available. Stamped messages use header time, and `Twist` uses bag recording time.
 
 Topics and frames are detected automatically and can be changed in the dropdowns. Enable data under **Spatial overlays**, then choose what each view shows. Use **Lines and markers** to set actual path, planned path and TF widths independently, and to size the solid goal dot. The preview reports scan source, age and missing data.
 

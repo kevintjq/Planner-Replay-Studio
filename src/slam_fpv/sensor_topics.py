@@ -13,6 +13,23 @@ POINT_TYPES = (CLOUD, *LIVOX_TYPES)
 SCAN_TYPES = (*POINT_TYPES, LASER_SCAN)
 ODOM = "nav_msgs/msg/Odometry"
 TF = "tf2_msgs/msg/TFMessage"
+TWIST_STAMPED = "geometry_msgs/msg/TwistStamped"
+TWIST = "geometry_msgs/msg/Twist"
+VELOCITY_TYPES = (ODOM, TWIST_STAMPED, TWIST)
+
+
+def suggested_velocity_topic(topics, odometry, body):
+    usable = [row for row in topics if row["type"] in VELOCITY_TYPES and row["count"]]
+    if any(row["topic"] == odometry and row["type"] == ODOM and row.get("child") == body for row in usable):
+        return odometry
+    for row in usable:
+        if row["type"] == ODOM and row.get("child") == body:
+            return row["topic"]
+    for suffix in ("local_position/velocity_local", "local_position/velocity_body", "velocity"):
+        for row in usable:
+            if row["type"] in (TWIST_STAMPED, TWIST) and row["topic"].endswith("/" + suffix):
+                return row["topic"]
+    return None
 
 
 def planner_map_topic(topic):

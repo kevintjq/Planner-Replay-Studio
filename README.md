@@ -56,9 +56,11 @@ All clips use the same bag timeline and keep their own trim ranges and anchors. 
 | Camera FOV | `CameraInfo` and optical-frame TF |
 | Latest LiDAR scan | `PointCloud2`, Livox `CustomMsg` or `LaserScan` |
 
-Topics and frames are detected automatically and can be changed in the dropdowns. Enable data under **Spatial overlays**, then choose what each view shows. Adjust actual and planned path widths under **Quality**. The preview reports scan source, age and missing data.
+Topics and frames are detected automatically and can be changed in the dropdowns. Enable data under **Spatial overlays**, then choose what each view shows. Use **Lines and markers** to set actual path, planned path and TF widths independently, and to size the solid goal dot. The preview reports scan source, age and missing data.
 
 SUPER defaults to `visualization/exp_traj` and `visualization/exp_sfc` when present. EGO prefers `planning/bspline` and can also use `optimal_list`. EGO B-splines default to `world`, which can be changed below the trajectory topic. Goals and trajectories switch independently.
+
+Scroll over a point-cloud view to zoom it. Each view also has a camera zoom percentage that is saved with the project.
 
 ## Timeline
 

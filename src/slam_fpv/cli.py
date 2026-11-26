@@ -52,6 +52,8 @@ def parser(parser_class=argparse.ArgumentParser):
         x.add_argument('--inset-height',type=float,default=6.7)
         x.add_argument('--axis',type=float,default=.48)
         x.add_argument('--axis-pixels',type=float,default=28)
+        x.add_argument('--axis-width',type=float,default=5,help='TF axis line width in pixels')
+        x.add_argument('--goal-size',type=float,default=24,help='Goal dot diameter in pixels')
         x.add_argument('--point-size',type=float,default=2)
         x.add_argument('--voxel',type=float,default=.08)
         x.add_argument('--max-points',type=int,default=200000)
@@ -61,9 +63,9 @@ def parser(parser_class=argparse.ArgumentParser):
         x.add_argument('--slam-view',action='store_true',help='Unlit LiDAR points and foreground trajectory')
         x.add_argument('--cloud-color',type=hex_color,default='#70d9ff')
         x.add_argument('--trajectory-color',type=hex_color,default=None)
-        x.add_argument('--trajectory-width',type=float,default=3,help='Actual flight path width in pixels')
+        x.add_argument('--trajectory-width',type=float,default=5,help='Actual flight path width in pixels')
         if name != 'listen':
-            x.add_argument('--plan-width',type=float,default=3,help='Planned trajectory width in pixels')
+            x.add_argument('--plan-width',type=float,default=6,help='Planned trajectory width in pixels')
         x.add_argument('--supersample',type=int,choices=(1,2),default=1)
         x.add_argument('--crf',type=int,choices=range(0,52),default=None,metavar='0–51')
         x.add_argument('--encoder',choices=('auto','cpu','nvenc'),default='cpu')
@@ -115,7 +117,7 @@ def extrinsics(path):
     return [(v['parent'],v['child'],v['translation'],v['quaternion_xyzw']) for v in data]
 
 
-def make_renderer(a, *, clean=False, view_modes=None, main_mode="rear", view_widths=None, overlays=None):
+def make_renderer(a, *, clean=False, view_modes=None, main_mode="rear", view_widths=None, overlays=None, view_zooms=None):
     from .renderer import Renderer
     solid = rgb_bytes(a.cloud_color) if a.color == 'solid' else None
     trajectory = ((1,.73,.18) if a.trajectory_color is None
@@ -123,8 +125,9 @@ def make_renderer(a, *, clean=False, view_modes=None, main_mode="rear", view_wid
     return Renderer(a.width,a.height,not a.no_edl and not a.slam_view,a.axis,a.axis_pixels,a.point_size,
                     a.distance,a.camera_height,a.side,a.fov,a.inset_distance,a.inset_height,
                     supersample=a.supersample,cloud_color=solid,trajectory_color=trajectory,
-                    trajectory_width=a.trajectory_width, plan_width=getattr(a, 'plan_width', 3.), clean=clean,slam_view=a.slam_view,view_modes=view_modes,
-                    main_mode=main_mode,view_widths=view_widths,overlays=overlays)
+                    trajectory_width=a.trajectory_width, plan_width=getattr(a, 'plan_width', 6.),
+                    axis_width=a.axis_width, goal_size=a.goal_size, clean=clean,slam_view=a.slam_view,view_modes=view_modes,
+                    main_mode=main_mode,view_widths=view_widths,overlays=overlays,view_zooms=view_zooms)
 
 
 class Export:
@@ -177,7 +180,9 @@ def render(a, source, *, preview=None, preview_offset=0, preview_data=None, even
                                      main_mode="rear" if project is None else project.main_view.kind,
                                      view_widths=None if project is None else tuple(view.width for view in project.views),
                                      overlays=None if project is None else tuple(
-                                         view.overlays for view in (project.main_view, *project.views)))
+                                         view.overlays for view in (project.main_view, *project.views)),
+                                     view_zooms=None if project is None else tuple(
+                                         view.zoom for view in (project.main_view, *project.views)))
             stack.callback(renderer.close)
             output = None
             if preview is None:
@@ -305,7 +310,7 @@ def video_edit(a):
 
 def validate(a):
     positive=['fps','seconds','width','height','distance','inset_distance','inset_height',
-              'axis','axis_pixels','point_size','max_points','trajectory_width']
+              'axis','axis_pixels','point_size','max_points','trajectory_width','axis_width','goal_size']
     if any(not np.isfinite(getattr(a,k)) or getattr(a,k)<=0 for k in positive):
         raise ValueError('Sizes, distances, rates and duration must be finite and positive')
     if not np.isfinite(a.voxel) or a.voxel < 0:

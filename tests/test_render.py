@@ -184,3 +184,37 @@ def test_per_view_filters_keep_scan_out_of_selected_fpvs():
         assert any(scene == renderer.views[1][1] for scene, _ in renderer.dynamic)
     finally:
         renderer.close()
+
+
+def test_views_zoom_independently_and_goal_is_a_sized_disk():
+    from slam_fpv.renderer import SPATIAL_COLORS, zoomed_fov
+    from slam_fpv.spatial import Geometry, SpatialFrame
+
+    source = DemoSource(1)
+    pose = source.pose(source.first)
+    base, focus, _ = view_camera(pose, "rear", (5., 3., 0.), (10., 7., 0.), 0.)
+    near, target, _ = view_camera(pose, "rear", (5., 3., 0.), (10., 7., 0.), 0., zoom=2.)
+    np.testing.assert_allclose(target, focus)
+    np.testing.assert_allclose(near-focus, (base-focus)/2.)
+    raw = view_camera(pose, "fpv_raw", (5., 3., 0.), (10., 7., 0.), 0., zoom=3.)[0]
+    np.testing.assert_allclose(raw, pose[:3, 3] + pose[:3, 0]*.12)
+
+    goal = Geometry(goals=(focus[None, :],))
+    spatial = SpatialFrame((), (), None, None, (goal,))
+    renderer = Renderer(320, 180, edl=False, slam_view=True, view_modes=("fpv",),
+                        view_zooms=(1.25, 2.), axis_width=6, goal_size=30,
+                        overlays=(("goal",), ()))
+    try:
+        renderer.frame(pose, (), "", spatial=spatial)
+        main, fpv = (scene.GetActiveCamera() for scene, _ in renderer.views)
+        assert main.GetViewAngle() == 65
+        assert abs(fpv.GetViewAngle() - zoomed_fov(65, 2.)) < 1e-6
+        actors = [actor for _, actor in renderer.dynamic if isinstance(actor, vtk.vtkActor2D)]
+        disk, = [actor for actor in actors if actor.GetProperty().GetColor() == SPATIAL_COLORS["goal"]]
+        mesh = disk.GetMapper().GetInput()
+        assert mesh.GetNumberOfPolys() == 1 and mesh.GetNumberOfLines() == 0
+        left, right, bottom, top, *_ = mesh.GetBounds()
+        np.testing.assert_allclose((right-left, top-bottom), (30., 30.))
+        assert any(actor.GetProperty().GetLineWidth() == 6 for actor in actors)
+    finally:
+        renderer.close()

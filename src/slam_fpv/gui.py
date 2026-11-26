@@ -16,7 +16,9 @@ from tkinter import colorchooser, filedialog, messagebox, ttk
 from PIL import Image, ImageDraw, ImageTk
 
 from .cli import extrinsics, open_source, parser, render, validate
-from .composition import LAYOUT_NAMES, Composition, LayoutCue, compose, placement_axis, rounded_mask
+from .composition import (
+    LAYOUT_NAMES, MAX_CAMERA_ZOOM, MIN_CAMERA_ZOOM, Composition, LayoutCue, compose, placement_axis, rounded_mask,
+)
 from .desktop_style import INK, desktop_style
 from .timeline import Timeline
 from .layer_controls import LayerControls
@@ -62,6 +64,7 @@ class RendererApp(LayerControls):
         self.video_editor = None
         self.layer_bounds = {}
         self.view_bounds = None
+        self.zoom_job = None
         self.bag_path = None
         self.bag_metadata = None
         self.demo_selected = False
@@ -83,6 +86,8 @@ class RendererApp(LayerControls):
         ttk.Label(header, text="合成工作台", style="Subtitle.TLabel").pack(side="left", padx=13)
         ttk.Button(header, text="主视角", command=lambda: self.edit_cloud_view("main", 0),
                    style="Shell.TButton").pack(side="right")
+        ttk.Button(header, text="线条与标记", command=self.edit_render_marks,
+                   style="Shell.TButton").pack(side="right", padx=(6, 0))
         ttk.Button(header, text="保存项目", command=self.save_workspace, style="Shell.TButton").pack(side="right", padx=6)
         ttk.Button(header, text="打开项目", command=self.open_workspace, style="Shell.TButton").pack(side="right")
 
@@ -96,6 +101,7 @@ class RendererApp(LayerControls):
         preview_header.pack(fill="x", pady=(0, 8))
         self.preview_label = ttk.Label(preview_header, text="画面预览", style="PanelTitle.TLabel")
         self.preview_label.pack(side="left")
+        ttk.Label(preview_header, text="点云画面上滚轮缩放", style="Quiet.TLabel").pack(side="left", padx=10)
         self.transparent_canvas = tk.BooleanVar(value=False)
         ttk.Checkbutton(preview_header, text="透明画布", variable=self.transparent_canvas,
                         command=self.toggle_canvas).pack(side="right")
@@ -109,6 +115,9 @@ class RendererApp(LayerControls):
         self.canvas.bind("<ButtonPress-1>", self.start_drag)
         self.canvas.bind("<B1-Motion>", self.move_layer)
         self.canvas.bind("<ButtonRelease-1>", lambda _: self.end_drag())
+        self.canvas.bind("<MouseWheel>", self.zoom_preview)
+        self.canvas.bind("<Button-4>", lambda event: self.zoom_preview(event, 1))
+        self.canvas.bind("<Button-5>", lambda event: self.zoom_preview(event, -1))
 
         self.timeline = Timeline(viewer, self.seek_timeline, self.apply_interval, self.font, self.jump_cue)
         self.timeline.pack(fill="x", pady=(7, 0))
@@ -189,8 +198,10 @@ class RendererApp(LayerControls):
         self.field(quality, 7, "点云着色", "color", "SLAM 高度彩虹", ("SLAM 高度彩虹", "原始 RGB", "按高度", "自选纯色"))
         self.color_field(quality, 8, "点云纯色", "cloud_color", "#70d9ff")
         self.color_field(quality, 9, "轨迹颜色", "trajectory_color", "#f9d74b")
-        self.field(quality, 10, "已飞轨迹线宽 (px)", "trajectory_width", "3")
-        self.field(quality, 11, "规划轨迹线宽 (px)", "plan_width", "3")
+        self.field(quality, 10, "已飞轨迹线宽 (px)", "trajectory_width", "5")
+        self.field(quality, 11, "规划轨迹线宽 (px)", "plan_width", "6")
+        self.values["axis_width"] = tk.StringVar(value="5")
+        self.values["goal_size"] = tk.StringVar(value="24")
         self.field(quality, 12, "高度范围 (m)", "height_range", "")
         self.edl = tk.BooleanVar(value=True)
         self.slam_view = tk.BooleanVar(value=True)
@@ -650,7 +661,7 @@ class RendererApp(LayerControls):
         args += ["--output", str(destination), "--width", width, "--height", height]
         keys = ("start", "seconds", "fps", "supersample", "crf", "voxel", "max_points", "point_size",
                 "cloud_color", "trajectory_color", "trajectory_width", "plan_width", "distance", "camera_height",
-                "side", "fov", "inset_distance", "inset_height", "axis", "axis_pixels")
+                "side", "fov", "inset_distance", "inset_height", "axis", "axis_pixels", "axis_width", "goal_size")
         if self.bag_path is not None:
             if not values["cloud_topic"] or not values["world"] or not values["body"]:
                 raise ValueError("缺少点云话题或无法自动确定坐标系。请检查 bag，或从列表选择世界、机体坐标系。")
@@ -941,6 +952,57 @@ class RendererApp(LayerControls):
                 self.resize_handle = right-5, bottom-5
                 hx, hy = self.resize_handle
                 self.canvas.create_oval(hx-4, hy-4, hx+4, hy+4, fill="#FFFFFF", outline="#0A84FF", width=2)
+
+    def edit_render_marks(self):
+        if self.busy:
+            return
+        settings = (("trajectory_width", "已飞轨迹线宽 (px)"), ("plan_width", "规划轨迹线宽 (px)"),
+                    ("axis_width", "TF 三轴线宽 (px)"), ("goal_size", "目标点直径 (px)"))
+
+        def apply(values):
+            for key, label in settings:
+                amount = float(values[key])
+                if not isfinite(amount) or amount <= 0:
+                    raise ValueError(f"{label}须大于 0。")
+            for key, _ in settings:
+                self.values[key].set(values[key])
+            if self.frame is not None:
+                self.root.after_idle(lambda: self.start_render(True))
+
+        self.layer_dialog("线条与标记",
+                          tuple((key, label, self.values[key].get()) for key, label in settings), apply)
+
+    def zoom_preview(self, event, steps=None):
+        if self.busy or self.frame is None:
+            return
+        if steps is None:
+            steps = max(-5., min(5., event.delta / 120))
+        if not steps:
+            return
+        # Choose the topmost point-cloud viewport under the cursor. HUDs may
+        # sit over a viewport and should not prevent camera navigation.
+        for key, (left, top, width, height) in reversed(self.layer_bounds.items()):
+            if not (left <= event.x < left+width and top <= event.y < top+height):
+                continue
+            if key[0] == "video":
+                return "break"
+            if key[0] not in ("main", "view"):
+                continue
+            kind, index = key
+            view = self.layers(kind)[index]
+            zoom = min(MAX_CAMERA_ZOOM, max(MIN_CAMERA_ZOOM, view.zoom * 1.18**steps))
+            if zoom != view.zoom:
+                self.replace_layer(kind, index, replace(view, zoom=zoom), redraw=False)
+                if self.zoom_job is not None:
+                    self.root.after_cancel(self.zoom_job)
+                self.zoom_job = self.root.after(150, self.render_zoom)
+                self.status.set(f"{'主视角' if kind == 'main' else '点云小窗'}缩放 {zoom:.0%}")
+            return "break"
+
+    def render_zoom(self):
+        self.zoom_job = None
+        if not self.busy and self.frame is not None:
+            self.start_render(True)
 
     def start_drag(self, event):
         if self.busy:

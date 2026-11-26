@@ -319,16 +319,17 @@ class LayerControls:
             selected = tuple(key for key in VIEW_OVERLAYS if values[key])
             overlays = layer.overlays if set(selected) == visible else selected
             change = replace(layer, kind=mode, width=float(values["width"])/100, overlays=overlays,
-                             transparent=values["background"] == MATTE_OPTIONS[0])
+                             zoom=float(values["zoom"])/100, transparent=values["background"] == MATTE_OPTIONS[0])
             self.replace_layer(kind, index, change)
-            if self.frame is not None and (mode != layer.kind or overlays != layer.overlays):
+            if self.frame is not None and (mode != layer.kind or overlays != layer.overlays or change.zoom != layer.zoom):
                 self.root.after_idle(lambda: self.start_render(True))
 
         self.layer_dialog("主视角设置" if kind == "main" else "点云小窗设置", (
             ("camera", "机位", POINT_CLOUD_VIEWS[layer.kind][0], tuple(choices)),
-            ("width", "宽度 (%)", f"{layer.width*100:g}"),
+            ("width", "图层宽度 (%)", f"{layer.width*100:g}"),
+            ("zoom", "相机缩放 (%)", f"{layer.zoom*100:g}"),
             background_field(layer.transparent),
-        ), save, switches=switches, note="叠加项由本视角与「空间叠加」共同控制。FPV 始终隐藏轨迹线。")
+        ), save, switches=switches, note="预览中也可用滚轮缩放。叠加项由本视角与「空间叠加」共同控制。")
 
     def edit_text(self, index=None):
         if index is None:

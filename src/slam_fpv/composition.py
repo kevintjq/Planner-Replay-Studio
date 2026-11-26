@@ -77,6 +77,7 @@ VIEW_OVERLAYS = {
     "camera": "相机 FOV",
 }
 FPV_MODES = {"fpv", "fpv_raw"}
+MIN_CAMERA_ZOOM, MAX_CAMERA_ZOOM = .5, 4.
 
 
 def view_overlays(kind, selected=None):
@@ -92,11 +93,14 @@ class PointCloudView:
     position: tuple = (.97, .05)
     transparent: bool = True
     overlays: tuple | None = None
+    zoom: float = 1.
 
     def __post_init__(self):
         if self.overlays is not None and (len(set(self.overlays)) != len(self.overlays)
                                          or not set(self.overlays) <= VIEW_OVERLAYS.keys()):
             raise ValueError("未知或重复的视角叠加项。")
+        if not MIN_CAMERA_ZOOM <= self.zoom <= MAX_CAMERA_ZOOM:
+            raise ValueError("相机缩放须为 50–400%。")
         if self.kind not in POINT_CLOUD_VIEWS:
             raise ValueError("未知的点云视角。")
         if not .12 <= self.width <= 1.5:

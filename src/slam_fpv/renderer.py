@@ -71,14 +71,14 @@ def spatial_polydata(groups, surface=False):
     return poly
 
 
-def overlay_lines(groups, color, width, *, screen_space=False, colors=None):
+def overlay_lines(groups, color, width, *, screen_space=False, colors=None, filled=False):
     coordinate = vtk.vtkCoordinate()
     if screen_space:
         coordinate.SetCoordinateSystemToDisplay()
     else:
         coordinate.SetCoordinateSystemToWorld()
     mapper = vtk.vtkPolyDataMapper2D()
-    mesh = spatial_polydata(groups)
+    mesh = spatial_polydata(groups, surface=filled)
     if colors is not None:
         rgb = np.rint(np.asarray(colors) * 255).astype(np.uint8)
         mesh.GetCellData().SetScalars(numpy_to_vtk(rgb, deep=True))
@@ -115,7 +115,7 @@ def mission_actor(groups, color, width, *, surface=False):
     return actor
 
 
-def view_camera(pose, mode, rear, oblique, elapsed, fpv_pose=None):
+def view_camera(pose, mode, rear, oblique, elapsed, fpv_pose=None, *, zoom=1.):
     distance, height, side = oblique
     if mode in FPV_MODES:
         if mode == "fpv":
@@ -140,13 +140,40 @@ def view_camera(pose, mode, rear, oblique, elapsed, fpv_pose=None):
             "low": (distance * .63, height * .12, side),
         }[mode]
     position, target = camera(pose, *geometry, lookahead=1.5 if mode in {"main", "rear"} else 0.)
-    return position, target, (0., 0., 1.)
+    return target + (position-target)/zoom, target, (0., 0., 1.)
+
+
+def zoomed_fov(fov, zoom):
+    return float(np.clip(np.rad2deg(2 * np.arctan(np.tan(np.deg2rad(fov/2)) / zoom)), 1., 170.))
+
+
+def goal_disks(scene, goals, diameter):
+    """Project each visible world-space goal and draw one solid screen-space disk."""
+    angles = np.linspace(0, tau, 32, endpoint=False)
+    disk = diameter/2 * np.column_stack((np.cos(angles), np.sin(angles), np.zeros_like(angles)))
+    camera = scene.GetActiveCamera()
+    eye, direction = np.asarray(camera.GetPosition()), np.asarray(camera.GetDirectionOfProjection())
+    near, far = camera.GetClippingRange()
+    width, height = scene.GetSize()
+    radius = diameter/2
+    disks = []
+    for shape in goals:
+        for group in shape.goals:
+            for point in group:
+                if not near <= np.dot(point-eye, direction) <= far:
+                    continue
+                scene.SetWorldPoint(*point, 1.)
+                scene.WorldToDisplay()
+                x, y, _ = scene.GetDisplayPoint()
+                if -radius <= x <= width+radius and -radius <= y <= height+radius:
+                    disks.append(disk + [x, y, 0.])
+    return disks
 
 
 class Renderer:
     def __init__(self,width=1280,height=720,edl=True,axis=.48,axis_pixels=28,point_size=2,
                  distance=3.8,camera_height=1.35,side=0.,fov=65,inset_distance=10,inset_height=6.7,
-                 *, supersample=1, cloud_color=None, trajectory_color=(1,.73,.18), trajectory_width=3, plan_width=3, clean=False, slam_view=False, view_modes=None, main_mode="rear", view_widths=None, overlays=None):
+                 *, supersample=1, cloud_color=None, trajectory_color=(1,.73,.18), trajectory_width=5, plan_width=6, axis_width=5, goal_size=24, clean=False, slam_view=False, view_modes=None, main_mode="rear", view_widths=None, overlays=None, view_zooms=None):
         self.output_size = (width, height)
         self.scale = supersample
         self.edl = edl
@@ -159,6 +186,9 @@ class Renderer:
         self.trajectory_color = trajectory_color
         self.trajectory_width = trajectory_width * supersample
         self.plan_width = plan_width * supersample
+        self.axis_width = axis_width * supersample
+        self.goal_size = goal_size * supersample
+        self.fov = fov
         self.camera_args=(distance,camera_height,side)
         self.inset_args=(inset_distance,inset_height,0.)
         self.windows=[]
@@ -171,6 +201,7 @@ class Renderer:
         self.modes = (main_mode, *(("oblique",) if view_modes is None else view_modes))
         settings = (None,) * len(self.modes) if overlays is None else overlays
         self.visible_overlays = tuple(view_overlays(mode, selected) for mode, selected in zip(self.modes, settings))
+        self.view_zooms = (1.,) * len(self.modes) if view_zooms is None else tuple(view_zooms)
         view_widths = (.32,) * (len(self.modes)-1) if view_widths is None else view_widths
         for index in range(len(self.modes)):
             window=vtk.vtkRenderWindow()
@@ -265,21 +296,11 @@ class Renderer:
                 overlay.AddViewProp(actor)
                 self.dynamic.append((overlay, actor))
         if "goal" in visible and frame.goal:
-            # The ring is centered at the recorded XYZ, even for a goal in the air.
-            angles = np.linspace(0, tau, 33)
-            ring = .42 * np.column_stack((np.cos(angles), np.sin(angles), np.zeros_like(angles)))
-            cross = np.array([[-.22, 0, 0], [.22, 0, 0], [0, -.22, 0], [0, .22, 0]])
-            head = np.array([[-.19, 0, .32], [0, 0, .12], [.19, 0, .32], [0, 0, .71], [0, 0, .12]])
-            camera = scene.GetActiveCamera()
-            right = np.cross(camera.GetDirectionOfProjection(), camera.GetViewUp())
-            head[:, :2] = head[:, :1] * right[:2]
-            groups = tuple(point + shape for goal in frame.goal for points in goal.goals for point in points
-                           for shape in (ring, cross[:2], cross[2:], head))
-            if groups:
-                for color, width in (((.11, .067, .013), 6.), (SPATIAL_COLORS["goal"], 2.8)):
-                    actor = overlay_lines(groups, color, width*self.scale)
-                    overlay.AddViewProp(actor)
-                    self.dynamic.append((overlay, actor))
+            disks = goal_disks(scene, frame.goal, self.goal_size)
+            if disks:
+                actor = overlay_lines(disks, SPATIAL_COLORS["goal"], 1., screen_space=True, filled=True)
+                overlay.AddViewProp(actor)
+                self.dynamic.append((overlay, actor))
         if "corridor" in visible:
             add(lines(frame.corridor), "corridor", 2.)
             triangles = tuple(triangle for shape in frame.corridor for group in shape.triangles for triangle in group)
@@ -298,9 +319,12 @@ class Renderer:
                             else label+'\nX red / Y green / Z blue | metres')
         for index,(scene,overlay) in enumerate(self.views):
             mode = self.modes[index]
-            position,target,up = view_camera(pose, mode, self.camera_args, self.inset_args, elapsed, fpv_pose)
+            zoom = self.view_zooms[index]
+            position,target,up = view_camera(pose, mode, self.camera_args, self.inset_args, elapsed, fpv_pose, zoom=zoom)
             cam=scene.GetActiveCamera(); cam.SetPosition(*position); cam.SetFocalPoint(*target)
             cam.SetViewUp(*up); cam.SetClippingRange(.035,1000)
+            if mode in FPV_MODES:
+                cam.SetViewAngle(zoomed_fov(self.fov, zoom))
             visible = self.visible_overlays[index]
             if "actual" in visible and len(trajectory)>1:
                 if self.slam_view:
@@ -329,8 +353,8 @@ class Renderer:
                 axes = pose[:3, :3]
             for j,color in reversed(list(enumerate([(1,.13,.12),(.15,1,.27),(.15,.43,1)]))):
                 points=np.array([origin, origin + axes[:, j] * length])
-                for c,w in [((.01,.015,.025),7),(color,3.5)]:
-                    actor=overlay_line(points,c,w*self.scale,screen_space=screen_space)
+                for c,w in (((.01,.015,.025), self.axis_width + 2*self.scale), (color, self.axis_width)):
+                    actor=overlay_line(points,c,w,screen_space=screen_space)
                     overlay.AddViewProp(actor); self.dynamic.append((overlay,actor))
         # Independent EDL framebuffers avoid driver-dependent viewport clearing.
         # Both use exactly the same cloud, trajectory and timestamped pose above.

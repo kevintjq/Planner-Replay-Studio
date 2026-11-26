@@ -13,7 +13,7 @@ def test_round_trip_keeps_per_clip_anchors_and_per_view_overlays(tmp_path):
     bag, extrinsics = folder / "flight.bag", folder / "tf.json"
     first, second = folder / "left.mp4", folder / "right.mp4"
     composition = Composition(
-        main_view=PointCloudView("rear", 1., (.5, .5), overlays=("actual", "scan")),
+        main_view=PointCloudView("rear", 1., (.5, .5), overlays=("actual", "scan"), zoom=1.6),
         views=(PointCloudView("oblique", overlays=("plan", "corridor")), PointCloudView("fpv", overlays=())),
         videos=(VideoLayer(first, VideoEdit(trim_in=1., anchors=((0., 2.), (6., 8.2)))),
                 VideoLayer(second, VideoEdit(crop=(.1, .1, .9, .9), anchors=((0., 1.), (6., 7.))))),

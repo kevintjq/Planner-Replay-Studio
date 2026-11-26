@@ -1,7 +1,15 @@
 import imageio.v2 as imageio
 import numpy as np
 
-from slam_fpv.trajectory_image import track_trajectory
+from slam_fpv.trajectory_image import timed_ghost_indices, track_trajectory
+
+
+def test_timed_ghost_sampling_uses_video_timestamps_and_skips_missing_frames():
+    # Variable-frame-rate timestamps with a gap in the middle.
+    samples = [(t, None) for t in (2.0, 2.09, 2.25, 2.6, 3.04, 3.05, 3.51)]
+    assert timed_ghost_indices(samples, .25) == [0, 2, 3, 4, 6]
+    assert timed_ghost_indices(samples, .5) == [0, 3, 4, 6]
+    assert timed_ghost_indices(samples, 2.) == [0]
 
 
 def test_fixed_camera_tracking_uses_selected_start_and_end(tmp_path):

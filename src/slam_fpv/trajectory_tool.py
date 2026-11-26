@@ -58,7 +58,8 @@ class TrajectoryTool:
 
         footer = ttk.Frame(panel)
         footer.pack(fill="x", pady=(10, 0))
-        self.status = tk.StringVar(value="适用于固定机位，输出半透明无人机拖影。")
+        self.interval = tk.StringVar(value="自动")
+        self.status = tk.StringVar(value="适用于固定机位。采样间隔越短，拖影越密。")
         ttk.Label(panel, textvariable=self.status, wraplength=710).pack(anchor="w", pady=(5,0))
         self.start_button = ttk.Button(footer, text="生成轨迹", style="Primary.TButton", command=self.start)
         self.start_button.pack(side="left")
@@ -66,6 +67,10 @@ class TrajectoryTool:
         self.export_button.pack(side="left", padx=7)
         self.cancel_button = ttk.Button(footer, text="取消跟踪", state="disabled", command=app.cancel)
         self.cancel_button.pack(side="right")
+        ttk.Label(footer, text="采样间隔 (s)").pack(side="left", padx=(12, 5))
+        self.interval_box = ttk.Combobox(footer, textvariable=self.interval, width=7,
+                                         values=("自动", "0.25", "0.5", "1", "2", "3"))
+        self.interval_box.pack(side="left")
         self.window.grab_set()
 
     def draw(self):
@@ -142,6 +147,13 @@ class TrajectoryTool:
             end = float(self.end.get()) if self.end.get().strip() else None
             if end is not None and (not isfinite(end) or end <= self.time):
                 raise ValueError("结束时间须晚于当前起始帧。")
+            interval_value = self.interval.get().strip()
+            try:
+                interval = None if interval_value == "自动" else float(interval_value)
+            except ValueError:
+                raise ValueError("采样间隔请选择「自动」或输入秒数。") from None
+            if interval is not None and (not isfinite(interval) or interval <= 0):
+                raise ValueError("采样间隔须为大于零的秒数。")
         except ValueError as error:
             self.status.set(str(error))
             return
@@ -153,11 +165,13 @@ class TrajectoryTool:
         self.export_button.state(["disabled"])
         self.cancel_button.state(["!disabled"])
         self.scale.state(["disabled"])
+        self.interval_box.state(["disabled"])
         self.status.set("正在跟踪无人机…")
 
         def work():
             result = track_trajectory(self.path, start, end, region, self.app.check_cancel,
-                                      lambda elapsed, total: self.app.events.put(("track_progress", (elapsed, total))))
+                                      lambda elapsed, total: self.app.events.put(("track_progress", (elapsed, total))),
+                                      sample_interval=interval)
             return "trajectory", result
 
         self.app.run_job(work, "正在从视频生成轨迹…")
@@ -167,6 +181,7 @@ class TrajectoryTool:
         self.start_button.state(["!disabled"])
         self.cancel_button.state(["disabled"])
         self.scale.state(["!disabled"])
+        self.interval_box.state(["!disabled"])
         if result is None:
             self.status.set("跟踪已停止，可重新选帧和框选。")
             return

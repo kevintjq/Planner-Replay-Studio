@@ -1,7 +1,7 @@
 """Layer translucent drone silhouettes from fixed-camera footage."""
 
 from dataclasses import dataclass
-from math import hypot, isfinite
+from math import floor, hypot, isfinite
 
 import numpy as np
 from PIL import Image
@@ -30,16 +30,33 @@ def ghost_indices(boxes):
     return chosen
 
 
-def draw_motion_shadows(reader, original, samples, size, check_cancel):
+def timed_ghost_indices(samples, interval):
+    """Take the first tracked frame at or after each interval on the video clock."""
+    if interval <= 1e-8:
+        return list(range(len(samples)))
+    first = samples[0][0]
+    chosen = [0]
+    tick = 1
+    for i, (stamp, _) in enumerate(samples[1:], 1):
+        position = (stamp - first + 1e-8) / interval
+        if position >= tick:
+            chosen.append(i)
+            tick = floor(position) + 1
+    return chosen
+
+
+def draw_motion_shadows(reader, original, samples, size, check_cancel, sample_interval=None):
     import cv2
 
     boxes = [box for _, box in samples]
-    chosen = ghost_indices(boxes)
+    chosen = ghost_indices(boxes) if sample_interval is None else timed_ghost_indices(samples, sample_interval)
     if len(chosen) < 2:
+        if sample_interval is not None:
+            raise ValueError("已跟踪片段短于采样间隔。请缩短间隔或延长片段。")
         raise ValueError("这段画面里无人机移动太小。请选一段位移更明显的视频。")
     reference = tuple(np.linspace(0, len(samples)-1, min(12, len(samples))).round().astype(int))
     frames = {}
-    for i in sorted(set(reference) | set(chosen[1:])):
+    for i in reference:
         check_cancel()
         frame = reader.select(samples[i][0])
         if frame is not None:
@@ -50,7 +67,12 @@ def draw_motion_shadows(reader, original, samples, size, check_cancel):
     painted = 0
     for step, i in enumerate(chosen[1:], 1):
         check_cancel()
-        if i not in frames:
+        frame = frames.get(i)
+        if frame is None:
+            decoded = reader.select(samples[i][0])
+            if decoded is not None:
+                frame = np.asarray(reader.image(decoded).resize(size, Image.Resampling.BILINEAR))
+        if frame is None:
             continue
         x, y, w, h = boxes[i]
         pad = max(1, round(min(w, h)*.09))
@@ -65,7 +87,7 @@ def draw_motion_shadows(reader, original, samples, size, check_cancel):
             continue
         clear = [j for j in alternatives if overlap(j) == 0][:3]
         candidates = clear or alternatives[:1]
-        crop = frames[i][y0:y1, x0:x1]
+        crop = frame[y0:y1, x0:x1]
         base = np.median([frames[j][y0:y1, x0:x1] for j in candidates], axis=0)
         difference = np.max(np.abs(crop.astype(np.float32)-base), axis=2)
         border = np.concatenate((difference[0], difference[-1], difference[:, 0], difference[:, -1]))
@@ -89,11 +111,13 @@ def draw_motion_shadows(reader, original, samples, size, check_cancel):
     return canvas.convert("RGB")
 
 
-def track_trajectory(path, start, end, region, check_cancel, progress):
+def track_trajectory(path, start, end, region, check_cancel, progress, *, sample_interval=None):
     import cv2
 
     if not isfinite(start) or start < 0 or (end is not None and (not isfinite(end) or end <= start)):
         raise ValueError("结束时间须晚于起始帧。")
+    if sample_interval is not None and (not isfinite(sample_interval) or sample_interval <= 0):
+        raise ValueError("采样间隔须为大于零的秒数。")
     with VideoReader(path) as reader:
         check_cancel()
         initial = reader.select(start)
@@ -150,5 +174,5 @@ def track_trajectory(path, start, end, region, check_cancel, progress):
             raise ValueError("跟踪未得到连续轨迹。请重选起始帧，并紧贴无人机重新框选。")
     # Tracking consumes the frame iterator directly. Use a fresh decoder for the selected timestamps.
     with VideoReader(path) as reader:
-        image = draw_motion_shadows(reader, background, samples, (width, height), check_cancel)
+        image = draw_motion_shadows(reader, background, samples, (width, height), check_cancel, sample_interval)
     return TrajectoryResult(image, tuple(points), first, last, lost_at)

@@ -33,10 +33,10 @@ def decode(msg):
     return xyz[mask], None if rgb is None else rgb[mask]
 
 
-# A height palette with visible cyan/green midtones and cool upper returns.
+# Low returns are green, with cyan, blue and violet above them.
 SCAN_COLORS = np.array([
-    [41, 37, 149], [29, 83, 241], [22, 177, 255], [56, 244, 230],
-    [60, 237, 132], [180, 248, 70], [245, 189, 74], [177, 70, 230],
+    [30, 148, 47], [36, 234, 77], [26, 241, 155], [18, 214, 230],
+    [25, 131, 255], [52, 61, 251], [114, 46, 235], [172, 79, 237],
 ], dtype=float)
 
 

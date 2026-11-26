@@ -74,11 +74,11 @@ Scroll over a point-cloud view to zoom it. Each view also has a camera zoom perc
 - Set a layout marker at the playhead to switch between the composition, full-screen point cloud, and full-screen footage. Click a purple marker to jump back to it.
 - Keep the cloud layer transparent and add **Footage backdrop** then **Footage inset** markers for the same clip. The second marker starts a 0.4-second transition by default.
 
-The default **FAST-LIO gray** option displays points in one neutral color. Color modes remain available in the quality settings.
+The default SLAM palette colors points green, cyan, blue and purple by height. Select **FAST-LIO gray** in the quality settings for a single neutral color. Rear and oblique views can show the yellow flown path and moving TF axes. FPV hides the flown path and retains the axes.
 
 ## Fixed-camera trajectory image
 
-Open **Fixed-camera trajectory** and choose a stationary-camera video. Seek to a clear frame, draw a box around the drone, generate the trajectory, then review and save the PNG. Leave the end blank to track to the end of the clip. The PNG layers high-opacity drone silhouettes from the same camera. Tracking stops if the target is lost.
+Open **Fixed-camera trajectory**, pick a starting frame and draw a box around the drone. Select or enter a sampling interval in video seconds, or use automatic spacing based on screen movement. Generate the silhouettes, then review and save the PNG. Leave the end blank to track to the end of the clip. Tracking stops if the target is lost.
 
 ## Save and export
 

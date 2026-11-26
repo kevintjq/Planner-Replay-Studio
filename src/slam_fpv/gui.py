@@ -510,8 +510,8 @@ class RendererApp(LayerControls):
         self.field(quality, 4, "体素 (m，0 为原始)", "voxel", ".015")
         self.field(quality, 5, "点数上限", "max_points", "850000")
         self.field(quality, 6, "点大小 (px)", "point_size", "1.5")
-        self.field(quality, 7, "点云着色", "color", "SLAM 高度彩虹",
-                   ("SLAM 高度彩虹", "FAST-LIO 灰白", "原始 RGB", "按高度", "自选纯色"))
+        self.field(quality, 7, "点云着色", "color", "雷达距离渐变",
+                   ("雷达距离渐变", "SLAM 高度彩虹", "FAST-LIO 灰白", "原始 RGB", "按高度", "自选纯色"))
         self.color_field(quality, 8, "点云纯色", "cloud_color", "#70d9ff")
         self.color_field(quality, 9, "轨迹颜色", "trajectory_color", "#f9d74b")
         self.field(quality, 10, "已飞轨迹线宽 (px)", "trajectory_width", "5")
@@ -519,6 +519,7 @@ class RendererApp(LayerControls):
         self.values["axis_width"] = tk.StringVar(value="5")
         self.values["goal_size"] = tk.StringVar(value="24")
         self.field(quality, 12, "高度范围 (m)", "height_range", "")
+        self.field(quality, 14, "近距、远距 (m)", "range_limits", "")
         self.edl = tk.BooleanVar(value=True)
         self.slam_view = tk.BooleanVar(value=True)
         render_styles = ttk.Frame(quality)
@@ -1101,7 +1102,7 @@ class RendererApp(LayerControls):
             args += ["--pose-source", "odom" if values["pose_source"] == "Odometry" else "tf"]
             if values["extrinsics"]:
                 keys += ("extrinsics",)
-        color = {"FAST-LIO 灰白": "solid", "SLAM 高度彩虹": "scan", "原始 RGB": "rgb",
+        color = {"雷达距离渐变": "range", "FAST-LIO 灰白": "solid", "SLAM 高度彩虹": "scan", "原始 RGB": "rgb",
                  "按高度": "height", "自选纯色": "solid"}[values["color"]]
         if values["color"] == "FAST-LIO 灰白":
             values["cloud_color"] = "#DEE3E8"
@@ -1110,6 +1111,9 @@ class RendererApp(LayerControls):
         if values["height_range"]:
             limits = values["height_range"].replace("，", " ").replace(",", " ").split()
             args += ["--height-range", *limits]
+        if color == "range" and values["range_limits"]:
+            limits = values["range_limits"].replace("，", " ").replace(",", " ").split()
+            args += ["--range-limits", *limits]
         if self.slam_view.get():
             args.append("--slam-view")
         mode = "accumulate" if values["cloud_mode"] == "累积扫描" else "replace"

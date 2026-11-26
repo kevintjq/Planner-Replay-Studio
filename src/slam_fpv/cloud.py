@@ -33,16 +33,16 @@ def decode(msg):
     return xyz[mask], None if rgb is None else rgb[mask]
 
 
-# Low returns are green, with cyan, blue and violet above them.
+# Green at the low end, violet at the high end.
 SCAN_COLORS = np.array([
     [30, 148, 47], [36, 234, 77], [26, 241, 155], [18, 214, 230],
     [25, 131, 255], [52, 61, 251], [114, 46, 235], [172, 79, 237],
 ], dtype=float)
 
 
-def scan_colors(z, limits):
+def scan_colors(values, limits):
     low, high = limits
-    scale = np.clip((z - low) / (high - low), 0., 1.) * (len(SCAN_COLORS) - 1)
+    scale = np.clip((values - low) / (high - low), 0., 1.) * (len(SCAN_COLORS) - 1)
     return np.column_stack([
         np.interp(scale, np.arange(len(SCAN_COLORS)), SCAN_COLORS[:, channel])
         for channel in range(3)
@@ -50,14 +50,25 @@ def scan_colors(z, limits):
 
 
 class CloudMap:
-    def __init__(self, voxel=.08, max_points=200000, *, scan_height=False, height_limits=None):
+    def __init__(self, voxel=.08, max_points=200000, *, scan_height=False, height_limits=None,
+                 range_color=False, range_limits=None):
         self.voxel, self.max_points = voxel, max_points
         self.scan_height, self.height_limits = scan_height, height_limits
+        self.range_color, self.range_limits = range_color, range_limits
         self.xyz = np.empty((0, 3))
         self.rgb = np.empty((0, 3), dtype='u1')
 
-    def add(self, xyz, rgb=None, replace=False):
-        if self.scan_height:
+    def add(self, xyz, rgb=None, replace=False, *, origin=None):
+        if self.range_color:
+            if origin is not None and len(xyz):
+                ranges = np.linalg.norm(xyz - origin, axis=1)
+                if self.range_limits is None:
+                    low, high = np.percentile(ranges, (2, 98))
+                    self.range_limits = float(low), float(max(high, low + .5))
+                rgb = scan_colors(ranges, self.range_limits)
+            else:
+                rgb = np.broadcast_to(np.array([222, 227, 232], dtype='u1'), xyz.shape)
+        elif self.scan_height:
             if self.height_limits is None and len(xyz):
                 low, high = np.percentile(xyz[:, 2], (2, 98))
                 self.height_limits = float(low), float(max(high, low + .5))

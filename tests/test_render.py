@@ -9,6 +9,15 @@ from slam_fpv.cloud import CloudMap
 from slam_fpv.sources import DemoSource
 
 
+def test_world_path_crossing_camera_is_clipped_without_a_bridge():
+    from slam_fpv.renderer import clip_near_plane
+
+    points = np.array([[0., 0., 2.], [0., 0., -1.], [4., 0., -1.], [4., 0., 2.]])
+    left, right = clip_near_plane(points, points[:, 2], .1)
+    np.testing.assert_allclose(left, [[0, 0, 2], [0, 0, .1]])
+    np.testing.assert_allclose(right, [[4, 0, .1], [4, 0, 2]])
+
+
 def test_edl_two_view_frame_and_rgb_axes():
     s=DemoSource(1); _,xyz,rgb=next(s.clouds())
     m=CloudMap(); m.add(xyz,rgb)

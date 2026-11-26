@@ -93,8 +93,41 @@ def overlay_lines(groups, color, width, *, screen_space=False, colors=None, fill
     return actor
 
 
-def overlay_line(points, color, width, *, screen_space=False):
-    return overlay_lines((points,), color, width, screen_space=screen_space)
+def clip_near_plane(points, depths, near):
+    """Split a polyline at the camera plane before projecting a 2D overlay."""
+    if len(points) < 2:
+        return
+    visible = depths >= near
+    if visible.all():
+        yield points
+        return
+
+    def intersection(a, b):
+        fraction = (near - depths[a]) / (depths[b] - depths[a])
+        return points[a] + fraction * (points[b] - points[a])
+
+    bounds = np.flatnonzero(np.diff(np.r_[False, visible, False]))
+    for start, stop in bounds.reshape(-1, 2):
+        parts = [points[start:stop]]
+        if start:
+            parts.insert(0, intersection(start - 1, start)[None, :])
+        if stop < len(points):
+            parts.append(intersection(stop - 1, stop)[None, :])
+        yield np.concatenate(parts)
+
+
+def visible_world_lines(scene, groups, colors=None):
+    camera = scene.GetActiveCamera()
+    eye, forward = np.asarray(camera.GetPosition()), np.asarray(camera.GetDirectionOfProjection())
+    near = camera.GetClippingRange()[0]
+    visible, visible_colors = [], []
+    for i, points in enumerate(groups):
+        points = np.asarray(points, dtype=float)
+        for part in clip_near_plane(points, (points - eye) @ forward, near):
+            visible.append(part)
+            if colors is not None:
+                visible_colors.append(colors[i])
+    return visible, visible_colors if colors is not None else None
 
 
 def mission_actor(groups, color, width, *, surface=False):
@@ -277,6 +310,7 @@ class Renderer:
                     for i in range(count):
                         ends = np.array([i, i+.55])[:, None] / count
                         old.append(first + ends * (last-first))
+            old, _ = visible_world_lines(scene, old)
             if old:
                 actor = overlay_lines(old, (.72, .77, .84), max(1., self.plan_width * .55))
                 actor.GetProperty().SetOpacity(.8)
@@ -287,6 +321,7 @@ class Renderer:
                 groups = lines((shape,))
                 planned.extend(groups)
                 colors.extend([shape.color or SPATIAL_COLORS["plan"]] * len(groups))
+            planned, colors = visible_world_lines(scene, planned, colors)
             if planned:
                 actor = overlay_lines(planned, (.035, .055, .072), self.plan_width + 2 * self.scale)
                 overlay.AddViewProp(actor)
@@ -306,10 +341,12 @@ class Renderer:
             triangles = tuple(triangle for shape in frame.corridor for group in shape.triangles for triangle in group)
             add(triangles, "corridor", 1., surface=True)
         if "camera" in visible and frame.camera is not None:
-            for color, width in (((.12, .09, .20), 3.2), (SPATIAL_COLORS["camera"], 1.6)):
-                actor = overlay_lines(tuple(frame.camera), color, width*self.scale)
-                overlay.AddViewProp(actor)
-                self.dynamic.append((overlay, actor))
+            edges, _ = visible_world_lines(scene, frame.camera)
+            if edges:
+                for color, width in (((.12, .09, .20), 3.2), (SPATIAL_COLORS["camera"], 1.6)):
+                    actor = overlay_lines(edges, color, width*self.scale)
+                    overlay.AddViewProp(actor)
+                    self.dynamic.append((overlay, actor))
 
     def frame(self,pose,trajectory,label,elapsed=0.,fpv_pose=None, spatial=None):
         for renderer,actor in self.dynamic: renderer.RemoveActor(actor)
@@ -328,11 +365,13 @@ class Renderer:
             visible = self.visible_overlays[index]
             if "actual" in visible and len(trajectory)>1:
                 if self.slam_view:
-                    for color, width in (((.09, .085, .065), self.trajectory_width + 2 * self.scale),
-                                         (self.trajectory_color, self.trajectory_width)):
-                        artist = overlay_line(trajectory, color, width)
-                        overlay.AddViewProp(artist)
-                        self.dynamic.append((overlay, artist))
+                    parts, _ = visible_world_lines(scene, (trajectory,))
+                    if parts:
+                        for color, width in (((.09, .085, .065), self.trajectory_width + 2 * self.scale),
+                                             (self.trajectory_color, self.trajectory_width)):
+                            artist = overlay_lines(parts, color, width)
+                            overlay.AddViewProp(artist)
+                            self.dynamic.append((overlay, artist))
                 else:
                     actor=line_actor(trajectory,self.trajectory_color,self.trajectory_width)
                     scene.AddActor(actor); self.dynamic.append((scene,actor))
@@ -349,12 +388,15 @@ class Renderer:
                 origin = pose[:3, 3]
                 distance = np.linalg.norm(position - origin)
                 min_length = self.axis_pixels * 2 * distance * np.tan(np.deg2rad(cam.GetViewAngle()/2)) / viewport_height
-                length = max(self.axis, min_length)
+                length = np.clip(self.axis, min_length, 2 * min_length)
                 axes = pose[:3, :3]
             for j,color in reversed(list(enumerate([(1,.13,.12),(.15,1,.27),(.15,.43,1)]))):
                 points=np.array([origin, origin + axes[:, j] * length])
+                groups = (points,) if screen_space else visible_world_lines(scene, (points,))[0]
+                if not groups:
+                    continue
                 for c,w in (((.01,.015,.025), self.axis_width + 2*self.scale), (color, self.axis_width)):
-                    actor=overlay_line(points,c,w,screen_space=screen_space)
+                    actor=overlay_lines(groups,c,w,screen_space=screen_space)
                     overlay.AddViewProp(actor); self.dynamic.append((overlay,actor))
         # Independent EDL framebuffers avoid driver-dependent viewport clearing.
         # Both use exactly the same cloud, trajectory and timestamped pose above.

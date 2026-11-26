@@ -6,7 +6,7 @@ import socket
 from types import SimpleNamespace
 import numpy as np
 from .geometry import TransformTree, Series, transform_points
-from .sources import stamp, components, add_tf
+from .sources import stamp, components, add_tf, cloud_origin
 from .cloud import decode, CloudMap
 
 
@@ -21,7 +21,9 @@ def listen(a):
     if a.delay<0 or not np.isfinite(a.delay): raise ValueError('Invalid --delay')
     tree=TransformTree(a.max_gap)
     for parent,child,p,q in extrinsics(a.extrinsics): tree.add(parent,child,0,p,q,True)
-    cloud=CloudMap(a.voxel,a.max_points,scan_height=a.color=="scan",height_limits=a.height_range); trajectory=deque(maxlen=10000)
+    cloud=CloudMap(a.voxel,a.max_points,scan_height=a.color=="scan",height_limits=a.height_range,
+                   range_color=a.color=="range",range_limits=a.range_limits)
+    trajectory=deque(maxlen=10000)
     pending=deque(maxlen=32); latest=0; first=None; last_cloud=None; frame_index=0
     renderer=make_renderer(a); output=Export(a)
     stats=dict(source='ros1_bridge',frames=0,dropped_clouds=0,complete=False)
@@ -72,7 +74,10 @@ def listen(a):
                             if (next_frame-first)/1e9>=a.seconds or a.output.suffix.lower()=='.png':
                                 stats['complete']=True; return
                         xyz,rgb=decode(msg)
-                        cloud.add(transform_points(T,xyz),None if a.color=='height' else rgb,a.cloud_mode=='replace')
+                        origin = (cloud_origin(tree, a.world, a.body, a.cloud_topic, msg.header.frame_id, t, T)
+                                  if a.color == "range" else None)
+                        cloud.add(transform_points(T,xyz),None if a.color=='height' else rgb,
+                                  a.cloud_mode=='replace',origin=origin)
                         renderer.update_cloud(cloud)
                     for value in tree.edges.values():
                         if isinstance(value,Series) and len(value.samples)>6000:

@@ -58,8 +58,9 @@ def parser(parser_class=argparse.ArgumentParser):
         x.add_argument('--voxel',type=float,default=.08)
         x.add_argument('--max-points',type=int,default=200000)
         x.add_argument('--cloud-mode',choices=['accumulate','replace'],default='accumulate')
-        x.add_argument('--color',choices=['rgb','height','scan','solid'],default='rgb')
+        x.add_argument('--color',choices=['rgb','height','scan','range','solid'],default='rgb')
         x.add_argument('--height-range',type=float,nargs=2,metavar=('MIN_Z','MAX_Z'))
+        x.add_argument('--range-limits',type=float,nargs=2,metavar=('NEAR_M','FAR_M'))
         x.add_argument('--slam-view',action='store_true',help='Unlit LiDAR points and foreground trajectory')
         x.add_argument('--cloud-color',type=hex_color,default='#70d9ff')
         x.add_argument('--trajectory-color',type=hex_color,default=None)
@@ -161,7 +162,9 @@ class Export:
 def render(a, source, *, preview=None, preview_offset=0, preview_stream=False, preview_media_width=None, preview_data=None, event_data=None, media_data=None, progress=None, check_cancel=None, staging=None, project=None):
     """Render an export or deliver uncomposited previews with optional footage."""
     destination = a.output if staging is None else staging
-    cloud = CloudMap(a.voxel, a.max_points, scan_height=a.color == "scan", height_limits=a.height_range)
+    range_color = a.color == "range"
+    cloud = CloudMap(a.voxel, a.max_points, scan_height=a.color == "scan", height_limits=a.height_range,
+                     range_color=range_color, range_limits=a.range_limits)
     trajectory = []
     speed_history = SpeedHistory()
     dropped = transformed = count = 0
@@ -196,7 +199,7 @@ def render(a, source, *, preview=None, preview_offset=0, preview_stream=False, p
                 codec = output.codec
                 stack.callback(output.close)
             spatial = SpatialOverlays(a, source, stack, compare_plans=bool(project and project.compare_plans))
-            iterator = iter(source.clouds())
+            iterator = iter(source.clouds(with_origin=True) if range_color else source.clouds())
             stack.callback(iterator.close)
 
             start = source.first + round(a.start * 1e9)
@@ -211,9 +214,10 @@ def render(a, source, *, preview=None, preview_offset=0, preview_stream=False, p
                     check_cancel()
                 t = min(end, start + round(i * 1e9 * playback / a.fps))
                 while pending is not None and pending[0] <= t:
-                    cloud_stamp, xyz, rgb = pending
+                    cloud_stamp, xyz, rgb = pending[:3]
                     spatial.update_map_scan(cloud_stamp, xyz)
-                    cloud.add(xyz, None if a.color == 'height' else rgb, a.cloud_mode == 'replace')
+                    cloud.add(xyz, None if a.color == 'height' else rgb, a.cloud_mode == 'replace',
+                              origin=pending[3] if range_color else None)
                     transformed += 1
                     dirty = True
                     if check_cancel is not None:
@@ -305,14 +309,20 @@ def open_source(a, check_cancel=None, metadata=None):
         return (TrailDemoSource if a.demo_scene == "trail" else DemoSource)(a.start + a.seconds)
     auto_camera = a.show_camera_fov and camera_settings(a) is None
     auto_scan = a.show_scan and not a.scan_topic
-    if metadata is None and (auto_camera or auto_scan):
+    if metadata is None and (auto_camera or auto_scan or a.color == "range"):
         metadata = inspect_bag(a.bag, check_cancel)
     scan_topic = a.scan_topic
     if auto_scan:
         scan_topic = suggested_topic(metadata["topics"], "scan", a.world.lstrip("/"), a.body.lstrip("/"))
+    lidar_frame = None
+    if a.color == "range":
+        topics = metadata["topics"]
+        lidar_topic = scan_topic or suggested_topic(topics, "scan", a.world.strip("/"), a.body.strip("/"))
+        lidar_frame = next((row.get("frame") for row in topics if row["topic"] == lidar_topic), None)
     source = BagSource(a.bag, a.cloud_topic, a.odom_topic, a.world, a.body, a.pose_source,
                        a.max_gap, extrinsics(a.extrinsics), plan_topic=a.plan_topic,
-                       corridor_topic=a.corridor_topic, scan_topic=scan_topic, goal_topic=a.goal_topic, plan_frame=a.plan_frame).index(check_cancel)
+                       corridor_topic=a.corridor_topic, scan_topic=scan_topic, goal_topic=a.goal_topic,
+                       plan_frame=a.plan_frame, lidar_frame=lidar_frame).index(check_cancel)
     if auto_camera:
         source.detect_camera(a.camera_info_topic, metadata)
     return source
@@ -331,6 +341,9 @@ def validate(a):
         raise ValueError('Voxel size must be nonnegative; use 0 for raw sampling')
     if a.height_range is not None and (not np.isfinite(a.height_range).all() or a.height_range[0] >= a.height_range[1]):
         raise ValueError('Height range must contain increasing, finite values')
+    if a.range_limits is not None and (not np.isfinite(a.range_limits).all()
+                                       or not 0 <= a.range_limits[0] < a.range_limits[1]):
+        raise ValueError('Range limits must be finite and satisfy 0 <= near < far')
     if min(a.width, a.height) < 8 or a.width%2 or a.height%2: raise ValueError('Use even output dimensions of at least 8 pixels')
     if not 1<a.fov<170: raise ValueError('FOV must be between 1 and 170 degrees')
     if not np.isfinite([a.side,a.camera_height,a.start]).all() or a.start<0:

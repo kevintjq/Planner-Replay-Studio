@@ -74,7 +74,7 @@ Scroll over a point-cloud view to zoom it. Each view also has a camera zoom perc
 - Set a layout marker at the playhead to switch between the composition, full-screen point cloud, and full-screen footage. Click a purple marker to jump back to it.
 - Keep the cloud layer transparent and add **Footage backdrop** then **Footage inset** markers for the same clip. The second marker starts a 0.4-second transition by default.
 
-The default SLAM palette colors points green, cyan, blue and purple by height. Select **FAST-LIO gray** in the quality settings for a single neutral color. Rear and oblique views can show the yellow flown path and moving TF axes. FPV hides the flown path and retains the axes.
+The default palette colors points from green to purple by distance from the lidar when each scan was recorded. Registered clouds use the lidar TF at the scan timestamp, with the body position as a fallback. The rear and oblique views can show the yellow flown path and moving TF axes. FPV hides the flown path and retains the axes.
 
 ## Fixed-camera trajectory image
 

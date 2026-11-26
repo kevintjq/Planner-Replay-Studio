@@ -1,8 +1,8 @@
 # Planner Replay 原生预览
 
-从 [Windows 构建页面](https://github.com/kevintjq/Planner-Replay-Studio/actions/workflows/native-windows.yml?query=branch%3Amain+is%3Asuccess) 下载并解压
-`PlannerReplayNative-Windows-x64`，双击 `PlannerReplayNative.exe`。
-运行需要支持 OpenGL 3.3 的 Windows 图形驱动。应用不需要安装 Python、Tk 或 ROS。
+下载 [PlannerReplayNative-Setup.exe](https://github.com/kevintjq/Planner-Replay-Studio/releases/latest/download/PlannerReplayNative-Setup.exe) 并双击安装。
+安装完成后可立即启动，以后也可从开始菜单打开 **Planner Replay Studio**。
+安装包包含运行依赖，支持 Windows x64 和 OpenGL 3.3 显卡驱动。
 
 ## 操作
 
@@ -15,4 +15,4 @@
 
 ## 构建
 
-需要 CMake 3.22、支持 C++20 的编译器、Qt 6.5 或更高版本，以及 BZip2 和 LZ4。在 Windows 上可通过 vcpkg 的 `x64-windows-static-md` 安装压缩库。构建和部署命令见 [Windows 构建流程](https://github.com/kevintjq/Planner-Replay-Studio/blob/main/.github/workflows/native-windows.yml)。
+需要 CMake 3.22、支持 C++20 的编译器、Qt 6.5 或更高版本，以及 BZip2 和 LZ4。在 Windows 上可通过 vcpkg 的 `x64-windows-static-md` 安装压缩库。生成安装包还需要 NSIS。构建、安装测试和发布命令见 [Windows 构建流程](https://github.com/kevintjq/Planner-Replay-Studio/blob/main/.github/workflows/native-windows.yml)。

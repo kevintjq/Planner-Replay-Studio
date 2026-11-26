@@ -15,14 +15,20 @@ on:
 permissions:
   contents: read
 
+env:
+  QT_VERSION: '6.8.3'
+
 jobs:
   package:
     runs-on: windows-2022
+    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.package.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - uses: jurplel/install-qt-action@v4
         with:
-          version: '6.8.3'
+          version: ${{ env.QT_VERSION }}
           arch: win64_msvc2022_64
           cache: true
       - name: Install ROS1 bag compression libraries
@@ -39,18 +45,76 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ctest --test-dir build-native -C Release --output-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Stage portable application
+      - name: Build the Windows installer
+        id: package
         shell: pwsh
         run: |
+          $match = Select-String -Path native/CMakeLists.txt -Pattern '^project\(PlannerReplayNative VERSION (\d+\.\d+\.\d+) '
+          if (!$match) { throw 'Could not read the native app version.' }
+          $version = $match.Matches[0].Groups[1].Value
+          "version=$version" >> $env:GITHUB_OUTPUT
           cmake --install build-native --config Release --prefix dist/PlannerReplayNative
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          windeployqt --release --qmldir native/qml dist/PlannerReplayNative/PlannerReplayNative.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Copy-Item native/README.md, LICENSE dist/PlannerReplayNative/
-          $app = Start-Process -Wait -PassThru dist/PlannerReplayNative/PlannerReplayNative.exe --smoke
-          if ($app.ExitCode -ne 0) { exit $app.ExitCode }
+          ./native/installer/package.ps1 -AppDirectory dist/PlannerReplayNative -SetupFile dist/PlannerReplayNative-Setup.exe -Version $version -QtVersion $env:QT_VERSION
+      - name: Verify install, launch and uninstall
+        shell: pwsh
+        run: |
+          $setup = (Resolve-Path dist/PlannerReplayNative-Setup.exe).Path
+          $target = Join-Path $env:RUNNER_TEMP 'PlannerReplayInstallerSmoke'
+          $install = Start-Process -FilePath $setup -ArgumentList '/S', "/D=$target" -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Installer exited with $($install.ExitCode)." }
+          $exe = Join-Path $target 'app/PlannerReplayNative.exe'
+          $uninstaller = Join-Path $target 'Uninstall.exe'
+          $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'Planner Replay Studio.lnk'
+          if (!(Test-Path $exe) -or !(Test-Path $uninstaller) -or !(Test-Path $shortcut)) {
+            throw 'The installed application, uninstaller or Start menu shortcut is missing.'
+          }
+          $originalPath = $env:PATH
+          try {
+            $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+            Remove-Item Env:QT_PLUGIN_PATH, Env:QML_IMPORT_PATH, Env:QML2_IMPORT_PATH -ErrorAction SilentlyContinue
+            $app = Start-Process -FilePath $exe -ArgumentList '--smoke' -WorkingDirectory $target -Wait -PassThru
+            if ($app.ExitCode -ne 0) { throw "Installed application exited with $($app.ExitCode)." }
+          } finally {
+            $env:PATH = $originalPath
+          }
+          $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0 -or (Test-Path $exe) -or (Test-Path $shortcut)) {
+            throw 'The uninstaller did not remove the application and shortcut.'
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: PlannerReplayNative-Windows-x64
-          path: dist/PlannerReplayNative/
+          path: dist/PlannerReplayNative-Setup.exe
           if-no-files-found: error
+
+  release:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: native-windows-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: PlannerReplayNative-Windows-x64
+          path: installer
+      - name: Publish the Windows EXE on GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.package.outputs.version }}
+        run: |
+          tag="native-v$VERSION"
+          if assets=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name'); then
+            if ! grep -Fxq PlannerReplayNative-Setup.exe <<< "$assets"; then
+              gh release upload "$tag" installer/PlannerReplayNative-Setup.exe --repo "$GITHUB_REPOSITORY"
+            fi
+            exit 0
+          fi
+          gh release create "$tag" installer/PlannerReplayNative-Setup.exe \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest \
+            --title "Planner Replay Native v$VERSION" \
+            --notes "Windows x64 setup. Run PlannerReplayNative-Setup.exe to install the native ROS1 point-cloud preview. No source checkout or Python environment required."

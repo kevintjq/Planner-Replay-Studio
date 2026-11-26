@@ -12,7 +12,7 @@ The following checks date from **2026-11-25**.
 
 ### Environment
 
-Windows, CPython 3.13, NumPy 2.4.6, VTK 9.7.2, rosbags 0.11.4, imageio 2.37.3, imageio-ffmpeg 0.8.1, pytest 9.2.0. See [requirements-tested.txt](../requirements-tested.txt).
+Windows, CPython 3.13, NumPy 2.4.6, VTK 9.7.2, rosbags 0.11.4, imageio 2.37.3, imageio-ffmpeg 0.8.1, pytest 9.2.0.
 
 ### Automated tests
 

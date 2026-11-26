@@ -6,11 +6,11 @@
 
 ## Windows 原生预览版
 
-1. 打开 [Windows 构建页面](https://github.com/kevintjq/Planner-Replay-Studio/actions/workflows/native-windows.yml?query=branch%3Amain+is%3Asuccess)，选择 `main` 上最近一次成功的构建。
-2. 在 **Artifacts** 下载 **PlannerReplayNative-Windows-x64**，完整解压 ZIP。
-3. 双击 `PlannerReplayNative.exe`，打开 ROS1 `.bag` 或使用内置模拟数据。
+1. [下载 PlannerReplayNative-Setup.exe](https://github.com/kevintjq/Planner-Replay-Studio/releases/latest/download/PlannerReplayNative-Setup.exe)。
+2. 双击安装。安装完成后可直接启动，以后也可从 Windows 开始菜单打开 **Planner Replay Studio**。
+3. 打开 ROS1 `.bag` 或使用内置模拟数据。
 
-原生版使用 C++ / Qt Quick，运行需要支持 OpenGL 3.3 的显卡驱动，无需安装 Python、Tk 或 ROS。[原生版用法和构建说明](native/README.md)
+原生版使用 C++ / Qt Quick。安装包包含运行依赖，支持 Windows x64 和 OpenGL 3.3 显卡驱动。[原生版用法和构建说明](native/README.md)
 
 ![原生预览版回放示例 ROS1 bag](docs/native-preview.png)
 
@@ -18,7 +18,7 @@
 
 | | 原生预览版 | 视频合成工作台 |
 | --- | --- | --- |
-| 启动方式 | 双击 `PlannerReplayNative.exe` | 双击 [`Start_Planner_Replay.cmd`](Start_Planner_Replay.cmd)，需要带 Tcl/Tk 的 Python 3.10+ |
+| 启动方式 | 安装 EXE，之后从开始菜单启动 | 双击 [`Start_Planner_Replay.cmd`](Start_Planner_Replay.cmd)，需要带 Tcl/Tk 的 Python 3.10+ |
 | 点云回放 | `PointCloud2`、累积或整图替换、机体距离着色、已飞轨迹和 `Odometry` 速度 | 多机位、TF 及 EGO / SUPER 可选规划图层 |
 | 剪辑与导出 | 播放、拖动时间轴、查看点云 | 实拍对齐、定时叠加、固定机位拖影图、1080p/60 fps 导出 |
 

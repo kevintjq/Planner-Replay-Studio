@@ -120,12 +120,27 @@ class LayoutCue:
     time: float
     mode: str
     video_id: str | None = None
+    transition: float = INSET_TRANSITION_SECONDS
+    width: float | None = None
+    position: tuple | None = None
 
     def __post_init__(self):
         if not isfinite(self.time) or self.time < 0 or self.mode not in LAYOUT_NAMES:
             raise ValueError("布局标记无效。")
+        if not isfinite(self.transition) or not 0 <= self.transition <= 5.:
+            raise ValueError("过渡时长须为 0–5 秒。")
+        if self.width is not None and not .05 <= self.width <= .9:
+            raise ValueError("小窗宽度应为 5–90%。")
+        if self.position is not None and (len(self.position) != 2 or not all(0 <= v <= 1 for v in self.position)):
+            raise ValueError("小窗位置应为 0–100%。")
         if (self.mode in VIDEO_LAYOUTS) != bool(self.video_id):
             raise ValueError("实拍布局须选一路视频。")
+
+
+def inset_placement(layer, cue):
+    if cue and cue.mode == "inset" and cue.video_id == layer.id:
+        return cue.width if cue.width is not None else layer.width, cue.position or layer.position
+    return layer.width, layer.position
 
 
 @dataclass(frozen=True)
@@ -193,12 +208,12 @@ class Composition:
         return next((layer.id for layer in self.videos if layer.backdrop and layer.id != inset_id), None)
 
     def inset_transition(self, cue, elapsed):
-        if not cue or cue.mode != "inset" or elapsed >= cue.time + INSET_TRANSITION_SECONDS:
+        if not cue or cue.mode != "inset" or elapsed >= cue.time + cue.transition:
             return None
         previous = next((item for item in reversed(self.layouts) if item.time < cue.time), None)
         if (previous and previous.mode in ("video", "cloud")) or self.backdrop_id(previous) != cue.video_id:
             return None
-        fraction = (elapsed - cue.time) / INSET_TRANSITION_SECONDS
+        fraction = (elapsed - cue.time) / cue.transition
         return fraction * fraction * (3. - 2. * fraction)
 
 
@@ -420,7 +435,7 @@ def compose(base, project, videos, elapsed, speed, cloud_views=None, *, alpha=No
         layer, footage = pairs[moving_index]
         source = footage if isinstance(footage, Image.Image) else Image.fromarray(footage)
         start = scaled_rect(image.size, image.size, layer.backdrop_scale, layer.backdrop_position)
-        end = video_rect(image.size, source.size, layer.width, layer.position)
+        end = video_rect(image.size, source.size, *inset_placement(layer, cue))
         x, y, w, h = (round(a + (b - a) * progress) for a, b in zip(start, end))
         start_radius = radius if layer.backdrop_scale < 1. else 0
         corner = round(start_radius + (radius - start_radius) * progress)
@@ -473,7 +488,7 @@ def compose(base, project, videos, elapsed, speed, cloud_views=None, *, alpha=No
             behind = None
             continue
         inset = footage if isinstance(footage, Image.Image) else Image.fromarray(footage)
-        x, y, w, h = video_rect(image.size, inset.size, layer.width, layer.position)
+        x, y, w, h = video_rect(image.size, inset.size, *inset_placement(layer, cue))
         stroke = 0 if layer.transparent else min(radius // 2, (min(w, h) - 1) // 2)
         tile = inset_tile(inset, (w, h), layer.transparent, radius, stroke)
         paste(tile, (x, y), layer.opacity)

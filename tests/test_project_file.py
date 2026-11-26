@@ -16,12 +16,13 @@ def test_round_trip_keeps_per_clip_anchors_and_per_view_overlays(tmp_path):
         main_view=PointCloudView("rear", 1., (.5, .5), overlays=("actual", "scan"), zoom=1.6),
         views=(PointCloudView("oblique", overlays=("plan", "corridor")), PointCloudView("fpv", overlays=())),
         videos=(VideoLayer(first, VideoEdit(trim_in=1., anchors=((0., 2.), (6., 8.2)))),
-                VideoLayer(second, VideoEdit(crop=(.1, .1, .9, .9), anchors=((0., 1.), (6., 7.))))),
+                VideoLayer(second, VideoEdit(crop=(.1, .1, .9, .9), anchors=((0., 1.), (6., 7.)),
+                                            segments=((1., 2.), (3., None))))),
         transparent_canvas=True,
     )
     clip = composition.videos[1]
     composition = replace(composition, layouts=(LayoutCue(1., "backdrop", clip.id),
-                                               LayoutCue(2.5, "inset", clip.id), LayoutCue(5., "mix")),
+                                               LayoutCue(2.5, "inset", clip.id, .65, .28, (.15, .2)), LayoutCue(5., "mix")),
                           audio_id=clip.id, play_rate=.5, compare_plans=True, markers=(TimelineMarker(1.2, '入口'),))
     saved = ProjectFile(composition, {"encoder": "CPU", "cloud_topic": "/registered"},
                         {"scan": True, "camera": False}, "bag", bag, extrinsics)

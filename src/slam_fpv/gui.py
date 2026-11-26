@@ -15,13 +15,15 @@ from tkinter import colorchooser, filedialog, messagebox, simpledialog, ttk
 
 from PIL import Image, ImageDraw, ImageTk
 
+from .alignment import motion_candidates
 from .cli import extrinsics, open_source, parser, render, validate
 from .composition import (
     LAYOUT_NAMES, VIDEO_LAYOUTS, MAX_CAMERA_ZOOM, MIN_CAMERA_ZOOM, Composition, LayoutCue, TimelineMarker, compose,
-    placement_axis, rounded_mask,
+    inset_placement, placement_axis, rounded_mask,
 )
 from .desktop_style import INK, desktop_style
 from .timeline import Timeline
+from .preview_transport import PreviewTransport
 from .layer_controls import LayerControls
 from .video_editor import VideoEditor
 from .sources import inspect_bag
@@ -52,7 +54,10 @@ class RendererApp(LayerControls):
         self.busy = False
         self.closing = False
         self.values = {}
-        self.project = Composition()
+        self._project = Composition()
+        self.undo_history, self.redo_history = [], []
+        self.gesture_project = None
+        self.transport = PreviewTransport(self)
         self.frame = self.elapsed = self.speed = self.source_duration = self.checkerboard = None
         self.footages = ()
         self.cloud_views = {}
@@ -123,26 +128,42 @@ class RendererApp(LayerControls):
 
         self.timeline = Timeline(viewer, self.seek_timeline, self.apply_interval, self.font, self.jump_cue,
                                  select=self.select_layer, marker_menu=self.manual_marker_menu,
-                                 add_marker=self.add_manual_marker)
+                                 add_marker=self.add_manual_marker, scrub=lambda time: self.transport.request(time, delay=65),
+                                 move_layout=self.move_layout, layout_menu=self.layout_context,
+                                 clip_menu=self.clip_context)
         self.timeline.pack(fill="x", pady=(7, 0))
         self.marker_popup = tk.Menu(self.root, tearoff=False)
+        for key, callback in (("<space>", self.transport.toggle), ("<Key-s>", self.split_clip),
+                              ("<Delete>", self.delete_segment), ("<Control-z>", self.undo_edit),
+                              ("<Control-y>", lambda: self.undo_edit(redo=True))):
+            self.timeline.bind(key, lambda _, action=callback: (action(), "break")[1])
         transport = ttk.Frame(viewer)
         transport.pack(fill="x")
+        self.play_button = ttk.Button(transport, text="播放", width=5, command=self.transport.toggle)
+        self.play_button.pack(side="left", padx=(0, 4))
+        ttk.Button(transport, text="分割", width=5, command=self.split_clip).pack(side="left", padx=2)
+        ttk.Button(transport, text="撤销", width=5, command=self.undo_edit).pack(side="left", padx=2)
+        ttk.Button(transport, text="重做", width=5, command=lambda: self.undo_edit(redo=True)).pack(side="left", padx=2)
+        self.snap = tk.BooleanVar(value=True)
+        ttk.Checkbutton(transport, text="吸附", variable=self.snap,
+                        command=lambda: setattr(self.timeline, "snap", self.snap.get())).pack(side="left", padx=(2, 6))
+        markers = ttk.Frame(viewer)
+        markers.pack(fill="x", pady=(3, 0))
         self.event_choice = tk.StringVar(value="事件跳转")
-        self.event_picker = ttk.Combobox(transport, width=20, state="readonly", textvariable=self.event_choice)
-        self.event_picker.pack(side="left", padx=(2, 8))
+        self.event_picker = ttk.Combobox(markers, width=13, state="readonly", textvariable=self.event_choice)
+        self.event_picker.pack(side="left", padx=(2, 4))
         self.event_picker.bind("<<ComboboxSelected>>", self.choose_event)
-        ttk.Button(transport, text="+ 事件", command=self.add_manual_marker).pack(side="left", padx=(0, 8))
+        ttk.Button(markers, text="+ 事件", command=self.add_manual_marker).pack(side="left", padx=(0, 8))
         self.compare_plans = tk.BooleanVar(value=False)
-        ttk.Checkbutton(transport, text="对比上一条规划", variable=self.compare_plans,
+        ttk.Checkbutton(markers, text="对比上一条规划", variable=self.compare_plans,
                         command=self.toggle_plan_comparison).pack(side="left")
-        self.layout_button = ttk.Menubutton(transport, text="添加布局标记")
+        self.layout_button = ttk.Menubutton(markers, text="添加布局标记")
         self.layout_menu = tk.Menu(self.layout_button, tearoff=False, postcommand=self.make_layout_menu)
         self.layout_video_menus = {mode: tk.Menu(self.layout_menu, tearoff=False) for mode in VIDEO_LAYOUTS}
         self.layout_button.configure(menu=self.layout_menu)
         self.layout_button.pack(side="right")
         self.layout_status = tk.StringVar(value="当前合成")
-        ttk.Label(transport, textvariable=self.layout_status, style="Quiet.TLabel").pack(side="right", padx=8)
+        ttk.Label(preview_header, textvariable=self.layout_status, style="Quiet.TLabel").pack(side="right", padx=8)
         for key in ("start", "seconds"):
             self.values[key].trace_add("write", lambda *_: self.update_timeline())
 
@@ -158,6 +179,136 @@ class RendererApp(LayerControls):
         self.cancel_button.grid(row=0, column=2)
         self.refresh_layers()
         root.after(60, self.poll)
+
+    @property
+    def project(self):
+        return self._project
+
+    @project.setter
+    def project(self, value):
+        previous = self._project
+        if value != previous and self.gesture_project is None:
+            self.remember_edit(previous)
+        self._project = value
+
+    def remember_edit(self, previous):
+        self.undo_history.append(previous)
+        del self.undo_history[:-60]
+        self.redo_history.clear()
+
+    def undo_edit(self, redo=False):
+        if self.busy:
+            return
+        current, other = ((self.redo_history, self.undo_history) if redo else
+                          (self.undo_history, self.redo_history))
+        if not current:
+            return
+        other.append(self.project)
+        self._project = current.pop()
+        self.selection = None
+        self.timeline.active_segment = None
+        self.transparent_canvas.set(self.project.transparent_canvas)
+        self.compare_plans.set(self.project.compare_plans)
+        self.footages = (None,) * len(self.project.videos)
+        self.refresh_layers()
+        if self.elapsed is not None:
+            self.transport.request(self.elapsed)
+        self.status.set("已重做。" if redo else "已撤销。")
+
+    def edit_video_segment(self, seconds, *, delete=False):
+        if self.busy or not self.selection or self.selection[0] != "video":
+            return
+        index = self.selection[1]
+        layer = self.project.videos[index]
+        edit = layer.edit
+        ranges = list(edit.spans())
+        stamp = edit.video_time(seconds)
+        for part, (first, last) in enumerate(ranges):
+            if first - 1e-8 <= stamp and (last is None or stamp < last - 1e-8):
+                if delete:
+                    del ranges[part]
+                else:
+                    duration = self.clip_durations.get(layer.id)
+                    ends = [bound for bound in (last, duration) if bound is not None]
+                    end = min(ends, default=None)
+                    if stamp <= first + 1e-8 or (end is not None and stamp >= end - 1e-8):
+                        break
+                    ranges[part:part+1] = [(first, stamp), (stamp, last)]
+                self.update_video_edit(index, replace(edit, trim_in=0., trim_out=None, segments=tuple(ranges)))
+                self.status.set("已删除此片段。" if delete else "已分割素材，保留原有时间对齐。")
+                return
+        self.status.set("请把播放头放在选中视频片段内。")
+
+    def split_clip(self):
+        self.edit_video_segment(self.timeline.time)
+
+    def delete_segment(self):
+        self.edit_video_segment(self.timeline.time, delete=True)
+
+    def clip_context(self, seconds, x, y):
+        if self.busy:
+            return
+        menu = self.marker_popup
+        menu.delete(0, "end")
+        menu.add_command(label="在此分割", command=lambda: self.edit_video_segment(seconds))
+        menu.add_command(label="删除此片段", command=lambda: self.edit_video_segment(seconds, delete=True))
+        menu.tk_popup(x, y)
+        menu.grab_release()
+
+    def replace_layout(self, cue, updated, *, redraw=True):
+        if self.busy:
+            return
+        if updated and any(item.time == updated.time and item != cue for item in self.project.layouts):
+            self.status.set("这个时刻已有布局标记。")
+            self.update_timeline()
+            return
+        layouts = [item for item in self.project.layouts if item != cue]
+        if updated is not None:
+            layouts.append(updated)
+        self.project = replace(self.project, layouts=tuple(sorted(layouts, key=lambda item: item.time)))
+        if redraw:
+            self.update_timeline()
+            self.draw_preview()
+
+    def move_layout(self, cue, seconds):
+        self.replace_layout(cue, replace(cue, time=seconds))
+        if not self.busy:
+            self.jump_cue(seconds)
+
+    def layout_context(self, cue, x, y):
+        if self.busy:
+            return
+        menu = self.marker_popup
+        menu.delete(0, "end")
+        if cue.mode == "inset":
+            menu.add_command(label="调整过渡时长…", command=lambda: self.edit_transition(cue))
+            menu.add_command(label="调整小窗大小和位置…", command=lambda: self.edit_inset(cue))
+        menu.add_command(label="删除布局标记", command=lambda: self.replace_layout(cue, None))
+        menu.tk_popup(x, y)
+        menu.grab_release()
+
+    def edit_transition(self, cue):
+        seconds = simpledialog.askfloat("调整过渡时长", "时长（秒，0 为直接切换）",
+                                        initialvalue=cue.transition, minvalue=0, maxvalue=5, parent=self.root)
+        if seconds is not None:
+            self.replace_layout(cue, replace(cue, transition=seconds))
+
+    def edit_inset(self, cue):
+        index = next(i for i, layer in enumerate(self.project.videos) if layer.id == cue.video_id)
+        layer = self.project.videos[index]
+        saved_width, saved_position = inset_placement(layer, cue)
+
+        def save(values):
+            width, x, y = (float(values[name])/100 for name in ("width", "x", "y"))
+            if not 0 <= x <= 1 or not 0 <= y <= 1:
+                raise ValueError("位置须在 0–100% 之间。")
+            self.replace_layout(cue, replace(cue, width=width, position=(x, y)))
+
+        self.layer_dialog("小窗位置和尺寸", (
+            ("width", "宽度 (%)", f"{saved_width*100:g}"),
+            ("x", "横向位置 (%)", f"{saved_position[0]*100:g}"),
+            ("y", "纵向位置 (%)", f"{saved_position[1]*100:g}"),
+        ), save)
 
     def make_form(self):
         nav = ttk.Notebook(self.form)
@@ -464,7 +615,9 @@ class RendererApp(LayerControls):
                 flag.set(saved.enabled[name])
         self.selection = None
         self.reset_alignment()
-        self.project = saved.composition
+        self._project = saved.composition
+        self.undo_history.clear()
+        self.redo_history.clear()
         self.transparent_canvas.set(self.project.transparent_canvas)
         self.compare_plans.set(self.project.compare_plans)
         self.footages = (None,) * len(self.project.videos)
@@ -594,12 +747,16 @@ class RendererApp(LayerControls):
         self.draw_preview()
 
     def select_bag(self):
+        if self.busy:
+            return
         path = filedialog.askopenfilename(parent=self.root, filetypes=(("ROS1 bag", "*.bag"),))
         if path:
             path = Path(path)
             self.run_job(lambda: ("topics", (path, inspect_bag(path, self.check_cancel))), "正在读取 bag 话题…")
 
     def use_demo(self):
+        if self.busy:
+            return
         if not self.demo_selected:
             self.reset_alignment()
         self.bag_path = None
@@ -660,12 +817,15 @@ class RendererApp(LayerControls):
         self.footages = (None,) * len(self.project.videos)
         self.cloud_views = {}
         videos = tuple(replace(layer, edit=replace(layer.edit, anchors=())) for layer in self.project.videos)
-        self.project = replace(self.project, videos=videos)
+        self._project = replace(self.project, videos=videos)
+        self.undo_history.clear()
+        self.redo_history.clear()
+        self.transport.clear()
         self.preview_label.configure(text="画面预览")
         self.draw_preview()
 
     def open_video_editor(self):
-        if self.selection is None or self.selection[0] != "video":
+        if self.busy or self.selection is None or self.selection[0] != "video":
             return
         index = self.selection[1]
         layer = self.project.videos[index]
@@ -683,7 +843,10 @@ class RendererApp(LayerControls):
             approximate = (metadata["storage_end_ns"] - metadata["storage_start_ns"])/1e9 if metadata else end
             self.video_editor = VideoEditor(self.root, layer.path, layer.edit, self.frame, self.elapsed,
                                             self.request_alignment_frame, apply,
-                                            duration=self.source_duration or max(end, approximate))
+                                            duration=self.source_duration or max(end, approximate),
+                                            fps=int(self.values["fps"].get()),
+                                            request_loop=self.request_alignment_loop,
+                                            request_candidates=self.request_alignment_candidates)
         except (ValueError, OSError, av.FFmpegError) as error:
             messagebox.showerror("无法打开视频", str(error), parent=self.root)
 
@@ -706,6 +869,37 @@ class RendererApp(LayerControls):
             return "alignment", (result[0], (source.last - source.first)/1e9)
 
         self.run_job(work, "正在定位 SLAM 帧…")
+
+    def request_alignment_loop(self, start, end):
+        if self.busy:
+            raise ValueError("请等待当前预览完成。")
+        args = self.build_args(Path("preview.png"))
+        args.start, args.seconds, args.fps = start, end-start, 10
+        args.width, args.height, args.supersample = 480, 270, 1
+        metadata = self.bag_metadata
+        project = replace(self.project, videos=(), layouts=(), audio_id=None, views=(), texts=(), show_speed=False)
+
+        def work():
+            source = open_source(args, self.check_cancel, metadata)
+            frames = []
+            render(args, source, preview=lambda frame, _, time, *rest: frames.append((frame, time)),
+                   preview_stream=True, check_cancel=self.check_cancel, project=project)
+            return "alignment_loop", frames
+
+        self.run_job(work, "正在准备对齐循环预览…")
+
+    def request_alignment_candidates(self):
+        if self.busy:
+            raise ValueError("请等待当前预览完成。")
+        args = self.build_args(Path("preview.png"))
+        metadata = self.bag_metadata
+
+        def work():
+            source = open_source(args, self.check_cancel, metadata)
+            return "alignment_candidates", motion_candidates(source, args.start, args.start+args.seconds,
+                                                              self.check_cancel)
+
+        self.run_job(work, "正在查找转弯、起飞和急停候选…")
 
     def build_args(self, destination):
         if self.bag_path is None and not self.demo_selected:
@@ -747,6 +941,7 @@ class RendererApp(LayerControls):
     def start_render(self, preview):
         if self.busy:
             return
+        self.transport.stop()
         destination = Path("preview.png")
         if not preview:
             path = filedialog.asksaveasfilename(parent=self.root, defaultextension=".mp4", initialfile="planner-replay",
@@ -857,11 +1052,11 @@ class RendererApp(LayerControls):
             return "saved", (destination, codec)
         self.run_job(work, "正在准备导出…")
 
-    def run_job(self, action, text):
+    def run_job(self, action, text, *, interactive=False):
         self.busy = True
         self.cancel_event.clear()
         self.disable_form(self.form)
-        self.timeline.busy = True
+        self.timeline.busy = not interactive
         self.cancel_button.state(["!disabled"])
         self.status.set(text)
         self.progress.configure(mode="indeterminate")
@@ -897,6 +1092,7 @@ class RendererApp(LayerControls):
         self.status.set("正在取消…")
 
     def close(self):
+        self.transport.stop()
         if not self.busy:
             self.root.destroy()
         elif messagebox.askyesno("退出", "取消当前任务并退出？", parent=self.root):
@@ -926,6 +1122,11 @@ class RendererApp(LayerControls):
                 for widget in self.disabled_controls:
                     widget.state(["!disabled"])
                 self.disabled_controls.clear()
+                if self.transport.working:
+                    self.transport.finish(kind, value)
+                    if kind == "error":
+                        self.status.set(f"预览失败 · {value}")
+                    continue
                 editor = self.video_editor
                 if editor is not None and not editor.window.winfo_exists():
                     self.video_editor = editor = None
@@ -936,6 +1137,12 @@ class RendererApp(LayerControls):
                     if editor is not None:
                         editor.set_slam(Image.fromarray(frame), elapsed, duration)
                     self.status.set(f"已定位 SLAM {elapsed:.3f} s")
+                elif kind == "alignment_loop":
+                    if editor is not None:
+                        editor.loop_ready(value)
+                elif kind == "alignment_candidates":
+                    if editor is not None:
+                        editor.show_candidates(value)
                 elif kind == "topics":
                     self.set_topics(*value)
                 elif kind == "project":
@@ -944,17 +1151,7 @@ class RendererApp(LayerControls):
                     self.status.set("导出检查完成")
                     self.export_check(*value)
                 elif kind == "preview":
-                    frame_info, self.source_duration, diagnostics, self.timeline_events, self.clip_durations = value
-                    frame, videos, elapsed, self.speed, self.cloud_views = frame_info
-                    self.overlay_status.set("\n".join(diagnostics))
-                    self.frame = Image.fromarray(frame)
-                    self.elapsed = elapsed
-                    self.base_cache = None
-                    self.footages = tuple(None if video is None else Image.fromarray(video) for video in videos)
-                    self.preview_label.configure(text=f"画面预览    {elapsed:.3f} s")
-                    self.status.set("预览已更新。拖动画面中的图层可调整位置。")
-                    self.draw_preview()
-                    self.update_timeline()
+                    self.accept_preview(value)
                 elif kind == "saved":
                     destination, codec = value
                     name = {"h264_nvenc": "NVIDIA NVENC", "libx264": "CPU H.264", None: "PNG"}[codec]
@@ -966,7 +1163,21 @@ class RendererApp(LayerControls):
                     self.status.set("已取消")
         except Empty:
             pass
-        self.root.after(60, self.poll)
+        self.root.after(25, self.poll)
+
+    def accept_preview(self, value, *, playing=False):
+        frame_info, self.source_duration, diagnostics, self.timeline_events, self.clip_durations = value
+        frame, videos, elapsed, self.speed, self.cloud_views = frame_info
+        self.overlay_status.set("\n".join(diagnostics))
+        self.frame = Image.fromarray(frame)
+        self.elapsed = elapsed
+        self.base_cache = None
+        self.footages = tuple(None if video is None else Image.fromarray(video) for video in videos)
+        self.values["preview_offset"].set(f"{max(0., elapsed-self.timeline_range()[0]):.6f}")
+        self.preview_label.configure(text=f"画面预览    {elapsed:.3f} s")
+        self.status.set("正在播放预览" if playing else "预览已更新。")
+        self.draw_preview()
+        self.update_timeline()
 
     def draw_preview(self):
         self.canvas.delete("all")
@@ -1070,6 +1281,10 @@ class RendererApp(LayerControls):
         cue = self.project.layout_at(self.elapsed) if self.elapsed is not None else None
         return layer.id == self.project.backdrop_id(cue)
 
+    def active_inset(self, layer):
+        cue = self.project.layout_at(self.elapsed) if self.elapsed is not None else None
+        return cue if cue and cue.mode == "inset" and cue.video_id == layer.id else None
+
     def start_drag(self, event):
         if self.busy:
             return
@@ -1077,6 +1292,7 @@ class RendererApp(LayerControls):
             hx, hy = self.resize_handle
             if abs(event.x-hx) <= 9 and abs(event.y-hy) <= 9:
                 _, _, w, h = self.layer_bounds[self.selection]
+                self.gesture_project = self.project
                 self.resize_drag = event.x, event.y, w, h, self.layer_scale()
                 self.canvas.configure(cursor="sizing")
                 return
@@ -1091,6 +1307,7 @@ class RendererApp(LayerControls):
             dx, dy = event.x-left, event.y-top
             if 0 <= dx < w and 0 <= dy < h:
                 self.select_layer(key)
+                self.gesture_project = self.project
                 self.drag_offset = dx, dy
                 self.canvas.configure(cursor="fleur")
                 break
@@ -1102,7 +1319,11 @@ class RendererApp(LayerControls):
         layer = self.layers(kind)[index]
         if kind == "text":
             return layer.size
-        return layer.backdrop_scale if kind == "video" and self.is_video_backdrop(layer) else layer.width
+        if kind != "video":
+            return layer.width
+        if self.is_video_backdrop(layer):
+            return layer.backdrop_scale
+        return inset_placement(layer, self.active_inset(layer))[0]
 
     def resize_selected(self, factor):
         kind, index = self.selection
@@ -1113,6 +1334,9 @@ class RendererApp(LayerControls):
             layer = self.layers(kind)[index]
             if kind == "text":
                 layer = replace(layer, size=clamp(round(factor), 12, 120))
+            elif kind == "video" and (cue := self.active_inset(layer)) is not None:
+                self.replace_layout(cue, replace(cue, width=clamp(factor, .05, .9)), redraw=False)
+                return
             elif kind == "video" and self.is_video_backdrop(layer):
                 layer = replace(layer, backdrop_scale=clamp(factor, .2, 2.))
             else:
@@ -1143,6 +1367,8 @@ class RendererApp(LayerControls):
         position = tuple(position)
         if kind == "speed":
             self.project = replace(self.project, speed_position=position)
+        elif kind == "video" and (cue := self.active_inset(layer)) is not None:
+            self.replace_layout(cue, replace(cue, position=position), redraw=False)
         elif backdrop:
             self.replace_layer(kind, index, replace(layer, backdrop_position=position), redraw=False)
         else:
@@ -1152,9 +1378,13 @@ class RendererApp(LayerControls):
     def end_drag(self):
         changed = self.drag_offset is not None or self.resize_drag is not None
         self.drag_offset = self.resize_drag = None
+        previous, self.gesture_project = self.gesture_project, None
+        if previous is not None and previous != self.project:
+            self.remember_edit(previous)
         self.canvas.configure(cursor="")
         if changed:
             self.show_layer()
+            self.update_timeline()
 
 
 def main():

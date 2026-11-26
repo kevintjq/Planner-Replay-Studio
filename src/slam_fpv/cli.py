@@ -158,8 +158,8 @@ class Export:
         if self.writer: self.writer.close()
 
 
-def render(a, source, *, preview=None, preview_offset=0, preview_data=None, event_data=None, media_data=None, progress=None, check_cancel=None, staging=None, project=None):
-    """Render an export, or deliver one uncomposited preview and its optional footage."""
+def render(a, source, *, preview=None, preview_offset=0, preview_stream=False, preview_media_width=None, preview_data=None, event_data=None, media_data=None, progress=None, check_cancel=None, staging=None, project=None):
+    """Render an export or deliver uncomposited previews with optional footage."""
     destination = a.output if staging is None else staging
     cloud = CloudMap(a.voxel, a.max_points, scan_height=a.color == "scan", height_limits=a.height_range)
     trajectory = []
@@ -217,7 +217,7 @@ def render(a, source, *, preview=None, preview_offset=0, preview_data=None, even
                     pose = source.pose(t)
                 except LookupError:
                     dropped += 1
-                    if trajectory:
+                    if trajectory and not preview_stream:
                         raise ValueError('Pose unavailable inside export interval; shorten/split interval') from None
                     continue
                 if not len(cloud.xyz):
@@ -239,26 +239,32 @@ def render(a, source, *, preview=None, preview_offset=0, preview_data=None, even
                 if preview is not None:
                     if preview_data is not None:
                         preview_data((source.last - source.first) / 1e9, spatial.status(t, spatial_frame))
-                    if event_data is not None:
+                    if event_data is not None and count == 0:
                         event_data(() if is_synthetic else source.timeline_events())
                 if first_elapsed is None:
                     first_elapsed = elapsed
                 if project is not None:
-                    if preview is not None and media_data is not None:
+                    if preview is not None and media_data is not None and count == 0:
                         media_data(tuple(layer.reader.duration for layer in layers))
                     frame, cloud_views = frame
-                    footage = tuple(layer.frame_at(elapsed) for layer in layers)
+                    footage = tuple(layer.frame_at(elapsed, preview_media_width) for layer in layers)
                     if preview is not None:
                         preview(frame, footage, elapsed, speed, cloud_views)
-                        return
+                        if not preview_stream:
+                            return
+                        count += 1
+                        continue
                     combined, _ = compose(frame, project, footage, elapsed, speed, cloud_views,
                                           alpha=project.transparent_canvas and a.output.suffix.lower() == ".png")
                     output.append(np.asarray(combined))
                 else:
-                    footage = video.frame_at(elapsed)
+                    footage = video.frame_at(elapsed, preview_media_width)
                     if preview is not None:
                         preview(frame, footage, elapsed)
-                        return
+                        if not preview_stream:
+                            return
+                        count += 1
+                        continue
                     output.append(composite(frame, footage, a.video_width, a.video_position))
                 count = output.count
                 if progress is not None:

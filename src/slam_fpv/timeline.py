@@ -17,6 +17,8 @@ class Track:
     start: float
     end: float
     title: str
+    segments: tuple = ()
+    media_bounds: tuple | None = None
 
 
 class Timeline(tk.Canvas):
@@ -25,12 +27,18 @@ class Timeline(tk.Canvas):
     row_height = 25
     visible_tracks = 4
 
-    def __init__(self, parent, seek, apply_interval, font, jump=None, *, select, marker_menu, add_marker):
+    def __init__(self, parent, seek, apply_interval, font, jump=None, *, select, marker_menu, add_marker, scrub, move_layout, layout_menu, clip_menu):
         super().__init__(parent, height=self.track_top + self.row_height*self.visible_tracks + 3,
                          bg="#FFFFFF", highlightthickness=0)
         self.seek, self.jump = seek, jump or seek
         self.select, self.apply_interval = select, apply_interval
         self.marker_menu, self.add_marker = marker_menu, add_marker
+        self.scrub, self.move_layout = scrub, move_layout
+        self.layout_menu, self.clip_menu = layout_menu, clip_menu
+        self.snap = True
+        self.active_segment = None
+        self.layout_drag = None
+        self.clip_origin = None
         self.face = font
         self.start = self.time = 0.
         self.duration = 6.
@@ -88,7 +96,7 @@ class Timeline(tk.Canvas):
                 self.create_polygon(x-4, 49, x+4, 49, x, 56, fill=color)
         for cue in self.layouts:
             if self.visible(cue.time):
-                x = self.x(cue.time)
+                x = self.x(self.draft if self.layout_drag == cue else cue.time)
                 self.create_polygon(x-4, 58, x, 54, x+4, 58, x, 62, fill="#8866BF")
         for marker in self.markers:
             if self.visible(marker.time):
@@ -113,87 +121,170 @@ class Timeline(tk.Canvas):
                               fill="#F1F5FD" if selected else "#F7F8FB")
         name = track.title if len(track.title) <= 12 else track.title[:11]+"…"
         self.create_text(9, y+11, text=name, anchor="w", font=(self.face, 8), fill="#34445C")
-        first, last = track.start, track.end
-        if selected and self.drag in ("left", "right"):
-            first, last = self.draft
-        left, right = self.x(first), self.x(last)
-        if right <= left:
-            return
-        fill, stroke = TRACK_COLORS[track.key[0]]
-        self.create_rectangle(left, y+3, right, y+20, fill=fill, outline=stroke if selected else "",
-                              width=2 if selected else 1)
-        if right-left > 76:
-            self.create_text((left+right)/2, y+11, text=name, font=(self.face, 8), fill="#263950")
-        if selected:
-            for x in (left, right):
-                self.create_line(x, y+6, x, y+17, fill=stroke, width=3)
+        segments = track.segments or ((track.start, track.end),)
+        for i, (first, last) in enumerate(segments):
+            active = selected and (self.active_segment == (track.key, i) or len(segments) == 1)
+            if active and self.drag in ("left", "right", "clip") and isinstance(self.draft, tuple):
+                first, last = self.draft
+            left, right = self.x(first), self.x(last)
+            if right <= left:
+                continue
+            fill, stroke = TRACK_COLORS[track.key[0]]
+            self.create_rectangle(left, y+3, right, y+20, fill=fill, outline=stroke if active else "",
+                                  width=2 if active else 1)
+            if right-left > 76:
+                self.create_text((left+right)/2, y+11, text=name, font=(self.face, 8), fill="#263950")
+            if active:
+                for x in (left, right):
+                    self.create_line(x, y+6, x, y+17, fill=stroke, width=3)
+
+    def track_at(self, y):
+        row = (y-self.track_top)//self.row_height
+        index = self.top_track + row
+        return self.tracks[index] if 0 <= row < self.visible_tracks and index < len(self.tracks) else None
+
+    def layout_at(self, x, y):
+        if not 54 <= y < self.track_top:
+            return None
+        cues = [cue for cue in self.layouts if self.visible(cue.time) and abs(self.x(cue.time)-x) <= 8]
+        return min(cues, key=lambda cue: abs(self.x(cue.time)-x), default=None)
+
+    def snap_time(self, x, track=None):
+        raw = self.at(x)
+        return self.snap_value(raw, track)
+
+    def snap_value(self, raw, track=None):
+        x = self.x(raw)
+        if self.snap:
+            points = [self.start, self.start+self.duration, *(time for time, _ in self.events),
+                      *(mark.time for mark in self.markers), *(cue.time for cue in self.layouts if cue != self.layout_drag)]
+            if self.drag != "play":
+                points.append(self.time)
+                for item in self.tracks:
+                    for i, segment in enumerate(item.segments or ((item.start, item.end),)):
+                        if self.active_segment != (item.key, i) or track != item:
+                            points.extend(segment)
+            nearby = [time for time in points if self.visible(time) and abs(self.x(time)-x) <= 7]
+            if nearby:
+                return min(nearby, key=lambda time: abs(time-raw))
+        return min(self.start+self.duration, self.start + round((raw-self.start)*self.fps)/self.fps)
 
     def marker_at(self, x):
         close = [m for m in self.markers if self.visible(m.time) and abs(self.x(m.time)-x) <= 8]
         return min(close, key=lambda m: abs(self.x(m.time)-x), default=None)
 
     def context(self, event):
-        if not self.busy and 44 <= event.y < self.track_top:
-            marker = self.marker_at(event.x)
-            if marker is not None:
-                self.marker_menu(marker, event.x_root, event.y_root)
+        if self.busy:
+            return
+        cue = self.layout_at(event.x, event.y)
+        marker = self.marker_at(event.x) if 44 <= event.y < 55 else None
+        track = self.track_at(event.y)
+        if cue is not None:
+            self.layout_menu(cue, event.x_root, event.y_root)
+        elif marker is not None:
+            self.marker_menu(marker, event.x_root, event.y_root)
+        elif track is not None and track.key[0] == "video":
+            self.select(track.key)
+            time = self.at(event.x)
+            self.active_segment = next(((track.key, i) for i, (a, b) in enumerate(track.segments)
+                                        if a <= time < b), None)
+            self.draw()
+            self.clip_menu(time, event.x_root, event.y_root)
 
     def press(self, event):
         if self.busy:
             return
         self.focus_set()
+        cue = self.layout_at(event.x, event.y)
+        if cue is not None:
+            self.drag, self.draft, self.layout_drag = "layout", cue.time, cue
+            return
         if 44 <= event.y < self.track_top:
             marker = self.marker_at(event.x)
             if marker is not None:
                 self.jump(marker.time)
                 return
-            marks = [t for t, _ in self.events] + [cue.time for cue in self.layouts]
-            near = [t for t in marks if self.visible(t) and abs(event.x-self.x(t)) <= 7]
+            near = [t for t, _ in self.events if self.visible(t) and abs(event.x-self.x(t)) <= 7]
             if near:
-                self.jump(min(near, key=lambda t: abs(event.x-self.x(t))))
+                self.jump(min(near, key=lambda t: abs(self.x(t)-event.x)))
                 return
-        row = (event.y-self.track_top)//self.row_height
         self.drag = None
-        if 0 <= row < self.visible_tracks and row+self.top_track < len(self.tracks):
-            track = self.tracks[row+self.top_track]
+        track = self.track_at(event.y)
+        if track is not None:
             self.select(track.key)
             self.selected = track.key
+            self.active_segment = None
             if event.x < self.gutter-7:
-                self.drag = None
                 self.draw()
                 return
-            edges = [(abs(event.x-self.x(t)), side) for t, side in
-                     ((track.start, "left"), (track.end, "right")) if track.end > track.start and self.visible(t)]
-            if edges and min(edges)[0] <= 8:
-                self.drag = min(edges)[1]
+            time = self.at(event.x)
+            segments = track.segments or ((track.start, track.end),)
+            candidates = [(abs(event.x-self.x(t)), i, side) for i, (a, b) in enumerate(segments)
+                          for t, side in ((a, "left"), (b, "right")) if b > a and self.visible(t)]
+            if candidates and min(candidates)[0] <= 8:
+                _, index, self.drag = min(candidates)
+                self.active_segment = track.key, index
+            else:
+                self.active_segment = next(((track.key, i) for i, (a, b) in enumerate(segments)
+                                            if a <= time < b), None)
+                if self.active_segment is not None and track.key[0] == "video":
+                    self.drag = "clip"
+                    self.clip_origin = event.x, time
         self.drag = self.drag or "play"
         self.move(event)
 
     def move(self, event):
         if self.drag is None:
             return
-        value = self.at(event.x)
-        if self.drag == "play":
-            self.draft = value
+        if self.drag == "layout":
+            self.draft = self.snap_time(event.x)
+        elif self.drag == "play":
+            value = self.snap_time(event.x)
+            if value != self.draft:
+                self.draft = value
+                self.scrub(value)
         else:
-            value = self.start + round((value-self.start)*self.fps)/self.fps
-            track = next(track for track in self.tracks if track.key == self.selected)
-            minimum = min(1/self.fps, track.end-track.start)
-            self.draft = ((min(value, track.end-minimum), track.end) if self.drag == "left"
-                          else (track.start, max(value, track.start+minimum)))
+            key, index = self.active_segment
+            track = next(t for t in self.tracks if t.key == key)
+            segments = track.segments or ((track.start, track.end),)
+            first, last = segments[index]
+            value = self.snap_time(event.x, track)
+            minimum = min(1/self.fps, last-first)
+            media_start, media_end = track.media_bounds or (0., self.start+self.duration)
+            lower = segments[index-1][1] if index else media_start
+            upper = segments[index+1][0] if index+1 < len(segments) else media_end
+            if self.drag == "clip":
+                origin_x, origin_time = self.clip_origin
+                if abs(event.x-origin_x) < 4:
+                    self.draft = self.snap_time(event.x)
+                else:
+                    length = last-first
+                    proposed = first + self.at(event.x)-origin_time
+                    proposed = self.snap_value(proposed, track)
+                    earliest, latest = min(first, lower), max(first, upper-length)
+                    proposed = min(latest, max(earliest, proposed))
+                    self.draft = proposed, proposed+length
+            else:
+                self.draft = ((max(lower, min(value, last-minimum)), last) if self.drag == "left"
+                              else (first, min(upper, max(value, first+minimum))))
         self.draw()
 
     def release(self, _event):
         if self.drag is None:
             return
-        action, value = self.drag, self.draft
-        self.drag = None
-        if action == "play":
+        action, value, cue = self.drag, self.draft, self.layout_drag
+        self.drag = self.draft = self.layout_drag = self.clip_origin = None
+        if action == "play" or (action == "clip" and not isinstance(value, tuple)):
             self.time = value
             self.draw()
             self.seek(value)
+        elif action == "layout":
+            if value == cue.time:
+                self.jump(value)
+            else:
+                self.move_layout(cue, value)
         else:
-            self.apply_interval(value)
+            self.apply_interval(value, self.active_segment[1])
 
     def scroll_tracks(self, direction):
         self.top_track = min(max(0, len(self.tracks)-self.visible_tracks), max(0, self.top_track+direction))

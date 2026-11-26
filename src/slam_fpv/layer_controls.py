@@ -446,12 +446,14 @@ class LayerControls:
         tracks = []
         for i, layer in enumerate(self.project.videos):
             clip = layer.edit
-            media_end = clip.trim_out
-            if (length := self.clip_durations.get(layer.id)) is not None:
-                media_end = length if media_end is None else min(length, media_end)
-            last = start+duration if media_end is None else clip.bag_time(media_end)
-            first = clip.bag_time(clip.trim_in)
-            tracks.append(Track(("video", i), first, max(first, last), f"{i+1}. {layer.path.name}"))
+            media_duration = self.clip_durations.get(layer.id)
+            media_end = clip.bag_time(media_duration) if media_duration is not None else start+duration
+            ranges = tuple((clip.bag_time(first), clip.bag_time(last) if last is not None else media_end)
+                           for first, last in clip.spans(media_duration))
+            ranges = tuple((first, last) for first, last in ranges if last > first)
+            first, last = (ranges[0][0], ranges[-1][1]) if ranges else (start, start)
+            tracks.append(Track(("video", i), first, last, f"{i+1}. {layer.path.name}", ranges,
+                                (clip.bag_time(0.), media_end)))
         tracks.extend(Track(("text", i), layer.start, layer.end, " ".join(layer.text.split()))
                       for i, layer in enumerate(self.project.texts))
         if self.project.show_speed:
@@ -464,33 +466,49 @@ class LayerControls:
     def seek_timeline(self, seconds):
         start, _ = self.timeline_range()
         self.values["preview_offset"].set(f"{max(0, seconds-start):.6f}")
-        self.start_render(True)
+        self.transport.request(seconds)
 
-    def apply_interval(self, value):
-        if not self.selection:
+    def update_video_edit(self, index, edit):
+        layer = self.project.videos[index]
+        if edit != layer.edit:
+            self.replace_layer("video", index, replace(layer, edit=edit))
+            self.invalidate_video(index)
+            if self.elapsed is not None:
+                self.transport.request(self.elapsed)
+
+    def apply_interval(self, value, segment=0):
+        if self.busy or not self.selection:
+            self.update_timeline()
             return
         start, end = value
         kind, index = self.selection
         if kind == "video":
             layer = self.project.videos[index]
             edit = layer.edit
+            ranges = list(edit.spans())
+            if not 0 <= segment < len(ranges):
+                return
             first, last = max(0., edit.video_time(start)), edit.video_time(end)
-            if (length := self.clip_durations.get(layer.id)) is not None:
-                last = min(last, length)
+            duration = self.clip_durations.get(layer.id)
+            if duration is not None:
+                last = min(last, duration)
             if last <= first:
                 self.update_timeline()
-                self.status.set("裁剪范围须保留至少一段视频。")
                 return
-            # Keep an open-ended source interval if only the start handle moved.
-            end_cap = edit.trim_out if edit.trim_out is not None else length
-            if end_cap is None:
-                end_cap = edit.video_time(sum(self.timeline_range()))
-            updated = replace(edit, trim_in=first, trim_out=edit.trim_out if abs(last-end_cap) < 1e-7 else last)
-            if edit != updated:
-                self.replace_layer(kind, index, replace(layer, edit=updated))
-                self.invalidate_video(index)
-                if self.frame is not None:
-                    self.start_render(True)
+            previous_end = ranges[segment][1]
+            cap = previous_end if previous_end is not None else (duration if duration is not None else
+                                                                  edit.video_time(sum(self.timeline_range())))
+            last = previous_end if abs(last-cap) < 1e-7 else last
+            try:
+                if edit.segments is None:
+                    updated = replace(edit, trim_in=first, trim_out=last)
+                else:
+                    ranges[segment] = first, last
+                    updated = replace(edit, segments=tuple(ranges))
+                self.update_video_edit(index, updated)
+            except ValueError as error:
+                self.status.set(str(error))
+                self.update_timeline()
         elif kind == "text":
             self.replace_layer(kind, index, replace(self.project.texts[index], start=max(0.,start), end=end))
         elif kind == "speed":

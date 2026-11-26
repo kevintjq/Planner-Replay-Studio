@@ -126,3 +126,17 @@ def test_one_clip_shrinks_from_behind_the_cloud_to_its_inset():
         assert finish.getpixel((280, 155))[:3] == (210, 45, 55)
         assert finish.getpixel((160, 90))[:3] == (30, 210, 60)
         assert ("video", 0) not in compose(scene, project, (None,), 5.2, None, alpha=alpha)[1]
+
+
+def test_inset_marker_sets_its_own_size_position_and_duration():
+    scene = Image.new("RGBA", (320, 180))
+    footage = Image.new("RGB", (160, 90), (210, 45, 55))
+    clip = VideoLayer(Path("flight.mp4"), width=.25, position=(1., 1.))
+    project = Composition(videos=(clip,), views=(), layouts=(
+        LayoutCue(0., "backdrop", clip.id),
+        LayoutCue(1., "inset", clip.id, transition=1., width=.5, position=(0., 0.)),
+        LayoutCue(3., "inset", clip.id, transition=0., width=.25, position=(1., 1.)),
+    ))
+    for stamp, expected in ((1., (0, 0, 320, 180)), (1.5, (0, 0, 240, 135)),
+                            (2., (0, 0, 160, 90)), (3., (240, 135, 80, 45))):
+        assert compose(scene, project, (footage,), stamp, None)[1]["video", 0] == expected

@@ -218,3 +218,22 @@ def test_views_zoom_independently_and_goal_is_a_sized_disk():
         assert any(actor.GetProperty().GetLineWidth() == 6 for actor in actors)
     finally:
         renderer.close()
+
+
+def test_proxy_stream_delivers_ordered_previews_without_writing_a_file(tmp_path):
+    from slam_fpv.cli import open_source, parser, render
+    from slam_fpv.composition import Composition
+
+    output = tmp_path / "proxy.png"
+    args = parser().parse_args([
+        "demo", "--output", str(output), "--seconds", ".6",
+        "--fps", "10", "--width", "320", "--height", "180", "--slam-view",
+    ])
+    frames, events = [], []
+    render(args, open_source(args), preview=lambda *frame: frames.append(frame),
+           preview_stream=True, preview_offset=.2, event_data=events.append,
+           project=Composition(views=()))
+    assert [frame[2] for frame in frames] == [.2, .3, .4, .5, .6]
+    assert events == [()]
+    assert frames[0][0].shape == (180, 320, 4)
+    assert not output.exists()

@@ -18,6 +18,7 @@ class VideoEdit:
     trim_out: float | None = None
     crop: tuple = FULL_FRAME
     anchors: tuple = ()
+    segments: tuple | None = None
 
     def __post_init__(self):
         if not isfinite(self.offset) or not isfinite(self.trim_in) or self.trim_in < 0:
@@ -35,6 +36,28 @@ class VideoEdit:
                 raise ValueError("两组锚点必须在两个时间轴上依次递增")
             if not isfinite((video_b - video_a) / (bag_b - bag_a)):
                 raise ValueError("两组锚点的时间间隔无效")
+
+        if self.segments is not None:
+            previous_end = 0.
+            for start, end in self.segments:
+                if (previous_end is None or not isfinite(start) or start < previous_end
+                        or (end is not None and (not isfinite(end) or end <= start))):
+                    raise ValueError("视频片段必须按时间排序，且不能重叠。")
+                previous_end = end
+
+    def spans(self, duration=None):
+        """Visible source-time ranges, clipped by the overall media trim."""
+        ranges = ((0., None),) if self.segments is None else self.segments
+        for first, last in ranges:
+            first = max(first, self.trim_in)
+            limits = [t for t in (last, self.trim_out, duration) if t is not None]
+            last = min(limits, default=None)
+            if last is None or first < last:
+                yield first, last
+
+    def includes(self, time):
+        return any(first - 1e-9 <= time and (last is None or time < last - 1e-9)
+                   for first, last in self.spans())
 
     @property
     def rate(self):
@@ -139,7 +162,7 @@ class FlightVideo:
         self.path = path
         self.edit = edit
         self.reader = None
-        self.cached_time = None
+        self.cached_key = None
         self.cached_frame = None
 
     def __enter__(self):
@@ -151,17 +174,18 @@ class FlightVideo:
         if self.reader is not None:
             self.reader.close()
 
-    def frame_at(self, bag_seconds):
+    def frame_at(self, bag_seconds, max_width=None):
         if self.reader is None:
             return None
         time = self.edit.video_time(bag_seconds)
-        if time < self.edit.trim_in - 1e-9 or (self.edit.trim_out is not None and time >= self.edit.trim_out - 1e-9):
+        if not self.edit.includes(time):
             return None
         frame = self.reader.select(max(0., time))
         if frame is None:
             return None
         pts = self.reader.time(frame)
-        if pts != self.cached_time:
+        key = pts, max_width
+        if key != self.cached_key:
             image = self.reader.image(frame)
             if self.edit.crop != FULL_FRAME:
                 width, height = image.size
@@ -169,8 +193,10 @@ class FlightVideo:
                 left, top = min(width - 1, round(x0 * width)), min(height - 1, round(y0 * height))
                 image = image.crop((left, top, max(left + 1, round(x1 * width)),
                                                 max(top + 1, round(y1 * height))))
+            if max_width is not None:
+                image.thumbnail((max_width, max_width), Image.Resampling.BILINEAR)
             self.cached_frame = np.asarray(image)
-            self.cached_time = pts
+            self.cached_key = key
         return self.cached_frame
 
 

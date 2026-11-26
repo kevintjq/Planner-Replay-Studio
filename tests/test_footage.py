@@ -86,3 +86,18 @@ def test_video_edit_inverse_mapping():
     for edit in (VideoEdit(offset=.2), VideoEdit(anchors=((1., .2), (11., 10.5)))):
         for time in (0., 3., 7.5):
             assert edit.bag_time(edit.video_time(time)) == pytest.approx(time)
+
+
+def test_cut_segments_keep_source_timestamps_and_skip_removed_media(tmp_path):
+    from slam_fpv.footage import FlightVideo, VideoEdit
+
+    clip = tmp_path / "cut.mp4"
+    with imageio.get_writer(clip, fps=4, codec="libx264", macro_block_size=2) as writer:
+        for rgb in [(250, 16, 16), (16, 248, 16), (16, 16, 246)]:
+            writer.append_data(np.full((32, 64, 3), rgb, dtype=np.uint8))
+    edit = VideoEdit(anchors=((2., 0.), (3., 1.)), segments=((0., .25), (.5, None)))
+    with FlightVideo(clip, edit) as footage:
+        assert footage.frame_at(2.)[0, 0, 0] > 200
+        assert footage.frame_at(2.25) is None
+        assert footage.frame_at(2.49) is None
+        assert footage.frame_at(2.5)[0, 0, 2] > 200

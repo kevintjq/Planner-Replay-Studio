@@ -13,10 +13,14 @@ from .footage import FULL_FRAME, VideoEdit, VideoReader
 
 
 class VideoEditor:
-    def __init__(self, root, path, edit, slam_frame, slam_time, request_slam, apply, *, duration):
+    def __init__(self, root, path, edit, slam_frame, slam_time, request_slam, apply, *, duration, fps, request_loop, request_candidates):
         self.reader = VideoReader(path)
         self.edit = edit
         self.request_slam = request_slam
+        self.request_loop, self.request_candidates = request_loop, request_candidates
+        self.fps = fps
+        self.loop_job = None
+        self.loop_origin = None
         self.apply = apply
         self.slam_frame, self.slam_time = slam_frame, slam_time
         self.clip_frame = None
@@ -64,6 +68,8 @@ class VideoEditor:
         ttk.Entry(left, textvariable=self.bag_entry, width=9).pack(side="left", padx=5)
         self.render_button = ttk.Button(left, text="定位", command=self.seek_slam)
         self.render_button.pack(side="left")
+        for label, direction in (("上一帧", -1), ("下一帧", 1)):
+            ttk.Button(left, text=label, width=6, command=lambda d=direction: self.step_slam(d)).pack(side="left", padx=2)
         self.slam_label = tk.StringVar()
         ttk.Label(left, textvariable=self.slam_label).pack(side="right")
 
@@ -73,16 +79,16 @@ class VideoEditor:
         self.slider_time = tk.DoubleVar()
         self.slider = ttk.Scale(right, from_=0, to=self.reader.duration or 1, variable=self.slider_time)
         self.slider.pack(fill="x", pady=(0, 5))
-        self.slider.bind("<ButtonRelease-1>", lambda _: self.seek_clip(self.slider_time.get()))
-        self.slider.bind("<KeyRelease>", lambda _: self.seek_clip(self.slider_time.get()))
+        self.slider.bind("<ButtonRelease-1>", lambda _: self.manual_clip_seek(self.slider_time.get()))
+        self.slider.bind("<KeyRelease>", lambda _: self.manual_clip_seek(self.slider_time.get()))
         nav = ttk.Frame(right)
         nav.pack(fill="x")
         for label, direction in (("上一帧", -1), ("下一帧", 1)):
             ttk.Button(nav, text=label, command=lambda step=direction: self.step(step)).pack(side="left", padx=(0, 4))
         entry = ttk.Entry(nav, textvariable=self.clip_entry, width=9)
         entry.pack(side="left", padx=4)
-        entry.bind("<Return>", lambda _: self.seek_clip())
-        ttk.Button(nav, text="定位", command=self.seek_clip).pack(side="left")
+        entry.bind("<Return>", lambda _: self.manual_clip_seek())
+        ttk.Button(nav, text="定位", command=self.manual_clip_seek).pack(side="left")
 
         trim = ttk.Frame(content, padding=8)
         trim.grid(row=4, column=1, sticky="ew", padx=(5, 0), pady=(6, 0))
@@ -107,8 +113,20 @@ class VideoEditor:
         self.sync_label = tk.StringVar()
         ttk.Label(content, textvariable=self.sync_label,
                   style="Shell.TLabel").grid(row=5, column=1, sticky="w", padx=5)
+        review = ttk.Frame(content, padding=(8, 4))
+        review.grid(row=6, column=0, columnspan=2, sticky="ew")
+        self.loop_button = ttk.Button(review, text="循环核对 ±0.6 s", command=self.toggle_loop)
+        self.loop_button.pack(side="left", padx=(0, 8))
+        ttk.Button(review, text="找对齐候选", command=self.find_candidates).pack(side="left", padx=(0, 8))
+        self.candidate = tk.StringVar(value="选择候选动作")
+        self.candidate_times = {}
+        self.candidate_box = ttk.Combobox(review, width=27, textvariable=self.candidate, state="disabled")
+        self.candidate_box.pack(side="left", padx=(0, 8))
+        self.candidate_box.bind("<<ComboboxSelected>>", lambda _: self.choose_candidate())
+        self.review_status = tk.StringVar()
+        ttk.Label(review, textvariable=self.review_status, style="Quiet.TLabel").pack(side="left")
         footer = ttk.Frame(content, style="Shell.TFrame")
-        footer.grid(row=6, column=0, columnspan=2, sticky="ew")
+        footer.grid(row=7, column=0, columnspan=2, sticky="ew")
         ttk.Label(footer, text="拖框裁剪画幅；实拍可逐帧微调。记录起止两个锚点后，用「检查中段」核对转弯等动作。",
                   style="Shell.TLabel").pack(side="left")
         ttk.Button(footer, text="应用", style="Primary.TButton", command=self.save).pack(side="right")
@@ -146,6 +164,7 @@ class VideoEditor:
     def seek_slam(self, seconds=None):
         if self.aligning:
             return
+        self.stop_loop()
         try:
             seconds = float(self.bag_entry.get()) if seconds is None else seconds
             if not isfinite(seconds) or seconds < 0:
@@ -190,6 +209,81 @@ class VideoEditor:
             self.linked.set(True)
             self.seek_slam(sum(bag for bag, _ in self.edit.anchors) / 2)
 
+    def step_slam(self, direction):
+        if self.slam_time is None:
+            self.seek_slam(0.)
+        else:
+            cap = float(self.common_slider.cget("to"))
+            self.seek_slam(max(0., min(cap, self.slam_time + direction/self.fps)))
+
+    def find_candidates(self):
+        self.stop_loop()
+        try:
+            self.request_candidates()
+        except ValueError as error:
+            self.review_status.set(str(error))
+        else:
+            self.review_status.set("正在扫描 SLAM 位姿…")
+
+    def show_candidates(self, candidates):
+        self.candidate_times = {f"{time:.3f} s  ·  {label}": time for time, label in candidates}
+        self.candidate_box.configure(values=tuple(self.candidate_times),
+                                     state="readonly" if candidates else "disabled")
+        self.candidate.set("选择候选动作")
+        self.review_status.set("请在实拍中确认同一动作" if candidates else "所选区间暂无明显动作")
+
+    def choose_candidate(self):
+        time = self.candidate_times.get(self.candidate.get())
+        if time is not None:
+            self.linked.set(True)
+            self.seek_slam(time)
+
+    def toggle_loop(self):
+        if self.loop_job is not None:
+            self.stop_loop()
+            return
+        if self.aligning or self.slam_time is None:
+            self.review_status.set("先定位一帧 SLAM 画面")
+            return
+        start = max(0., self.slam_time-.6)
+        end = min(float(self.common_slider.cget("to")), self.slam_time+.6)
+        try:
+            self.request_loop(start, end)
+        except ValueError as error:
+            self.review_status.set(str(error))
+        else:
+            self.review_status.set("正在准备短循环…")
+
+    def loop_ready(self, frames):
+        self.loop_origin = self.slam_frame, self.slam_time, self.clip_time, self.linked.get()
+        self.linked.set(True)
+        self.loop_button.configure(text="停止循环")
+        self.review_status.set("同步循环预览")
+        pictures = [(Image.fromarray(frame), time) for frame, time in frames]
+
+        def advance(i):
+            self.set_slam(*pictures[i])
+            self.loop_job = self.window.after(100, lambda: advance((i+1) % len(pictures)))
+
+        advance(0)
+
+    def stop_loop(self):
+        if self.loop_job is None:
+            return
+        self.window.after_cancel(self.loop_job)
+        self.loop_job = None
+        self.loop_button.configure(text="循环核对 ±0.6 s")
+        frame, time, clip_time, linked = self.loop_origin
+        self.linked.set(linked)
+        self.set_slam(frame, time)
+        if not linked:
+            self.seek_clip(clip_time)
+        self.review_status.set("")
+
+    def manual_clip_seek(self, seconds=None):
+        self.stop_loop()
+        self.seek_clip(seconds)
+
     def seek_clip(self, seconds=None):
         try:
             value = float(self.clip_entry.get()) if seconds is None else seconds
@@ -215,6 +309,7 @@ class VideoEditor:
             self.sync_label.set(f"对齐位置 {mapped:.3f} s  ·  当前视频帧偏差 {(self.clip_time-mapped)*1000:+.0f} ms")
 
     def step(self, direction):
+        self.stop_loop()
         if self.clip_frame is None:
             self.seek_clip(self.edit.trim_in)
         elif direction > 0:
@@ -231,6 +326,7 @@ class VideoEditor:
         self.trim_out.set("" if end is None else f"{end:.6f}")
 
     def mark(self, index):
+        self.stop_loop()
         if self.render_button.instate(["disabled"]):
             return
         if self.slam_time is None or self.clip_frame is None:
@@ -267,6 +363,7 @@ class VideoEditor:
         return min(1., max(0., (event.x - x) / w)), min(1., max(0., (event.y - y) / h))
 
     def start_crop(self, event):
+        self.stop_loop()
         if self.clip_bounds is not None:
             self.drag_start = self.normalized(event)
 
@@ -311,5 +408,7 @@ class VideoEditor:
         self.close()
 
     def close(self):
+        if self.loop_job is not None:
+            self.window.after_cancel(self.loop_job)
         self.reader.close()
         self.window.destroy()

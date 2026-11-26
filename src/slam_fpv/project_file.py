@@ -99,10 +99,12 @@ def load_project(path):
                 raise ValueError("项目缺少视频路径。")
             edit = vectors(item["edit"], "crop")
             edit["anchors"] = tuple(tuple(pair) for pair in edit["anchors"])
+            if edit.get("segments") is not None:
+                edit["segments"] = tuple(tuple(segment) for segment in edit["segments"])
             item.update(path=video_path, edit=VideoEdit(**edit))
             videos.append(VideoLayer(**vectors(item, "position", "backdrop_position")))
         composition["videos"] = tuple(videos)
-        composition["layouts"] = tuple(LayoutCue(**item) for item in composition.get("layouts", ()))
+        composition["layouts"] = tuple(LayoutCue(**vectors(item, "position")) for item in composition.get("layouts", ()))
         composition["markers"] = tuple(TimelineMarker(**item) for item in composition.get("markers", ()))
         return ProjectFile(Composition(**composition), values, enabled, source, bag, media(data.get("extrinsics")))
     except (AttributeError, KeyError, TypeError) as error:

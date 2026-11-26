@@ -77,14 +77,19 @@ def inspect_export(args, source, project, check_cancel):
         if info.has_audio:
             audio_ids.append(layer.id)
         first, last = layer.edit.video_time(lo), layer.edit.video_time(hi)
-        tail = layer.edit.trim_out if layer.edit.trim_out is not None else info.duration
-        if tail is not None and info.duration is not None:
-            tail = min(tail, info.duration)
-        head = min(hi-lo, max(0., (layer.edit.trim_in-first)/layer.edit.rate))
+        spans = tuple(layer.edit.spans(info.duration))
+        if not spans:
+            lines.append(f"{layer.path.name} · 当前没有保留的片段")
+            continue
+        tail = spans[-1][1]
+        head = min(hi-lo, max(0., (spans[0][0]-first)/layer.edit.rate))
         end_gap = min(hi-lo, max(0., (last-tail)/layer.edit.rate)) if tail is not None else None
         fps = args.fps
         tail_text = "片尾时长未知" if end_gap is None else f"片尾缺 {ceil(max(0., end_gap*fps-1e-7))} 帧"
-        lines.append(f"{layer.path.name} · 片头缺 {ceil(max(0., head*fps-1e-7))} 帧 · {tail_text}")
+        retained = sum(max(0., min(last, b if b is not None else last) - max(first, a)) for a, b in spans)
+        deleted = max(0., (hi-lo) - head - (end_gap or 0.) - retained/layer.edit.rate)
+        cut_note = f" · 中间留空 {deleted:.2f} s" if deleted > 1/fps and len(spans) > 1 else ""
+        lines.append(f"{layer.path.name} · 片头缺 {ceil(max(0., head*fps-1e-7))} 帧 · {tail_text}{cut_note}")
     return tuple(lines), tuple(blockers), tuple(audio_ids)
 
 
@@ -109,20 +114,27 @@ def mux_audio(destination, layer, elapsed, duration, play_rate, check_cancel=Non
         raise ValueError(f"{layer.path.name} 没有音轨。")
     source_start = layer.edit.video_time(elapsed)
     source_end = layer.edit.video_time(elapsed + duration*play_rate)
-    lower = max(0., source_start, layer.edit.trim_in)
-    caps = [source_end, *(bound for bound in (layer.edit.trim_out, info.duration) if bound is not None)]
-    upper = min(caps)
+    spans = [(max(first, source_start), min(last if last is not None else source_end, source_end))
+             for first, last in layer.edit.spans(info.duration)]
+    spans = [(first, last) for first, last in spans if last > first]
     rate = layer.edit.rate * play_rate
     with TemporaryDirectory(prefix=".audio-", dir=destination.parent) as tmp:
         staged = Path(tmp) / "mux.mp4"
         command = [get_ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-copyts",
                    "-i", str(destination)]
-        if upper > lower:
+        if spans:
+            lower, upper = spans[0][0], spans[-1][1]
             start, end = lower + info.origin, upper + info.origin
             delay = round(max(0., (lower-source_start)/rate)*1000)
             filters = [f"atrim=start={start:.9f}:end={end:.9f}",
                        f"asetpts=PTS-({start:.9f})/TB", "aresample=48000:async=1:first_pts=0",
-                       *tempo_filters(rate), f"adelay={delay}:all=1", "apad"]
+                       *tempo_filters(rate)]
+            gaps = [(a[1], b[0]) for a, b in zip(spans, spans[1:]) if a[1] < b[0]]
+            if gaps:
+                # Small audio frames keep the mute near the corresponding video cut.
+                enabled = "+".join(f"gte(t,{(a-lower)/rate:.9f})*lt(t,{(b-lower)/rate:.9f})" for a, b in gaps)
+                filters += ["asetnsamples=n=128:p=0", f"volume=0:enable='{enabled}'"]
+            filters += [f"adelay={delay}:all=1", "apad"]
             command += ["-i", str(layer.path), "-filter_complex", "[1:a:0]" + ",".join(filters) + "[audio]",
                         "-map", "0:v:0", "-map", "[audio]"]
         else:

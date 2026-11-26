@@ -8,6 +8,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import av
 
+from .export_media import publish_output
 from .footage import VideoReader
 from .trajectory_image import track_trajectory
 from .video_editor import VideoEditor
@@ -197,20 +198,23 @@ class TrajectoryTool:
         if self.result is None or self.working:
             return
         path = filedialog.asksaveasfilename(parent=self.window, defaultextension=".png", filetypes=(("PNG 图片", "*.png"),),
-                                            initialfile=f"{self.path.stem}-trajectory.png")
+                                            initialfile=f"{self.path.stem}-trajectory.png", initialdir=self.app.export_directory())
         if not path:
             return
         destination = Path(path)
-        protected = (self.path, self.app.bag_path, *(layer.path for layer in (*self.app.project.videos, *self.app.project.images)))
-        if destination.suffix.lower() != ".png" or any(item and item.resolve() == destination.resolve() for item in protected):
+        output = destination.resolve()
+        if (destination.suffix.lower() != ".png" or self.path.resolve() == output
+                or not self.app.export_paths_safe({output})):
             self.status.set("请选择独立的 PNG 文件，保留源素材。")
             return
         try:
-            with TemporaryDirectory(prefix=".trajectory-", dir=destination.parent) as folder:
+            cache = self.app.export_cache(destination)
+            cache.mkdir(parents=True, exist_ok=True)
+            with TemporaryDirectory(prefix=".trajectory-", dir=cache) as folder:
                 staged = Path(folder) / destination.name
                 self.result.image.save(staged, format="PNG")
-                staged.replace(destination)
-        except OSError as error:
+                publish_output(staged, destination)
+        except (ValueError, OSError) as error:
             self.status.set(str(error))
             return
         self.status.set(f"已保存 {destination.name}")

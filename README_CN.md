@@ -6,11 +6,13 @@
 
 ## Windows 完整工作台
 
-[下载完整工作台 Windows 安装包](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.2.1/PlannerReplayStudio-Setup.exe)，双击安装后，从开始菜单打开 **Planner Replay Studio Full**。
+[下载完整工作台 Windows 安装包](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.3.0/PlannerReplayStudio-Setup.exe)，双击安装后，从开始菜单打开 **Planner Replay Studio Full**。
 
 安装包含 Python 和 Tk 运行库，无需克隆仓库或手动安装依赖。保留视频对齐、规划叠加、拖影图、现有 `.slamfpv` 项目及 1080p/60 fps 导出。
 
 操作说明见 [视频合成工作台指南](docs/studio.zh-CN.md)。
+
+点击 **导出项目文件夹**，把项目、素材、缓存和成品放在一起。整夹搬走后，打开里面的 `project.slamfpv` 即可继续。
 
 ## C++ 原生预览版
 

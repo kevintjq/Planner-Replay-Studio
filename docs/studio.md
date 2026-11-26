@@ -6,13 +6,9 @@
 
 ## Quick start
 
-[Download the complete Windows setup EXE](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.2.1/PlannerReplayStudio-Setup.exe) and open **Planner Replay Studio Full** from the Start menu.
+[Download the complete Windows setup EXE](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.3.0/PlannerReplayStudio-Setup.exe) and open **Planner Replay Studio Full** from the Start menu.
 
-To run from source, follow the steps below.
-
-1. Install 64-bit Python 3.10 or newer with Tcl/Tk.
-2. Clone the repository and double-click [Start_Planner_Replay.cmd](../Start_Planner_Replay.cmd). The first launch downloads dependencies.
-3. Open a ROS1 `.bag` under **Data** or choose **Use simulated data**. Pick views and layers, then generate a preview.
+Open a ROS1 `.bag` under **Data** or choose **Use simulated data**. Pick views and layers, then generate a preview.
 
 ## Multi-video alignment
 
@@ -67,8 +63,11 @@ Open **Fixed-camera trajectory**, pick a starting frame and draw a box around th
 | Format | Description |
 | --- | --- |
 | `.slamfpv` | Stores media paths, trims, anchors, event and layout markers, and export settings. Moved media can be relinked. |
+| Project folder | Choose **Export Project Folder** and name a new folder. It contains `project.slamfpv`, `media`, `cache`, and `exports`. |
 | MP4 | Defaults to 1080p at 60 fps with automatic NVIDIA NVENC or CPU H.264 encoding; optional single-track source audio and 0.5× / 0.25× playback |
 | PNG | Enable **Transparent canvas** to export an alpha channel |
+
+To move or back up a project, copy the whole folder and reopen its `project.slamfpv`. **Save Project** copies new assets into `media`. Video and trajectory-image exports default to `exports`. Temporary files go to `cache` and are cleaned up after the task. Existing standalone projects still open and can be packaged.
 
 Choose **Export 1080p · 60 fps** for the default preset. Open **More settings** to export PNG or choose resolution, frame rate, encoder, source audio and slow motion.
 

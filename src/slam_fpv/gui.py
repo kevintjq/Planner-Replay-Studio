@@ -5,7 +5,7 @@ from dataclasses import replace
 import json
 import os
 from math import ceil, isfinite
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from queue import Empty, Queue
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
@@ -28,8 +28,8 @@ from .layer_controls import VIDEO_FILES, LayerControls
 from .trajectory_tool import TrajectoryTool
 from .video_editor import VideoEditor
 from .sources import inspect_bag
-from .project_file import ProjectFile, load_project, save_project
-from .export_media import inspect_export
+from .project_file import WORKSPACE_PROJECT, ProjectFile, load_project, save_project, save_workspace_folder
+from .export_media import inspect_export, publish_output
 from .spatial import CORRIDOR_TYPES, EGO_SPLINES, GOAL_TYPES, PLAN_TYPES, LayerStatus
 from .sensor_topics import CAMERA_INFO, SCAN_TYPES, VELOCITY_TYPES, camera_choices, connected_frames, planner_map_topic, pose_frames, suggested_topic
 
@@ -81,6 +81,7 @@ class RendererApp(LayerControls):
         self.bag_path = None
         self.bag_metadata = None
         self.demo_selected = False
+        self.workspace_folder = None
         self.spatial_diagnostics = {}
         self.overlay_status = tk.StringVar()
         self.disabled_controls = []
@@ -99,6 +100,8 @@ class RendererApp(LayerControls):
         header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 15))
         ttk.Label(header, text="Planner Replay", style="Title.TLabel").pack(side="left")
         ttk.Label(header, text="无人机规划回放与视频合成", style="Subtitle.TLabel").pack(side="left", padx=13)
+        ttk.Button(header, text="导出项目文件夹", command=self.export_workspace,
+                   style="Shell.TButton").pack(side="right")
         ttk.Button(header, text="保存项目", command=self.save_workspace, style="Shell.TButton").pack(side="right", padx=6)
         ttk.Button(header, text="打开项目", command=self.open_workspace, style="Shell.TButton").pack(side="right")
 
@@ -788,25 +791,74 @@ class RendererApp(LayerControls):
 
         ttk.Button(group, textvariable=variable, command=pick).pack(side="left")
 
-    def save_workspace(self):
-        if self.busy:
-            return
-        path = filedialog.asksaveasfilename(parent=self.root, title="保存项目", defaultextension=".slamfpv",
-                                            filetypes=(("Planner Replay 项目", "*.slamfpv"),))
-        if not path:
-            return
+    def workspace_snapshot(self):
         values = {name: value.get() for name, value in self.values.items() if name != "extrinsics"}
         enabled = {name: flag.get() for name, flag in self.spatial_toggles.items()}
         enabled.update(edl=self.edl.get(), slam_view=self.slam_view.get())
         source = "bag" if self.bag_path else "demo" if self.demo_selected else "none"
         external = self.values["extrinsics"].get()
-        project = ProjectFile(self.project, values, enabled, source, self.bag_path, Path(external) if external else None)
+        return ProjectFile(self.project, values, enabled, source, self.bag_path, Path(external) if external else None)
+
+    def save_workspace(self):
+        if self.busy:
+            return
+        if self.workspace_folder is not None:
+            self.write_workspace_folder(self.workspace_folder, create=False)
+            return
+        path = filedialog.asksaveasfilename(parent=self.root, title="保存项目", defaultextension=".slamfpv",
+                                            filetypes=(("Planner Replay 项目", "*.slamfpv"),))
+        if not path:
+            return
         try:
-            save_project(Path(path), project)
+            file = Path(path)
+            if file.name.casefold() == WORKSPACE_PROJECT and file.is_file() and load_project(file).portable:
+                raise ValueError("请先打开该项目文件夹中的项目，再保存修改。")
+            save_project(file, self.workspace_snapshot())
         except (ValueError, OSError) as error:
             messagebox.showerror("无法保存项目", str(error), parent=self.root)
             return
-        self.status.set(f"已保存项目 {Path(path).name}")
+        self.status.set(f"已保存项目 {file.name}")
+
+    def export_workspace(self):
+        if self.busy:
+            return
+        parent = filedialog.askdirectory(parent=self.root, title="选择项目文件夹的保存位置", mustexist=True)
+        if not parent:
+            return
+        suggested = self.workspace_folder or self.bag_path
+        name = simpledialog.askstring("导出项目文件夹", "新项目文件夹名称",
+                                      initialvalue=suggested.stem if suggested else "Planner Replay", parent=self.root)
+        if name is None:
+            return
+        name = name.strip()
+        if (not name or any(char in '<>:"/\\|?*' or ord(char) < 32 for char in name)
+                or name.endswith(".") or PureWindowsPath(name).is_reserved()):
+            messagebox.showerror("项目文件夹名称无效", "请输入 Windows 可用的文件夹名称。", parent=self.root)
+            return
+        self.write_workspace_folder(Path(parent) / name, create=True)
+
+    def write_workspace_folder(self, folder, *, create):
+        self.transport.stop()
+        snapshot = self.workspace_snapshot()
+
+        def work():
+            try:
+                result = save_workspace_folder(
+                    folder, snapshot, create=create, check_cancel=self.check_cancel,
+                    progress=lambda done, total: self.events.put(("package_progress", (done, total))))
+            except FileExistsError as error:
+                raise ValueError("目标文件夹已存在或目录名称冲突，请选择新的项目文件夹。") from error
+            return "workspace_saved", result
+
+        self.run_job(work, "正在保存项目与素材…")
+
+    def accept_workspace_save(self, path, saved, replacements):
+        self.workspace_folder = path.parent
+        self._project = replace(saved, composition=self.project).relink(replacements).composition
+        self.bag_path = saved.bag
+        self.values["extrinsics"].set(str(saved.extrinsics or ""))
+        self.refresh_layers()
+        self.status.set(f"已保存项目文件夹 {path.parent.name}")
 
     def open_workspace(self):
         if self.busy:
@@ -839,6 +891,7 @@ class RendererApp(LayerControls):
             self.run_job(work, "正在读取项目的话题…")
 
     def restore_workspace(self, path, saved, metadata):
+        self.workspace_folder = path.resolve().parent if saved.portable and path.name == WORKSPACE_PROJECT else None
         if saved.bag:
             self.set_topics(saved.bag, metadata)
         else:
@@ -1227,7 +1280,7 @@ class RendererApp(LayerControls):
         if not preview:
             formats = (("MP4 视频", "*.mp4"), ("PNG 图片", "*.png")) if advanced else (("MP4 视频", "*.mp4"),)
             path = filedialog.asksaveasfilename(parent=self.root, defaultextension=".mp4", initialfile="planner-replay",
-                                               filetypes=formats)
+                                               filetypes=formats, initialdir=self.export_directory())
             if not path:
                 return
             destination = Path(path)
@@ -1244,7 +1297,7 @@ class RendererApp(LayerControls):
                 args.width, args.height, args.fps, args.encoder = 1920, 1080, 60, "auto"
                 project = replace(project, play_rate=1.)
             outputs = {destination.resolve(), destination.with_suffix(".json").resolve()}
-            if not preview and any(layer.path.resolve() in outputs for layer in (*project.videos, *project.images)):
+            if not preview and not self.export_paths_safe(outputs):
                 raise ValueError("导出位置不能覆盖已导入的素材。")
             if preview and args.width > 1920:
                 args.height = round(args.height * 1920 / args.width / 2) * 2
@@ -1342,10 +1395,31 @@ class RendererApp(LayerControls):
         modal.wait_visibility()
         modal.grab_set()
 
+    def export_directory(self):
+        return str(self.workspace_folder / "exports") if self.workspace_folder is not None else None
+
+    def export_paths_safe(self, outputs):
+        if any(path.resolve() in outputs for path in self.workspace_snapshot().media()):
+            return False
+        if self.workspace_folder is None:
+            return True
+        manifest = self.workspace_folder / WORKSPACE_PROJECT
+        return all(path != manifest and not path.is_relative_to(self.workspace_folder / "media") for path in outputs)
+
+    def export_cache(self, destination):
+        if self.workspace_folder is None:
+            return destination.parent
+        cache = self.workspace_folder / "cache"
+        if cache.resolve() != cache:
+            raise ValueError("缓存目录必须位于项目文件夹内。")
+        return cache
+
     def execute_export(self, args, source, project, destination):
         def work():
             destination.parent.mkdir(parents=True, exist_ok=True)
-            with TemporaryDirectory(prefix=".slam-fpv-", dir=destination.parent) as staging:
+            cache = self.export_cache(destination)
+            cache.mkdir(parents=True, exist_ok=True)
+            with TemporaryDirectory(prefix=".slam-fpv-", dir=cache) as staging:
                 temporary_output = Path(staging) / destination.name
                 render(args, source, staging=temporary_output, project=project,
                        progress=lambda done, total: self.events.put(("progress", (done, total))),
@@ -1360,8 +1434,8 @@ class RendererApp(LayerControls):
                     with av.open(str(temporary_output)) as video:
                         if not video.streams.video or video.streams.video[0].frames != summary["frames"]:
                             raise ValueError("导出视频的帧数与渲染记录不符。")
-                temporary_output.replace(destination)
-                report.replace(destination.with_suffix(".json"))
+                publish_output(temporary_output, destination)
+                publish_output(report, destination.with_suffix(".json"))
             return "saved", (destination, codec)
         self.run_job(work, "正在准备导出…")
 
@@ -1378,7 +1452,7 @@ class RendererApp(LayerControls):
         def run():
             try:
                 result = action()
-                if result[0] != "saved":
+                if result[0] not in {"saved", "workspace_saved"}:
                     self.check_cancel()
                 self.events.put(result)
             except Cancelled:
@@ -1422,13 +1496,14 @@ class RendererApp(LayerControls):
                         self.trajectory_tool.status.set(f"已跟踪 {elapsed:.1f} s" if total is None
                                                         else f"已跟踪 {elapsed:.1f} / {total:.1f} s")
                     continue
-                if kind == "progress":
+                if kind in {"progress", "package_progress"}:
                     done, total = value
                     if self.progress["mode"] == "indeterminate":
                         self.progress.stop()
                         self.progress.configure(mode="determinate", maximum=total)
                     self.progress.configure(value=done)
-                    self.status.set(f"正在导出 {done} / {total} 帧")
+                    self.status.set(f"已处理 {done} / {total} 个素材" if kind == "package_progress"
+                                    else f"正在导出 {done} / {total} 帧")
                     continue
                 self.busy = False
                 self.timeline.busy = False
@@ -1475,6 +1550,8 @@ class RendererApp(LayerControls):
                     self.set_topics(*value)
                 elif kind == "project":
                     self.restore_workspace(*value)
+                elif kind == "workspace_saved":
+                    self.accept_workspace_save(*value)
                 elif kind == "export_check":
                     self.status.set("导出检查完成")
                     self.export_check(*value)

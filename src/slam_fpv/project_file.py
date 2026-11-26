@@ -2,11 +2,15 @@
 from dataclasses import asdict, dataclass, replace
 import json
 import os
+import shutil
 from pathlib import Path
-from tempfile import NamedTemporaryFile
+from tempfile import NamedTemporaryFile, mkdtemp
 
 from .composition import Composition, ImageLayer, LayerMotion, LayoutCue, PointCloudView, TextLayer, TimelineMarker, VideoLayer
 from .footage import VideoEdit
+
+
+WORKSPACE_PROJECT = "project.slamfpv"
 
 
 @dataclass(frozen=True)
@@ -17,6 +21,7 @@ class ProjectFile:
     source: str
     bag: Path | None = None
     extrinsics: Path | None = None
+    portable: bool = False
 
     def media(self):
         return tuple(dict.fromkeys(path for path in (self.bag, self.extrinsics,
@@ -41,7 +46,7 @@ def save_project(path, project):
         if not media:
             return None
         try:
-            return os.path.relpath(media.resolve(), path.parent)
+            return Path(os.path.relpath(media.resolve(), path.parent)).as_posix()
         except ValueError:  # Windows paths on different drives
             return str(media.resolve())
 
@@ -51,6 +56,8 @@ def save_project(path, project):
     data = {"version": 1, "source": project.source, "bag": reference(project.bag),
             "extrinsics": reference(project.extrinsics), "values": project.values,
             "enabled": project.enabled, "composition": composition}
+    if project.portable:
+        data["portable"] = True
     pending = None
     try:
         with NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as file:
@@ -61,6 +68,57 @@ def save_project(path, project):
     finally:
         if pending is not None:
             pending.unlink(missing_ok=True)
+
+
+def save_workspace_folder(folder, project, *, create, check_cancel=lambda: None, progress=lambda done, total: None):
+    """Copy media before atomically publishing the project manifest."""
+    folder = folder.parent.resolve() / folder.name
+    manifest = folder / WORKSPACE_PROJECT
+    if create:
+        folder.mkdir()
+    elif not load_project(manifest).portable:
+        raise ValueError("此文件夹不是 Planner Replay 项目。")
+
+    added = []
+    try:
+        for name in ("media", "cache", "exports"):
+            directory = folder / name
+            directory.mkdir(exist_ok=True)
+            if directory.resolve() != directory:
+                raise ValueError(f"项目目录不能指向外部位置：{name}")
+        media = folder / "media"
+        replacements, copied = {}, {}
+        sources = project.media()
+        for index, source in enumerate(sources, 1):
+            check_cancel()
+            original = source.resolve(strict=True)
+            if not original.is_file():
+                raise ValueError(f"素材不是文件：{source}")
+            if original not in copied:
+                if original.is_relative_to(media):
+                    copied[original] = original
+                else:
+                    storage = Path(mkdtemp(prefix="asset-", dir=media))
+                    added.append(storage)
+                    target = storage / source.name
+                    with original.open("rb") as incoming, target.open("xb") as outgoing:
+                        while block := incoming.read(4 * 1024 * 1024):
+                            check_cancel()
+                            outgoing.write(block)
+                    copied[original] = target
+            replacements[source] = copied[original]
+            progress(index, len(sources))
+        check_cancel()
+        saved = replace(project.relink(replacements), portable=True)
+        save_project(manifest, saved)
+        return manifest, saved, replacements
+    except BaseException:
+        if create:
+            shutil.rmtree(folder, ignore_errors=True)
+        else:
+            for storage in added:
+                shutil.rmtree(storage, ignore_errors=True)
+        raise
 
 
 def load_project(path):
@@ -118,6 +176,6 @@ def load_project(path):
         composition["motions"] = tuple(LayerMotion(**vectors(item, "large_position"))
                                        for item in composition.get("motions", ()))
         composition["markers"] = tuple(TimelineMarker(**item) for item in composition.get("markers", ()))
-        return ProjectFile(Composition(**composition), values, enabled, source, bag, media(data.get("extrinsics")))
+        return ProjectFile(Composition(**composition), values, enabled, source, bag, media(data.get("extrinsics")), data.get("portable") is True)
     except (AttributeError, KeyError, TypeError) as error:
         raise ValueError("项目文件格式无效。") from error

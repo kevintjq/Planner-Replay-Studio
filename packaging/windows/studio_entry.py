@@ -20,9 +20,9 @@ def smoke():
     from rosbags.highlevel import AnyReader
     from rosbags.rosbag1 import Writer
     from rosbags.typesys import Stores, get_typestore
-    from slam_fpv.composition import Composition, TextLayer, compose
+    from slam_fpv.composition import Composition, ImageLayer, TextLayer, VideoLayer, compose
     from slam_fpv.gui import RendererApp
-    from slam_fpv.project_file import ProjectFile, load_project, save_project
+    from slam_fpv.project_file import ProjectFile, load_project, save_project, save_workspace_folder
 
     assert vtk.vtkVersion.GetVTKMajorVersion() >= 9
     assert cv2.TrackerCSRT_create() is not None
@@ -59,6 +59,26 @@ def smoke():
         with av.open(str(path)) as video:
             assert video.streams.video[0].average_rate == 60 and next(video.decode(video=0)) is not None
 
+        asset = folder / "标注.png"
+        frame.save(asset)
+        composition = Composition(videos=(VideoLayer(path),), images=(ImageLayer(asset, 0., 1.),),
+                                  texts=restored.texts, show_speed=True)
+        project = ProjectFile(composition, {}, {}, "bag", bag)
+        manifest, _, _ = save_workspace_folder(folder / "项目", project, create=True)
+        moved = folder / "移动后的项目"
+        manifest.parent.rename(moved)
+        for original in project.media():
+            original.unlink()
+        reopened = load_project(moved / manifest.name)
+        assert reopened.portable and (moved / "cache").is_dir() and (moved / "exports").is_dir()
+        assert all(item.is_file() and item.is_relative_to(moved / "media") for item in reopened.media())
+        with av.open(str(reopened.composition.videos[0].path)) as video:
+            assert video.streams.video[0].average_rate == 60
+        with AnyReader([reopened.bag]) as reader:
+            topic, _, raw = next(reader.messages())
+            assert reader.deserialize(raw, topic.msgtype).data == "replay"
+
+
 
 if __name__ == "__main__":
     if sys.argv[1:2] == ["--smoke"]:
@@ -70,7 +90,7 @@ if __name__ == "__main__":
                 log.write_text(traceback.format_exc(), encoding="utf-8")
             raise SystemExit(1)
         if log is not None:
-            log.write_text("Workspace, ROS1 bag, project round-trip, overlays and 60 fps encode/decode passed.\n",
+            log.write_text("Workspace, ROS1 bag, project round-trip and relocation, overlays and 60 fps encode/decode passed.\n",
                            encoding="utf-8")
     else:
         main()

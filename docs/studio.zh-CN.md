@@ -6,13 +6,9 @@
 
 ## 快速开始
 
-[下载完整工作台 Windows EXE](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.2.1/PlannerReplayStudio-Setup.exe)，安装后从开始菜单打开 **Planner Replay Studio Full**。
+[下载完整工作台 Windows EXE](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.3.0/PlannerReplayStudio-Setup.exe)，安装后从开始菜单打开 **Planner Replay Studio Full**。
 
-从源码启动时，使用下列步骤。
-
-1. 安装带 Tcl/Tk 的 64 位 Python 3.10 或更高版本。
-2. 克隆仓库，双击 [Start_Planner_Replay.cmd](../Start_Planner_Replay.cmd)。首次启动会下载依赖。
-3. 在「数据」打开 ROS1 `.bag`，或点「使用模拟数据」查看效果。选择机位和图层后点「生成预览」。
+在「数据」打开 ROS1 `.bag`，或点「使用模拟数据」查看效果。选择机位和图层后点「生成预览」。
 
 ## 多路视频对齐
 
@@ -67,8 +63,11 @@ SUPER 优先识别 `visualization/exp_traj` 和 `visualization/exp_sfc`。EGO �
 | 项目 | 说明 |
 | --- | --- |
 | `.slamfpv` | 保存素材路径、裁剪、锚点、事件与布局标记和导出参数，素材移动后可重新定位 |
+| 项目文件夹 | 点击 **导出项目文件夹** 并给新文件夹命名。包含 `project.slamfpv`、`media`、`cache` 和 `exports` |
 | MP4 | 默认 1080p、60 fps，自动选择 NVIDIA NVENC 或 CPU H.264；可选一路原声及 0.5× / 0.25× 慢放 |
 | PNG | 勾选「透明画布」保留透明通道 |
+
+搬迁或备份时复制整个文件夹，重新打开其中的 `project.slamfpv`。按 **保存项目** 会把新增素材复制进 `media`。导出视频和轨迹图时默认打开 `exports`，中间文件放进 `cache`，任务结束后清理。旧的单文件项目仍可打开并转换。
 
 点「导出 1080p · 60 fps」选文件位置即可开始。「更多设置」可选择 MP4 或 PNG，并自定义分辨率、帧率、编码、原声和慢放。
 

@@ -1,14 +1,35 @@
 """Preflight the selected interval and optionally mux one aligned audio track."""
 from dataclasses import dataclass
+from errno import EXDEV
 from math import ceil, isfinite
 from pathlib import Path
 import subprocess
-from tempfile import TemporaryDirectory
+from shutil import copyfileobj
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 
 from imageio_ffmpeg import get_ffmpeg_exe
 import numpy as np
 
 from .footage import VideoReader
+
+
+def publish_output(staged, destination):
+    """Publish a staged file, including to a different drive."""
+    try:
+        staged.replace(destination)
+        return
+    except OSError as error:
+        if error.errno != EXDEV and getattr(error, "winerror", None) != 17:
+            raise
+    pending = None
+    try:
+        with staged.open("rb") as source, NamedTemporaryFile(dir=destination.parent, delete=False) as target:
+            pending = Path(target.name)
+            copyfileobj(source, target)
+        pending.replace(destination)
+    finally:
+        if pending is not None:
+            pending.unlink(missing_ok=True)
 
 
 @dataclass(frozen=True)

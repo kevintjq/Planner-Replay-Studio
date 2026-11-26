@@ -124,6 +124,16 @@ class LayoutCue:
 
 
 @dataclass(frozen=True)
+class TimelineMarker:
+    time: float
+    label: str
+
+    def __post_init__(self):
+        if not isfinite(self.time) or self.time < 0 or not self.label.strip() or len(self.label) > 48:
+            raise ValueError("标记须有有效时间和 1–48 字的名称。")
+
+
+@dataclass(frozen=True)
 class Composition:
     videos: tuple = ()
     views: tuple = (PointCloudView(),)
@@ -141,8 +151,11 @@ class Composition:
     audio_id: str | None = None
     play_rate: float = 1.
     compare_plans: bool = False
+    markers: tuple = ()
 
     def __post_init__(self):
+        if any(left.time >= right.time for left, right in zip(self.markers, self.markers[1:])):
+            raise ValueError("手动标记须按时间递增。")
         ids = {layer.id for layer in self.videos}
         if len(ids) != len(self.videos) or (self.audio_id is not None and self.audio_id not in ids):
             raise ValueError("视频图层引用无效。")

@@ -77,3 +77,12 @@ def test_pts_crop_trim_and_two_anchor_drift(tmp_path):
     with VideoReader(clip) as reader:
         assert abs(reader.time(reader.select(.4)) - .4) < 1e-9
         assert reader.time(reader.select(.01)) == 0
+
+
+def test_video_edit_inverse_mapping():
+    import pytest
+    from slam_fpv.footage import VideoEdit
+
+    for edit in (VideoEdit(offset=.2), VideoEdit(anchors=((1., .2), (11., 10.5)))):
+        for time in (0., 3., 7.5):
+            assert edit.bag_time(edit.video_time(time)) == pytest.approx(time)

@@ -50,6 +50,10 @@ class VideoEdit:
         return bag_seconds - self.offset
 
 
+    def bag_time(self, video_seconds):
+        return (video_seconds - self.video_time(0.)) / self.rate
+
+
 class VideoReader:
     """Use the presented timestamp and keep one lookahead frame for sequential export."""
 

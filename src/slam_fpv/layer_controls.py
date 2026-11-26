@@ -8,6 +8,7 @@ from tkinter import colorchooser, filedialog, messagebox, ttk
 
 from .composition import POINT_CLOUD_VIEWS, VIEW_OVERLAYS, PointCloudView, TextLayer, VideoLayer, view_overlays
 from .footage import VideoEdit
+from .timeline import Track
 
 
 MATTE_OPTIONS = ("透明底", "深色底")
@@ -442,15 +443,22 @@ class LayerControls:
 
     def update_timeline(self):
         start, duration = self.timeline_range()
-        selection = self.selection
-        clip = None
-        if selection and selection[0] == "text":
-            layer = self.project.texts[selection[1]]
-            clip = layer.start,layer.end," ".join(layer.text.split())
-        elif selection and selection[0] == "speed":
-            clip = self.project.speed_start, self.project.speed_end or start+duration, "速度表"
+        tracks = []
+        for i, layer in enumerate(self.project.videos):
+            clip = layer.edit
+            media_end = clip.trim_out
+            if (length := self.clip_durations.get(layer.id)) is not None:
+                media_end = length if media_end is None else min(length, media_end)
+            last = start+duration if media_end is None else clip.bag_time(media_end)
+            first = clip.bag_time(clip.trim_in)
+            tracks.append(Track(("video", i), first, max(first, last), f"{i+1}. {layer.path.name}"))
+        tracks.extend(Track(("text", i), layer.start, layer.end, " ".join(layer.text.split()))
+                      for i, layer in enumerate(self.project.texts))
+        if self.project.show_speed:
+            tracks.append(Track(("speed", 0), self.project.speed_start, self.project.speed_end or start+duration, "速度表"))
         self.timeline.update_view(start, duration, self.elapsed if self.elapsed is not None else start,
-                                  clip, int(self.values["fps"].get()), self.timeline_events, self.project.layouts)
+                                  tuple(tracks), self.selection, int(self.values["fps"].get()),
+                                  self.timeline_events, self.project.layouts, self.project.markers)
         self.update_event_choices(start, duration)
 
     def seek_timeline(self, seconds):
@@ -461,9 +469,29 @@ class LayerControls:
     def apply_interval(self, value):
         if not self.selection:
             return
-        start,end = value
+        start, end = value
         kind, index = self.selection
-        if kind == "text":
+        if kind == "video":
+            layer = self.project.videos[index]
+            edit = layer.edit
+            first, last = max(0., edit.video_time(start)), edit.video_time(end)
+            if (length := self.clip_durations.get(layer.id)) is not None:
+                last = min(last, length)
+            if last <= first:
+                self.update_timeline()
+                self.status.set("裁剪范围须保留至少一段视频。")
+                return
+            # Keep an open-ended source interval if only the start handle moved.
+            end_cap = edit.trim_out if edit.trim_out is not None else length
+            if end_cap is None:
+                end_cap = edit.video_time(sum(self.timeline_range()))
+            updated = replace(edit, trim_in=first, trim_out=edit.trim_out if abs(last-end_cap) < 1e-7 else last)
+            if edit != updated:
+                self.replace_layer(kind, index, replace(layer, edit=updated))
+                self.invalidate_video(index)
+                if self.frame is not None:
+                    self.start_render(True)
+        elif kind == "text":
             self.replace_layer(kind, index, replace(self.project.texts[index], start=max(0.,start), end=end))
         elif kind == "speed":
             self.project = replace(self.project, speed_start=max(0.,start), speed_end=end)

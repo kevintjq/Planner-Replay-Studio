@@ -158,7 +158,7 @@ class Export:
         if self.writer: self.writer.close()
 
 
-def render(a, source, *, preview=None, preview_offset=0, preview_data=None, event_data=None, progress=None, check_cancel=None, staging=None, project=None):
+def render(a, source, *, preview=None, preview_offset=0, preview_data=None, event_data=None, media_data=None, progress=None, check_cancel=None, staging=None, project=None):
     """Render an export, or deliver one uncomposited preview and its optional footage."""
     destination = a.output if staging is None else staging
     cloud = CloudMap(a.voxel, a.max_points, scan_height=a.color == "scan", height_limits=a.height_range)
@@ -244,6 +244,8 @@ def render(a, source, *, preview=None, preview_offset=0, preview_data=None, even
                 if first_elapsed is None:
                     first_elapsed = elapsed
                 if project is not None:
+                    if preview is not None and media_data is not None:
+                        media_data(tuple(layer.reader.duration for layer in layers))
                     frame, cloud_views = frame
                     footage = tuple(layer.frame_at(elapsed) for layer in layers)
                     if preview is not None:

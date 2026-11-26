@@ -64,14 +64,15 @@ Scroll over a point-cloud view to zoom it. Each view also has a camera zoom perc
 
 ## Timeline
 
-- Select a planning event to jump to a replan or goal update. Enable the previous-plan overlay to compare with a dashed grey path.
+- Add a marker at the playhead with **+ Event**. Right-click it to rename or delete it. Click a marker or pick an event from the list to jump.
+- Video, captions and the speed gauge have separate tracks. Select a clip and drag either edge to trim it. Footage retains its alignment anchors. Enable previous-plan comparison to show a dashed grey path.
 - Set a layout marker at the playhead to switch between the composition, full-screen point cloud, and full-screen footage. Click a purple marker to jump back to it.
 
 ## Save and export
 
 | Format | Description |
 | --- | --- |
-| `.slamfpv` | Stores media paths, trims, anchors, layout markers and export settings. Moved media can be relinked. |
+| `.slamfpv` | Stores media paths, trims, anchors, event and layout markers, and export settings. Moved media can be relinked. |
 | MP4 | Defaults to 1080p at 60 fps with automatic NVIDIA NVENC or CPU H.264 encoding; optional single-track source audio and 0.5× / 0.25× playback |
 | PNG | Enable **Transparent canvas** to export an alpha channel |
 

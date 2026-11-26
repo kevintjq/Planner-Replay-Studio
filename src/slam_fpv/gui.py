@@ -11,13 +11,13 @@ from tempfile import TemporaryDirectory
 from threading import Event, Thread
 import tkinter as tk
 import av
-from tkinter import colorchooser, filedialog, messagebox, ttk
+from tkinter import colorchooser, filedialog, messagebox, simpledialog, ttk
 
 from PIL import Image, ImageDraw, ImageTk
 
 from .cli import extrinsics, open_source, parser, render, validate
 from .composition import (
-    LAYOUT_NAMES, MAX_CAMERA_ZOOM, MIN_CAMERA_ZOOM, Composition, LayoutCue, compose, placement_axis, rounded_mask,
+    LAYOUT_NAMES, MAX_CAMERA_ZOOM, MIN_CAMERA_ZOOM, Composition, LayoutCue, TimelineMarker, compose, placement_axis, rounded_mask,
 )
 from .desktop_style import INK, desktop_style
 from .timeline import Timeline
@@ -56,6 +56,7 @@ class RendererApp(LayerControls):
         self.footages = ()
         self.cloud_views = {}
         self.timeline_events = ()
+        self.clip_durations = {}
         self.selection = None
         self.drag_offset = None
         self.resize_drag = None
@@ -119,14 +120,18 @@ class RendererApp(LayerControls):
         self.canvas.bind("<Button-4>", lambda event: self.zoom_preview(event, 1))
         self.canvas.bind("<Button-5>", lambda event: self.zoom_preview(event, -1))
 
-        self.timeline = Timeline(viewer, self.seek_timeline, self.apply_interval, self.font, self.jump_cue)
+        self.timeline = Timeline(viewer, self.seek_timeline, self.apply_interval, self.font, self.jump_cue,
+                                 select=self.select_layer, marker_menu=self.manual_marker_menu,
+                                 add_marker=self.add_manual_marker)
         self.timeline.pack(fill="x", pady=(7, 0))
+        self.marker_popup = tk.Menu(self.root, tearoff=False)
         transport = ttk.Frame(viewer)
         transport.pack(fill="x")
         self.event_choice = tk.StringVar(value="事件跳转")
         self.event_picker = ttk.Combobox(transport, width=20, state="readonly", textvariable=self.event_choice)
         self.event_picker.pack(side="left", padx=(2, 8))
         self.event_picker.bind("<<ComboboxSelected>>", self.choose_event)
+        ttk.Button(transport, text="+ 事件", command=self.add_manual_marker).pack(side="left", padx=(0, 8))
         self.compare_plans = tk.BooleanVar(value=False)
         ttk.Checkbutton(transport, text="对比上一条规划", variable=self.compare_plans,
                         command=self.toggle_plan_comparison).pack(side="left")
@@ -470,7 +475,8 @@ class RendererApp(LayerControls):
             self.root.after_idle(lambda: self.start_render(True))
 
     def update_event_choices(self, start, duration):
-        labels = {f"{stamp:.4f} s · {label}": stamp for stamp, label in self.timeline_events
+        events = (*self.timeline_events, *((m.time, m.label) for m in self.project.markers))
+        labels = {f"{stamp:.4f} s · {label}": stamp for stamp, label in sorted(events)
                   if start <= stamp <= start + duration}
         self.event_times = labels
         self.event_picker.configure(values=tuple(labels), state="readonly" if labels else "disabled")
@@ -489,7 +495,49 @@ class RendererApp(LayerControls):
             return
         start, _ = self.timeline_range()
         fps = int(self.values["fps"].get())
+        label = next((key for key, time in self.event_times.items() if abs(time-stamp) < 1e-7), None)
+        if label is not None:
+            self.event_choice.set(label)
         self.seek_timeline(start + max(0, ceil((stamp-start)*fps - 1e-7))/fps)
+
+    def add_manual_marker(self):
+        if self.busy or (not self.bag_path and not self.demo_selected):
+            return
+        at = self.elapsed if self.elapsed is not None else self.timeline_range()[0]
+        if any(abs(marker.time-at) < 1e-6 for marker in self.project.markers):
+            self.status.set("当前帧已有手动标记。右键可命名或删除。")
+            return
+        used = {marker.label for marker in self.project.markers}
+        number = next(i for i in range(1, len(used)+2) if f"标记 {i}" not in used)
+        mark = TimelineMarker(at, f"标记 {number}")
+        self.project = replace(self.project, markers=tuple(sorted((*self.project.markers, mark), key=lambda item: item.time)))
+        self.update_timeline()
+        self.status.set(f"已在 {at:.3f} s 添加{mark.label}。右键可命名或删除。")
+
+    def manual_marker_menu(self, marker, x, y):
+        menu = self.marker_popup
+        menu.delete(0, "end")
+
+        def change(label):
+            self.project = replace(self.project, markers=tuple(
+                item if item != marker else replace(item, label=label) for item in self.project.markers
+                if item != marker or label is not None))
+            self.update_timeline()
+
+        def rename():
+            label = simpledialog.askstring("重命名事件", "事件名称", initialvalue=marker.label, parent=self.root)
+            if label is not None:
+                try:
+                    change(label.strip())
+                except ValueError as error:
+                    messagebox.showerror("检查名称", str(error), parent=self.root)
+
+        menu.add_command(label="重命名", command=rename)
+        menu.add_command(label="删除标记", command=lambda: change(None))
+        try:
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
 
     def toggle_plan_comparison(self):
         if self.busy:
@@ -602,6 +650,7 @@ class RendererApp(LayerControls):
         self.frame = self.elapsed = self.speed = self.base_cache = self.source_duration = None
         self.overlay_status.set("")
         self.timeline_events = ()
+        self.clip_durations = {}
         self.footages = (None,) * len(self.project.videos)
         self.cloud_views = {}
         videos = tuple(replace(layer, edit=replace(layer.edit, anchors=())) for layer in self.project.videos)
@@ -723,11 +772,13 @@ class RendererApp(LayerControls):
         def work():
             source = open_source(args, self.check_cancel, metadata)
             if preview:
-                result, data, events = [], [], []
+                result, data, events, durations = [], [], [], []
                 render(args, source, preview=lambda *frame: result.append(frame),
                        preview_data=lambda *status: data.append(status), event_data=events.extend,
-                       preview_offset=offset, check_cancel=self.check_cancel, project=project)
-                return "preview", (result[0], *data[0], tuple(events))
+                       media_data=durations.extend, preview_offset=offset,
+                       check_cancel=self.check_cancel, project=project)
+                return "preview", (result[0], *data[0], tuple(events),
+                                   dict(zip((layer.id for layer in project.videos), durations)))
             checks, blocked, audio_ids = inspect_export(args, source, project, self.check_cancel)
             return "export_check", (args, source, project, destination, checks, blocked, audio_ids)
 
@@ -887,7 +938,8 @@ class RendererApp(LayerControls):
                     self.status.set("导出检查完成")
                     self.export_check(*value)
                 elif kind == "preview":
-                    (frame, videos, elapsed, self.speed, self.cloud_views), self.source_duration, diagnostics, self.timeline_events = value
+                    frame_info, self.source_duration, diagnostics, self.timeline_events, self.clip_durations = value
+                    frame, videos, elapsed, self.speed, self.cloud_views = frame_info
                     self.overlay_status.set("\n".join(diagnostics))
                     self.frame = Image.fromarray(frame)
                     self.elapsed = elapsed

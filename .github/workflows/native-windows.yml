@@ -22,8 +22,6 @@ jobs:
   package:
     runs-on: windows-2022
     timeout-minutes: 20
-    outputs:
-      version: ${{ steps.package.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - uses: jurplel/install-qt-action@v4
@@ -46,13 +44,11 @@ jobs:
           ctest --test-dir build-native -C Release --output-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build the Windows installer
-        id: package
         shell: pwsh
         run: |
           $match = Select-String -Path native/CMakeLists.txt -Pattern '^project\(PlannerReplayNative VERSION (\d+\.\d+\.\d+) '
           if (!$match) { throw 'Could not read the native app version.' }
           $version = $match.Matches[0].Groups[1].Value
-          "version=$version" >> $env:GITHUB_OUTPUT
           cmake --install build-native --config Release --prefix dist/PlannerReplayNative
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./native/installer/package.ps1 -AppDirectory dist/PlannerReplayNative -SetupFile dist/PlannerReplayNative-Setup.exe -Version $version -QtVersion $env:QT_VERSION
@@ -93,38 +89,44 @@ jobs:
           path: dist/PlannerReplayNative-Setup.exe
           if-no-files-found: error
 
-  release:
+  publish-download:
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     needs: package
     runs-on: ubuntu-latest
     permissions:
       contents: write
     concurrency:
-      group: native-windows-release
+      group: native-windows-download
       cancel-in-progress: false
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: PlannerReplayNative-Windows-x64
-          path: installer
-      - name: Publish the Windows EXE on GitHub Releases
+          path: ${{ runner.temp }}/planner-installer
+      - name: Publish the single EXE outside the source branch
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.package.outputs.version }}
         run: |
           current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
           if [ "$current" != "$GITHUB_SHA" ]; then
-            echo "A newer main commit superseded this release build."
+            echo "A newer main commit superseded this build."
             exit 0
           fi
-          tag="native-v$VERSION"
-          if assets=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name'); then
-            if ! grep -Fxq PlannerReplayNative-Setup.exe <<< "$assets"; then
-              gh release upload "$tag" installer/PlannerReplayNative-Setup.exe --repo "$GITHUB_REPOSITORY"
-            fi
-            exit 0
+          branch=windows-downloads
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin "$branch"; then
+            git fetch --no-tags --depth=1 origin "$branch"
+            git switch --create "$branch" FETCH_HEAD
+          else
+            status=$?
+            if [ "$status" -ne 2 ]; then exit "$status"; fi
+            git switch --orphan "$branch"
           fi
-          gh release create "$tag" installer/PlannerReplayNative-Setup.exe \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest \
-            --title "Planner Replay Native v$VERSION" \
-            --notes "Windows x64 setup. Run PlannerReplayNative-Setup.exe to install the native ROS1 point-cloud preview. No source checkout or Python environment required."
+          cp "$RUNNER_TEMP/planner-installer/PlannerReplayNative-Setup.exe" .
+          git add PlannerReplayNative-Setup.exe
+          if ! git diff --cached --quiet; then
+            git commit -m "Publish Windows installer from ${GITHUB_SHA::7}"
+            git push origin "HEAD:refs/heads/$branch"
+          fi

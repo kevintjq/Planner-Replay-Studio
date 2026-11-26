@@ -6,7 +6,7 @@ English · [简体中文](README_CN.md)
 
 ## Windows native preview
 
-1. [Download PlannerReplayNative-Setup.exe](https://github.com/kevintjq/Planner-Replay-Studio/releases/latest/download/PlannerReplayNative-Setup.exe).
+1. [Download PlannerReplayNative-Setup.exe](https://raw.githubusercontent.com/kevintjq/Planner-Replay-Studio/windows-downloads/PlannerReplayNative-Setup.exe).
 2. Double-click the installer and launch the app on completion. Future launches are available from **Planner Replay Studio** in the Start menu.
 3. Open a ROS1 `.bag` or choose the built-in demo.
 

@@ -6,7 +6,7 @@
 
 ## Windows 原生预览版
 
-1. [下载 PlannerReplayNative-Setup.exe](https://github.com/kevintjq/Planner-Replay-Studio/releases/latest/download/PlannerReplayNative-Setup.exe)。
+1. [下载 PlannerReplayNative-Setup.exe](https://raw.githubusercontent.com/kevintjq/Planner-Replay-Studio/windows-downloads/PlannerReplayNative-Setup.exe)。
 2. 双击安装。安装完成后可直接启动，以后也可从 Windows 开始菜单打开 **Planner Replay Studio**。
 3. 打开 ROS1 `.bag` 或使用内置模拟数据。
 

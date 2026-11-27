@@ -169,6 +169,63 @@ void validateSceneLayer(const QJsonObject &layer, const QString &kind)
 }
 }
 
+QJsonArray ProjectDocument::timelineMarkers() const
+{
+    return root_.value("composition").toObject().value("markers").toArray();
+}
+
+void ProjectDocument::addTimelineMarker(double time)
+{
+    if (!std::isfinite(time) || time < 0.)
+        fail(QStringLiteral("标记时间无效。"));
+
+    auto markers = timelineMarkers();
+    QStringList labels;
+    qsizetype index = markers.size();
+    for (qsizetype i = 0; i < markers.size(); ++i) {
+        const auto marker = markers.at(i).toObject();
+        const auto stamp = marker.value("time").toDouble(-1.);
+        if (std::abs(stamp - time) < 1e-6)
+            fail(QStringLiteral("当前位置已有标记。"));
+        if (stamp > time && index == markers.size())
+            index = i;
+        labels.append(marker.value("label").toString());
+    }
+
+    int number = 1;
+    while (labels.contains(QStringLiteral("标记 %1").arg(number)))
+        ++number;
+    markers.insert(index, QJsonObject{{"time", time}, {"label", QStringLiteral("标记 %1").arg(number)}});
+    auto composition = root_.value("composition").toObject();
+    composition.insert("markers", markers);
+    root_.insert("composition", composition);
+}
+
+void ProjectDocument::replaceTimelineMarker(double time, const std::optional<QString> &label)
+{
+    auto markers = timelineMarkers();
+    for (qsizetype index = 0; index < markers.size(); ++index) {
+        auto marker = markers.at(index).toObject();
+        if (marker.value("time").toDouble(-1.) != time)
+            continue;
+
+        if (label) {
+            const auto name = label->trimmed();
+            if (name.isEmpty() || name.toUcs4().size() > 48)
+                fail(QStringLiteral("标记名称须为 1–48 个字符。"));
+            marker.insert("label", name);
+            markers.replace(index, marker);
+        } else {
+            markers.removeAt(index);
+        }
+        auto composition = root_.value("composition").toObject();
+        composition.insert("markers", markers);
+        root_.insert("composition", composition);
+        return;
+    }
+    fail(QStringLiteral("找不到所选标记。"));
+}
+
 QVariantList ProjectDocument::sceneLayers() const
 {
     const auto composition = root_.value("composition").toObject();

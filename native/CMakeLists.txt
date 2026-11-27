@@ -27,7 +27,7 @@ target_link_libraries(replay_data PUBLIC Qt6::Gui PRIVATE BZip2::BZip2 ${LZ4_LIB
 qt_add_executable(PlannerReplayNative WIN32 src/main.cpp src/cloud_view.cpp src/cloud_view.h
     src/replay_controller.cpp src/replay_controller.h)
 qt_add_resources(PlannerReplayNative "interface" PREFIX "/" FILES qml/Main.qml qml/FlightClip.qml qml/VideoTimeline.qml
-    qml/SceneOverlays.qml qml/SceneLayerEditor.qml)
+    qml/SceneOverlays.qml qml/SceneLayerEditor.qml qml/MarkerTimeline.qml)
 target_link_libraries(PlannerReplayNative PRIVATE replay_data Qt6::Quick Qt6::QuickControls2 Qt6::OpenGL Qt6::Concurrent Qt6::Multimedia)
 if(MSVC)
     target_compile_options(replay_data PRIVATE /utf-8)

@@ -82,6 +82,7 @@ void ReplayController::install(std::shared_ptr<const replay::Recording> record, 
     }
     refreshSceneLayers();
     refreshVideoLayers();
+    emit markersChanged();
     emit recordingChanged();
     emit positionChanged();
 }
@@ -419,6 +420,53 @@ double ReplayController::duration() const
     for (const auto &value : sceneLayers_)
         end = std::max(end, value.toMap().value("end").toDouble());
     return end;
+}
+
+QVariantList ReplayController::markers() const
+{
+    return project_ ? project_->timelineMarkers().toVariantList() : QVariantList();
+}
+
+void ReplayController::addMarker()
+{
+    if (loading_ || duration() <= 0.)
+        return;
+    pause();
+    try {
+        auto document = projectSnapshot();
+        document.addTimelineMarker(position_);
+        project_ = std::move(document);
+        status_ = tr("已在 %1 秒添加标记。").arg(position_, 0, 'f', 3);
+        emit markersChanged();
+    } catch (const std::exception &error) {
+        status_ = QString::fromUtf8(error.what());
+    }
+    emit stateChanged();
+}
+
+void ReplayController::renameMarker(double time, const QString &label)
+{
+    changeMarker(time, label);
+}
+
+void ReplayController::removeMarker(double time)
+{
+    changeMarker(time, std::nullopt);
+}
+
+void ReplayController::changeMarker(double time, const std::optional<QString> &label)
+{
+    if (loading_ || !project_)
+        return;
+
+    try {
+        project_->replaceTimelineMarker(time, label);
+        status_ = label ? tr("已重命名标记。") : tr("已删除标记。");
+        emit markersChanged();
+    } catch (const std::exception &error) {
+        status_ = QString::fromUtf8(error.what());
+    }
+    emit stateChanged();
 }
 
 void ReplayController::refreshSceneLayers()

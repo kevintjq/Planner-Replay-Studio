@@ -25,6 +25,9 @@ public:
     QJsonObject values() const;
     void setValue(const QString &key, const QString &value);
     std::vector<VideoClip> videos() const;
+    QJsonArray timelineMarkers() const;
+    void addTimelineMarker(double time);
+    void replaceTimelineMarker(double time, const std::optional<QString> &label);
     QVariantList sceneLayers() const;
     void addSceneLayer(const QString &kind, const QString &content, double start, double end);
     void editSceneLayer(const QString &id, const QJsonObject &changes);

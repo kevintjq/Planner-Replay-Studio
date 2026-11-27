@@ -33,6 +33,7 @@ class ReplayController : public QObject {
     Q_PROPERTY(QString projectPath READ projectPath NOTIFY recordingChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY editHistoryChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY editHistoryChanged)
+    Q_PROPERTY(QVariantList markers READ markers NOTIFY markersChanged)
     Q_PROPERTY(QVariantList sceneLayers READ sceneLayers NOTIFY sceneLayersChanged)
     Q_PROPERTY(QVariantList videoLayers READ videoLayers NOTIFY videoLayersChanged)
 public:
@@ -58,6 +59,10 @@ public:
     std::shared_ptr<const replay::Recording> recording() const { return record_; }
 
     const QVariantList &videoLayers() const { return videoLayers_; }
+    QVariantList markers() const;
+    Q_INVOKABLE void addMarker();
+    Q_INVOKABLE void renameMarker(double time, const QString &label);
+    Q_INVOKABLE void removeMarker(double time);
     const QVariantList &sceneLayers() const { return sceneLayers_; }
     Q_INVOKABLE void addSceneImage(const QUrl &file);
     Q_INVOKABLE void addSceneText(const QString &text);
@@ -100,6 +105,7 @@ signals:
     void recordingChanged();
     void videoLayersChanged();
     void sceneLayersChanged();
+    void markersChanged();
     void editHistoryChanged();
 
 private:
@@ -122,6 +128,7 @@ private:
     void refreshVideoLayers();
     void refreshSceneLayers();
     void addSceneLayer(const QString &kind, const QString &content);
+    void changeMarker(double time, const std::optional<QString> &label);
     void editVideo(int index, const QJsonObject &changes);
     void changeVideoSegment(int index, double at, bool remove);
     void storeVideoSpans(int index, const std::vector<replay::VideoTiming::Range> &ranges);

@@ -424,6 +424,13 @@ ApplicationWindow {
                     anchors.margins: 12
                     spacing: 5
 
+                    MarkerTimeline {
+                        Layout.fillWidth: true
+                        controller: replay
+                        labelWidth: 124
+                        accent: window.accent
+                    }
+
                     VideoTimeline {
                         Layout.fillWidth: true
                         visible: replay.videoLayers.length + replay.sceneLayers.length > 0

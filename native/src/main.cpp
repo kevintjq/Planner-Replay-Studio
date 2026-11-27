@@ -86,12 +86,20 @@ int main(int argc, char **argv)
                 const auto textId = replay.sceneLayers().at(1).toMap().value("id").toString();
                 replay.editSceneLayer(textId, {{QStringLiteral("position"), QVariantList{.3, .4}},
                                                {QStringLiteral("start"), .5}, {QStringLiteral("end"), 2.}});
+                replay.seek(.75);
+                replay.addMarker();
+                replay.renameMarker(.75, QStringLiteral("起飞"));
+                replay.seek(1.5);
+                replay.addMarker();
+                replay.removeMarker(1.5);
                 const auto sceneUrl = QUrl::fromLocalFile(scratch.filePath(QStringLiteral("scene.slamfpv")));
                 replay.saveProjectAs(sceneUrl);
                 replay.openProject(sceneUrl);
                 if (replay.sceneLayers().size() != 2 ||
                     replay.sceneLayers().at(0).toMap().value("url").toUrl() != logoUrl ||
-                    replay.sceneLayers().at(1).toMap().value("horizontal").toDouble() != .3) {
+                    replay.sceneLayers().at(1).toMap().value("horizontal").toDouble() != .3 ||
+                    replay.markers().size() != 1 ||
+                    replay.markers().at(0).toMap().value("label").toString() != QStringLiteral("起飞")) {
                     qWarning("Scene layer settings did not survive reopening");
                     app.exit(1);
                     return;

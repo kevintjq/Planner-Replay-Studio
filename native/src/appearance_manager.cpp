@@ -15,8 +15,9 @@ AppearanceManager::AppearanceManager(QObject *parent, const QString &settingsFil
             if (!settings_->contains(key)) settings_->setValue(key, legacy.value(key));
         settings_->sync();
     }
-    const auto mode = settings_->value("appearance/mode", int(System)).toInt();
-    if (mode >= Light && mode <= System)
+    bool validMode = false;
+    const auto mode = settings_->value("appearance/mode", int(System)).toInt(&validMode);
+    if (validMode && mode >= Light && mode <= System)
         mode_ = Mode(mode);
     connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged, this, [this] {
         if (mode_ == System) apply();

@@ -7,6 +7,7 @@
 - 再次核对远端 main：69f8a4f，与本地开发起点一致。已发布原生预览仍为 native-v0.1.1-preview.3；历史正式发行版 studio-v0.4.3 保留。本地源码改动尚不等同发行版。
 - 本轮完整 Release 构建通过，14/14 原生回归通过；覆盖原生 PNG/MP4 smoke、主题对比度/偏好、轨迹编辑/持久化、图像编码、批量计划、混合矢量/位图多联图、轨迹工作区导出、RViz 未知属性往返及无重载图层切换。旧实现兼容回归 78 项通过。日志在忽略目录 build-native。
 - 真实 PointCloud2 + Odometry + TF bag、NVIDIA OpenGL 实际运行：四工作区 8 张亮/暗截图，播放连续、录包/画布/CloudView 对象保持、场景像素不变。最新结果在 captures/appearance-current；轨迹截图此处仍为空状态。
+- 实际退出/重新启动三个独立 GUI 进程，依次读取 Dark、System、Light，并保存 System、Light、Dark；各进程读取前未覆盖偏好，启动窗口与应用调色板、System 当前解析值、四工作区场景及回放检查均通过。报告在 captures/appearance-current/restart-from-{dark,system,light}.json，另有 startup-{dark,system,light}.png。自动测试也以独立子进程验证偏好/调色板；非法文本或越界偏好回退 System，不误变 Light。
 - 真实 bag 加实拍视频：10 项独立导出、5 组批量/取消、4 项轨迹工作区源画面导出共 19 项检查通过，JSON 在 captures/frame-final-current/frame-acceptance.json。轨迹工作区另有真实源视频运行截图；不将其作为无人机前景提取验收。
 - 主点云实际 FBO 达到 3840×2160 和 7680×4320；GL_MAX_TEXTURE_SIZE 为 32768。PNG/TIFF alpha、300/600/1200 DPI、实验时间元数据、随机跳转、视角隔离和软件主题无关像素输出已检查。GPU 上限拒绝存在，分块尚未实现。
 - 批量实测：双时间×主/附加视角 4 张，区间 3 张，事件 2 张，采样网格 2 张；取消用例保留第 1 张与 cancelled 清单，并恢复原播放头/播放状态。相同录包和场景对象不重建。
@@ -17,7 +18,7 @@
 - 最新运行未出现 QML Palette/ReferenceError 告警，但实拍预览有一次 “failed to get textures for frame; format: 171”，尚待定位；不得据此宣称视频连续播放已完整通过。
 - Windows 手动交互工具连接关闭，重置亦失败；最新搜索下拉框、内联设置、文件对话框仍需人工/恢复工具复测。已生成截图不代替菜单、快捷键与所有状态的交互验收。
 - 参考 SVG 已按原比例渲染，与两主题运行截图对照。总体三列+时间轴结构及两主题布局保持；图层列表、完整 Inspector、轨道密度和字体层级尚未达到参考逐项完成，不声称 UI 全部验收。
-- 未覆盖系统外观实时切换/跨进程重启、精确源视频 PTS、长片同步、原生 RViz 场景对照或完整性能目标。图片与视频仅取得上述短片对应帧证据，不宣称有损 MP4 与 RGB 逐像素一致。仅 Livox CustomMsg + IMU 的另一 bag 不支持作为主场景，不能以 Demo 代验。
+- 未覆盖操作系统外观实时切换、精确源视频 PTS、长片同步、原生 RViz 场景对照或完整性能目标。图片与视频仅取得上述短片对应帧证据，不宣称有损 MP4 与 RGB 逐像素一致。仅 Livox CustomMsg + IMU 的另一 bag 不支持作为主场景，不能以 Demo 代验。
 - 真实 FAST_LIO 的 11178 字节 RViz 配置经 C++ 项目保存/重开后导出逐字节一致，源文件哈希未变；Grid/Axes 等暂未渲染显示明确列入兼容报告。嵌套未知插件、QoS、相机、工具、BOM、父分组及拆分 TF 冲突由回归验证。
 - 独立 Noetic C++ 探针实际加载导出配置，9 个顶层显示及分组内子显示的插件类/名称/顺序与原配置一致，Fixed Frame 为 camera_init，生成原生 RViz 运行截图并由 RViz 自身另存成功。结果在 captures/rviz-current/native-probe.json；此测试没有播放 bag，场景等价仍未认证。
 - 真实录包两种 RViz 导入顺序（先配置/先 Bag）均通过 C++ 控制器验证；隐藏点云预先解码，20 轮开关期间加载信号为 0，录包/数据指针、播放推进、相机、标记、文字及视角设置保持，显隐状态另存/重开通过。结果在 captures/display-current/import-order.json。
@@ -28,7 +29,7 @@
 
 | 项目 | 当前状态 | 必须补齐的验收 |
 |---|---|---|
-| Light / Dark / System | 集中管理、偏好保存、公共 QML Palette/Label；8 张最新运行截图 | 系统实时切换、跨进程重启、完整菜单/禁用/选中状态及 SVG 逐项对照 |
+| Light / Dark / System | 集中管理、公共 QML Palette/Label；三种偏好实际跨进程重启与启动配色通过，8 张最新运行截图 | 操作系统实时切换、完整菜单/禁用/选中状态及 SVG 逐项对照 |
 | 主题无损切换 | 真实录包/画布/CloudView 对象、场景像素、播放检查通过 | 相机、TF 跟随、视频连续性、编辑状态、无闪屏延迟 |
 | 普通配置内联 | Topic Inspector 已内嵌，场景颜色改内联输入，图片导出设置内联 | 完整颜色选择、全部高级属性审计和交互工具复测 |
 | RViz Displays / Topic | 现有原生子集；主要 Topic 可搜索；已配置层无重载显隐及真实 OpenGL 画面通过 | 完整模型、By Type / By Topic、分组排序复制、状态原因、独立同 Topic 多 Display、隐藏层缓存内存 |

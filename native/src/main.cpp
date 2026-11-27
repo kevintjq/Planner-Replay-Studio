@@ -9,6 +9,7 @@
 #include <QQmlComponent>
 #include <QQuickItem>
 #include <QQuickWindow>
+#include <QSet>
 #include <QSurfaceFormat>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -17,16 +18,16 @@
 #include <exception>
 
 namespace {
-QQuickItem *videoOutput(QQuickItem *item)
+void videoOutputs(QQuickItem *item, QList<QVideoSink *> &sinks)
 {
-    if (item->objectName() == QStringLiteral("flightClipOutput"))
-        return item;
-    for (auto *child : item->childItems()) {
-        if (auto *match = videoOutput(child))
-            return match;
+    if (item->objectName() == QStringLiteral("flightClipOutput")) {
+        if (auto *sink = item->property("videoSink").value<QVideoSink *>())
+            sinks.append(sink);
     }
-    return nullptr;
+    for (auto *child : item->childItems())
+        videoOutputs(child, sinks);
 }
+
 int smokePng(QGuiApplication &app)
 {
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Software);
@@ -172,20 +173,20 @@ int main(int argc, char **argv)
                 replay.seek(1.);
                 replay.setVideoAnchor(0, 1, QStringLiteral("1.4"));
                 replay.trimVideoSegment(0, 0, .1, 2.);
-                replay.splitVideo(0, .8);
-                replay.deleteVideoSegment(0, 1.2);
+                replay.splitVideo(0, 1.4);
+                replay.deleteVideoSegment(0, 1.6);
                 const auto preview = [&replay](int layer, double seconds) {
                     replay.seek(seconds);
                     return replay.videoSeconds(layer);
                 };
-                if (preview(0, .05) >= 0. || preview(0, .5) < 0. || preview(0, 1.2) >= 0. ||
-                    preview(1, 1.2) < 0. || !replay.canUndo()) {
+                if (preview(0, .05) >= 0. || preview(0, .5) < 0. || preview(0, 1.6) >= 0. ||
+                    preview(1, 1.6) < 0. || !replay.canUndo()) {
                     qWarning("Video trim, split or deletion was not applied to the selected track");
                     app.exit(1);
                     return;
                 }
                 replay.undo();
-                if (preview(0, 1.2) < 0. || !replay.canRedo()) {
+                if (preview(0, 1.6) < 0. || !replay.canRedo()) {
                     qWarning("Video deletion could not be undone");
                     app.exit(1);
                     return;
@@ -209,28 +210,36 @@ int main(int argc, char **argv)
                 const auto editedUrl = QUrl::fromLocalFile(scratch.filePath(QStringLiteral("edited.slamfpv")));
                 replay.saveProjectAs(editedUrl);
                 replay.openProject(editedUrl);
-                if (preview(0, 1.2) >= 0. || preview(0, .5) < 0. || replay.canUndo() ||
+                if (preview(0, 1.6) >= 0. || preview(0, .5) < 0. || replay.canUndo() ||
                     replay.layoutCues().size() != 2 || replay.activeLayout().value("progress").toDouble() != .5) {
                     qWarning("The saved video edits did not survive reopening");
                     app.exit(1);
                     return;
                 }
                 auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
-                auto *output = window ? videoOutput(window->contentItem()) : nullptr;
-                auto *sink = output ? output->property("videoSink").value<QVideoSink *>() : nullptr;
-                if (!sink) {
-                    qWarning("Video preview output was not created");
+                QList<QVideoSink *> sinks;
+                if (window)
+                    videoOutputs(window->contentItem(), sinks);
+                if (sinks.size() != 2) {
+                    qWarning("Both video preview outputs were not created");
                     app.exit(1);
                     return;
                 }
-                QObject::connect(sink, &QVideoSink::videoFrameChanged, &app, [&app](const QVideoFrame &frame) {
-                    if (frame.isValid())
-                        app.exit(0);
-                });
+                auto decoded = std::make_shared<QSet<QVideoSink *>>();
+                for (auto *sink : sinks) {
+                    QObject::connect(sink, &QVideoSink::videoFrameChanged, &app, [&app, decoded, sink](const QVideoFrame &frame) {
+                        if (frame.isValid()) {
+                            decoded->insert(sink);
+                            if (decoded->size() == 2)
+                                app.exit(0);
+                        }
+                    });
+                }
                 QTimer::singleShot(12000, &app, [&app] {
                     qWarning("Video preview did not decode a frame");
                     app.exit(1);
                 });
+                replay.seek(.2);
                 replay.togglePlayback();
             } catch (const std::exception &) {
                 app.exit(1);

@@ -13,6 +13,7 @@ Item {
     property real lastSeekAt: -1000
     property real requestedPosition: -1
     property bool wasPlaying: false
+    property bool producedFrame: false
     readonly property real cropWidth: footage.crop[2] - footage.crop[0]
     readonly property real cropHeight: footage.crop[3] - footage.crop[1]
     readonly property real sourceAspect: output.sourceRect.height > 0
@@ -50,25 +51,37 @@ Item {
     opacity: full ? 1 : footage.opacity
     clip: true
 
+    function seekTo(target) {
+        if (!player.seekable || target < 0 || target === requestedPosition)
+            return
+        requestedPosition = target
+        lastSeekAt = Date.now()
+        if (Math.abs(player.position - target) > 12) {
+            producedFrame = false
+            player.position = target
+        }
+    }
+
     function synchronize(force) {
+        const wasActive = targetSeconds >= 0 && (player.duration <= 0 || targetSeconds * 1000 < player.duration)
         targetSeconds = controller.videoSeconds(clipIndex)
         const target = Math.round(targetSeconds * 1000)
         const active = targetSeconds >= 0 && (player.duration <= 0 || target < player.duration)
         const run = active && controller.playing
         if (!active) {
+            pausedSeek.stop()
             requestedPosition = -1
-        } else {
-            const now = Date.now()
+        } else if (run) {
+            pausedSeek.stop()
             const drift = Math.abs(player.position - target)
-            const seek = force || requestedPosition < 0 || run !== wasPlaying
-                         || (!run && target !== requestedPosition)
-                         || (run && drift > 140 && now - lastSeekAt > 180)
-            if (player.seekable && seek) {
-                requestedPosition = target
-                lastSeekAt = now
-                player.position = target
-            }
+            if (!wasPlaying || !wasActive || requestedPosition < 0
+                    || (producedFrame && drift > 240 && Date.now() - lastSeekAt > 750))
+                seekTo(target)
+        } else if (force || target !== requestedPosition) {
+            // Coalesce scrubs and media-load notifications before restarting a decoder.
+            pausedSeek.restart()
         }
+
         wasPlaying = run
         if (run && !player.playing)
             player.play()
@@ -76,16 +89,34 @@ Item {
             player.pause()
     }
 
+    Timer {
+        id: pausedSeek
+        interval: 50
+        onTriggered: frame.seekTo(Math.round(frame.targetSeconds * 1000))
+    }
+
     Connections {
         target: frame.controller
         function onPositionChanged() { frame.synchronize(false) }
         function onPlayingChanged() { frame.synchronize(false) }
     }
-    onFootageChanged: synchronize(true)
+    Connections {
+        target: output.videoSink
+        function onVideoFrameChanged() {
+            if (output.videoSink.videoSize.width > 0)
+                frame.producedFrame = true
+        }
+    }
+    onFootageChanged: synchronize(false)
 
     MediaPlayer {
         id: player
         source: frame.footage.url
+        onSourceChanged: {
+            frame.requestedPosition = -1
+            frame.producedFrame = false
+            frame.lastSeekAt = -1000
+        }
         playbackRate: frame.footage.rate
         videoOutput: output
         onSeekableChanged: if (player.seekable) frame.synchronize(true)

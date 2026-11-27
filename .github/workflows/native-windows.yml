@@ -81,7 +81,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Could not install FFmpeg to generate the video fixture.' }
             $ffmpeg = Get-Command "$env:ChocolateyInstall/bin/ffmpeg.exe"
           }
-          & $ffmpeg.Source -v error -y -f lavfi -i 'testsrc2=size=160x90:rate=30:duration=3' -c:v libx264 -pix_fmt yuv420p $fixture
+          & $ffmpeg.Source -v error -y -f lavfi -i 'testsrc2=size=1920x1080:rate=60:duration=3' -c:v libx264 -preset veryfast -g 180 -bf 2 -pix_fmt yuv420p $fixture
           if ($LASTEXITCODE -ne 0) { throw 'Could not generate the video smoke fixture.' }
           $originalPath = $env:PATH
           try {

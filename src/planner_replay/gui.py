@@ -25,7 +25,7 @@ from .desktop_style import INK, PANEL, SURFACE, desktop_style
 from .timeline import Timeline
 from .topic_panel import TopicPanel
 from .topic_displays import DISPLAY_TYPES, INSPECTOR_TYPES
-from .preview_transport import PreviewTransport
+from .preview_transport import PreviewTransport, preview_size, scale_preview
 from .layer_controls import VIDEO_FILES, LayerControls
 from .trajectory_tool import TrajectoryTool
 from .video_editor import VideoEditor
@@ -1647,12 +1647,11 @@ class RendererApp(LayerControls):
         self.root.after(25, self.poll)
 
     def accept_preview(self, value, *, playing=False):
-        frame_info, duration, diagnostics, events, clips = value
+        frame_info, duration, diagnostics, events, clips, *prepared = value
         same_tracks = (duration, events, clips) == (self.source_duration, self.timeline_events, self.clip_durations)
         self.source_duration, self.timeline_events, self.clip_durations = duration, events, clips
         frame, videos, elapsed, self.speed, self.cloud_views = frame_info
         self.spatial_diagnostics = diagnostics
-        self.topic_panel.refresh()
         self.frame = Image.fromarray(frame)
         self.elapsed = elapsed
         self.base_cache = None
@@ -1660,7 +1659,7 @@ class RendererApp(LayerControls):
         self.values["preview_offset"].set(f"{max(0., elapsed-self.timeline_range()[0]):.6f}")
         self.preview_label.configure(text=f"画面预览    {elapsed:.3f} s")
         self.status.set("正在播放预览" if playing else "预览已更新。")
-        self.draw_preview()
+        self.draw_preview(prepared[0] if playing and prepared else None)
         if playing and same_tracks:
             self.timeline.update_playhead(elapsed)
             cue = self.project.layout_at(elapsed)
@@ -1670,7 +1669,7 @@ class RendererApp(LayerControls):
         else:
             self.update_timeline()
 
-    def draw_preview(self):
+    def draw_preview(self, prepared=None):
         self.canvas.delete("all")
         self.layer_bounds = {}
         self.resize_handle = None
@@ -1680,20 +1679,22 @@ class RendererApp(LayerControls):
             self.canvas.create_text(width / 2, height / 2, text="打开 bag 或使用模拟数据",
                                     fill=INK, font=(self.font, 12))
             return
-        scale = min(width / self.frame.width, height / self.frame.height)
-        size = (max(1, round(self.frame.width * scale)), max(1, round(self.frame.height * scale)))
+        size = preview_size(self.frame.size, (width, height))
         x, y = (width - size[0]) // 2, (height - size[1]) // 2
         self.view_bounds = x, y, *size
-        if self.base_cache is None or self.base_cache.size != size:
-            self.base_cache = self.frame.convert("RGB").resize(size, Image.Resampling.LANCZOS)
-            if self.frame.mode == "RGBA":
-                self.base_cache.putalpha(self.frame.getchannel("A").resize(size, Image.Resampling.LANCZOS))
-        try:
-            image, bounds = compose(self.base_cache, self.project, self.footages, self.elapsed, self.speed, self.cloud_views)
-        except OSError as error:
-            self.status.set(str(error))
-            image, bounds = compose(self.base_cache, self.project, self.footages, self.elapsed, self.speed, self.cloud_views,
-                                    tolerate_missing_images=True)
+        if prepared is not None and prepared.project == self.project and prepared.image.size == size:
+            image, bounds = prepared.image.copy(), prepared.layers.copy()
+            if prepared.warning:
+                self.status.set(prepared.warning)
+        else:
+            if self.base_cache is None or self.base_cache.size != size:
+                self.base_cache = scale_preview(self.frame, size)
+            try:
+                image, bounds = compose(self.base_cache, self.project, self.footages, self.elapsed, self.speed, self.cloud_views)
+            except OSError as error:
+                self.status.set(str(error))
+                image, bounds = compose(self.base_cache, self.project, self.footages, self.elapsed, self.speed,
+                                        self.cloud_views, tolerate_missing_images=True)
         views = (self.project.main_view, *self.project.views)
         keys = (("main", 0), *(("view", index) for index in range(len(self.project.views))))
         visible = {name for key, view in zip(keys, views) if key in bounds

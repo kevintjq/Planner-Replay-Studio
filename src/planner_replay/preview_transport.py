@@ -1,11 +1,49 @@
 """Buffered proxy playback and latest-request timeline seeking."""
 
 from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty, Full, Queue
 from time import monotonic
 
+from PIL import Image
+
 from .cli import open_source, render
+from .composition import compose
+
+
+@dataclass(frozen=True)
+class PreparedPreview:
+    project: object
+    image: Image.Image
+    layers: dict
+    warning: str = ""
+
+
+def preview_size(source_size, viewport):
+    width, height = source_size
+    scale = min(viewport[0] / width, viewport[1] / height)
+    return max(1, round(width * scale)), max(1, round(height * scale))
+
+
+def scale_preview(scene, size):
+    base = scene.convert("RGB").resize(size, Image.Resampling.LANCZOS)
+    if scene.mode == "RGBA":
+        base.putalpha(scene.getchannel("A").resize(size, Image.Resampling.LANCZOS))
+    return base
+
+
+def prepare_preview(frame_info, project, viewport):
+    cloud, videos, elapsed, speed, cloud_views = frame_info
+    scene = Image.fromarray(cloud)
+    base = scale_preview(scene, preview_size(scene.size, viewport))
+    warning = ""
+    try:
+        image, layers = compose(base, project, videos, elapsed, speed, cloud_views)
+    except OSError as error:
+        warning = str(error)
+        image, layers = compose(base, project, videos, elapsed, speed, cloud_views, tolerate_missing_images=True)
+    return PreparedPreview(project, image, layers, warning)
 
 
 def configure_preview(args, *, playing, viewport=None):
@@ -28,11 +66,16 @@ class PreviewTransport:
         self.pending = self.timer = self.buffer = self.requested = None
         self.playing = self.working = False
         self.cache = OrderedDict()
+        self.cache_bytes = 0
         self.source = self.source_key = self.cache_key = None
 
     def clear(self):
-        self.cache.clear()
+        self.clear_frames()
         self.source = self.source_key = self.cache_key = None
+
+    def clear_frames(self):
+        self.cache.clear()
+        self.cache_bytes = 0
 
     def request(self, seconds, *, delay=0):
         if self.app.busy and not self.working:
@@ -96,13 +139,13 @@ class PreviewTransport:
         limit = configure_preview(args, playing=playing, viewport=viewport)
         cache_key = settings, project, args.width, args.height
         if cache_key != self.cache_key:
-            self.cache.clear()
+            self.clear_frames()
             self.cache_key = cache_key
         tick = round((time-start) * settings["fps"])
         time = min(end, start + tick/settings["fps"])
         if not self.playing and (cached := self.cache.get(tick)) is not None:
             self.cache.move_to_end(tick)
-            app.accept_preview(cached)
+            app.accept_preview(cached[0])
             return
 
         source_fields = (("demo_scene", "start", "seconds") if args.command == "demo" else
@@ -131,8 +174,9 @@ class PreviewTransport:
                 data = status
 
             def frame_ready(*frame):
+                prepared = prepare_preview(frame, project, viewport) if playing else None
                 payload = (frame, *data, tuple(events),
-                           dict(zip((layer.id for layer in project.videos), durations)))
+                           dict(zip((layer.id for layer in project.videos), durations)), prepared)
                 if frames is None:
                     result.append(payload)
                     return
@@ -176,14 +220,19 @@ class PreviewTransport:
         self.app.root.after(8, lambda: self.advance(frames))
 
     def remember_frame(self, tick, payload):
-        self.cache[tick] = payload
-        self.cache.move_to_end(tick)
         frame, videos, _, _, views = payload[0]
-        bytes_per_frame = frame.nbytes + sum(video.nbytes for video in videos if video is not None)
-        bytes_per_frame += sum(view.width * view.height * 4 for view in views.values())
-        limit = max(1, min(42, 64 * 1024**2 // bytes_per_frame))
-        while len(self.cache) > limit:
-            self.cache.popitem(last=False)
+        size = frame.nbytes + sum(video.nbytes for video in videos if video is not None)
+        size += sum(view.width * view.height * 4 for view in views.values())
+        # Cached seeks keep editable source frames. Playback composites live only in the queue.
+        payload = payload[:5]
+        previous = self.cache.pop(tick, None)
+        if previous is not None:
+            self.cache_bytes -= previous[1]
+        self.cache[tick] = payload, size
+        self.cache_bytes += size
+        while len(self.cache) > 42 or (len(self.cache) > 1 and self.cache_bytes > 64 * 1024**2):
+            _, (_, dropped) = self.cache.popitem(last=False)
+            self.cache_bytes -= dropped
 
     def finish(self, kind, value):
         self.buffer, self.requested = None, None

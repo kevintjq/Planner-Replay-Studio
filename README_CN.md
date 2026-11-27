@@ -24,7 +24,7 @@
 
 ## 快速开始
 
-1. [下载 Windows x64 安装包](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.4.2/PlannerReplayStudio-Setup.exe)，双击安装，从开始菜单打开 **Planner Replay Studio Full**。默认装到 `%LOCALAPPDATA%\Programs\Planner Replay Studio Full`，安装时可改路径，也可勾选桌面快捷方式。
+1. [下载 Windows x64 安装包](https://github.com/kevintjq/Planner-Replay-Studio/releases/latest/download/PlannerReplayStudio-Setup.exe)，双击安装，从开始菜单打开 **Planner Replay Studio Full**。默认装到 `%LOCALAPPDATA%\Programs\Planner Replay Studio Full`，安装时可改路径，也可勾选桌面快捷方式。
 2. 在「数据」打开 ROS1 `.bag`，或点「使用模拟数据」。确认点云和位姿话题，选择视角后点「生成预览」。
 3. 在「图层」添加实拍、图片或文字。拖动画面调整位置和大小，在时间轴上调整显示时段或添加缩窗过渡。
 
@@ -52,4 +52,4 @@
 | MP4 或透明 PNG | 点「导出 1080p · 60 fps」生成视频，或在「更多设置」调整输出。透明 PNG 需勾选「透明画布」 |
 | 无人机拖影图 | 打开「固定机位轨迹图」，框选跟踪后可删帧、恢复帧、调整不透明度和采样间隔，再保存原分辨率 PNG |
 
-[工作台指南](docs/studio.zh-CN.md) · [MIT 许可证](LICENSE)
+[工作台指南](docs/studio.zh-CN.md) · [性能验证](docs/VALIDATION.md#point-cloud-and-playback-performance) · [MIT 许可证](LICENSE)

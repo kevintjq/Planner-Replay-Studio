@@ -60,3 +60,30 @@ def test_voxel_keys_preserve_the_first_point_across_signed_cells(extent):
                        [0., 0., 0.]])
     reference = np.unique(np.floor(points).astype(np.int64), axis=0, return_index=True)[1]
     np.testing.assert_array_equal(first_voxel_indices(points, 1.), reference)
+
+
+def test_native_decode_unaligned_mixed_fields_and_big_endian_rgba():
+    fields = [NS(name=name, offset=offset, datatype=kind, count=1) for name, offset, kind in
+              [("x", 1, 3), ("y", 3, 8), ("z", 11, 6), ("rgba", 15, 7)]]
+    first = struct.pack(">xh d I I", -30, 1.125, 3_000_000_000, 0xAB0102FE)
+    second = struct.pack(">xh d I I", 20, float("inf"), 17, 0)
+    data = first + b"pad" + second + b"pad"
+    msg = NS(width=1, height=2, point_step=19, row_step=22, fields=fields,
+             data=np.frombuffer(data, dtype=np.uint8), is_bigendian=True)
+    xyz, colors = decode(msg)
+    np.testing.assert_array_equal(xyz, [[-30, 1.125, 3_000_000_000]])
+    np.testing.assert_array_equal(colors, [[1, 2, 254]])
+    assert xyz.flags.writeable and colors.flags.writeable
+    assert memoryview(xyz.base.base).nbytes == 24
+
+
+def test_native_range_colors_match_palette_interpolation():
+    from planner_replay.cloud import scan_colors
+
+    xyz = np.random.default_rng(73).normal(size=(4000, 3)) * 20
+    position = [6., -3., 1.]
+    limits = (2., 55.)
+    cloud = CloudMap(range_color=True, range_limits=limits)
+    cloud.xyz = xyz
+    expected = scan_colors(np.linalg.norm(xyz-position, axis=1), limits)
+    np.testing.assert_array_equal(cloud.colors_from(position), expected)

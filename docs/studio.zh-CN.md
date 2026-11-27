@@ -6,7 +6,7 @@
 
 ## 快速开始
 
-[下载完整工作台 Windows EXE](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.4.2/PlannerReplayStudio-Setup.exe)，安装后从开始菜单打开 **Planner Replay Studio Full**。
+[下载完整工作台 Windows EXE](https://github.com/kevintjq/Planner-Replay-Studio/releases/latest/download/PlannerReplayStudio-Setup.exe)，安装后从开始菜单打开 **Planner Replay Studio Full**。
 
 在「数据」打开 ROS1 `.bag`，或点「使用模拟数据」查看效果。选择机位和图层后点「生成预览」。
 
@@ -53,6 +53,10 @@ SUPER 优先识别 `visualization/exp_traj` 和 `visualization/exp_sfc`。EGO �
 | 消息字段 | 所有已录制话题均可查看字段。按录包时间取该时刻前最近一条，支持展开数组和自定义消息。无法解码时可查看原始字节 |
 
 点「导入 .rviz」可以从 RViz / RViz2 配置读取固定坐标系、话题、显示名称、显隐与颜色。可在打开 bag 前导入。导入会替换话题显示列表，支持的 3D 图层直接显示。网格、RobotModel、插件窗口和视角布局等 RViz 专用设置不会导入。导入状态会列出跳过的项目和改用字段查看的项目。
+
+## 播放与性能
+
+点云的解包、体素降采样和距离着色使用 C++。连续播放时，点云和多路实拍在后台合成，界面线程负责显示。未裁剪且不带旋转的实拍缩小预览时由 FFmpeg 直接生成代理帧。裁剪和旋转保留原有处理，视频导出继续使用原素材。
 
 ## 时间轴
 

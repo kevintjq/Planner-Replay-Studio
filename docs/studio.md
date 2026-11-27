@@ -6,7 +6,7 @@
 
 ## Quick start
 
-[Download the complete Windows setup EXE](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.4.2/PlannerReplayStudio-Setup.exe) and open **Planner Replay Studio Full** from the Start menu.
+[Download the complete Windows setup EXE](https://github.com/kevintjq/Planner-Replay-Studio/releases/latest/download/PlannerReplayStudio-Setup.exe) and open **Planner Replay Studio Full** from the Start menu.
 
 Open a ROS1 `.bag` under **Data** or choose **Use simulated data**. Pick views and layers, then generate a preview.
 
@@ -51,6 +51,10 @@ Under **Data → Topic displays**, add displays by searching topic names or mess
 | Message fields | Inspect any recorded topic. Read the most recent message at or before a recorded time, expand arrays, and inspect custom fields or raw bytes if decoding fails |
 
 Import an RViz or RViz2 `.rviz` file before or after opening a bag. The import replaces the topic display list and reads the fixed frame, names, topics, visibility, and colors. The import status lists unsupported plugins and topics opened as message fields. RViz grid, RobotModel, panels, and camera layout are outside the import scope.
+
+## Playback and performance
+
+C++ handles point-cloud unpacking, voxel downsampling, and range coloring. During playback, the renderer combines the point cloud and video layers on a worker thread. FFmpeg produces smaller proxies directly for uncropped and unrotated video. Exports continue to use the original footage.
 
 ## Timeline
 

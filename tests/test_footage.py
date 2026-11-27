@@ -101,3 +101,20 @@ def test_cut_segments_keep_source_timestamps_and_skip_removed_media(tmp_path):
         assert footage.frame_at(2.25) is None
         assert footage.frame_at(2.49) is None
         assert footage.frame_at(2.5)[0, 0, 2] > 200
+
+
+def test_native_proxy_keeps_timestamp_crop_and_full_resolution_export(tmp_path):
+    from planner_replay.footage import FlightVideo, VideoEdit
+
+    clip = tmp_path / "native-proxy.mp4"
+    with imageio.get_writer(clip, fps=4, codec="libx264", macro_block_size=2) as writer:
+        for color in ((210, 12, 14), (12, 205, 13), (20, 14, 211)):
+            writer.append_data(np.full((72, 128, 3), color, dtype=np.uint8))
+    with FlightVideo(clip, VideoEdit(anchors=((1., .25),))) as footage:
+        proxy = footage.frame_at(1., 64)
+        assert proxy.shape == (36, 64, 3) and proxy[15, 35, 1] > 190
+        assert footage.frame_at(1., 64) is proxy
+        original = footage.frame_at(1.)
+        assert original.shape == (72, 128, 3) and original[30, 70, 1] > 190
+    with FlightVideo(clip, VideoEdit(crop=(.25, .25, .75, .75))) as footage:
+        assert footage.frame_at(.5, 32).shape == (18, 32, 3)

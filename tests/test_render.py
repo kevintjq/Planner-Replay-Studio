@@ -323,3 +323,24 @@ def test_topic_display_draws_only_in_selected_view_and_clears():
         assert not renderer.topic_actors
     finally:
         renderer.close()
+
+
+def test_background_preview_composition_matches_editable_viewport():
+    from dataclasses import replace
+
+    from planner_replay.composition import Composition, PointCloudView, TextLayer, compose
+    from planner_replay.preview_transport import prepare_preview, preview_size, scale_preview
+    from PIL import Image
+
+    scene = np.zeros((72, 128, 4), dtype=np.uint8)
+    scene[18:48, 25:95] = (35, 160, 230, 220)
+    selected = PointCloudView("oblique")
+    views = {selected.kind: Image.new("RGBA", (50, 32), (190, 40, 48, 220))}
+    project = replace(Composition(views=(selected,)), transparent_canvas=True, show_speed=True,
+                      texts=(TextLayer("frame", 0., 3.),))
+    readings = (2., 3., 2.5)
+    prepared = prepare_preview((scene, (), 1., readings, views), project, (300, 250))
+    size = preview_size((128, 72), (300, 250))
+    expected, bounds = compose(scale_preview(Image.fromarray(scene), size), project, (), 1., readings, views)
+    assert prepared.project == project and prepared.layers == bounds
+    np.testing.assert_array_equal(np.asarray(prepared.image), np.asarray(expected))

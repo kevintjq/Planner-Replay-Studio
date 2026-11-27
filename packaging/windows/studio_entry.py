@@ -21,7 +21,8 @@ def smoke():
     from rosbags.rosbag1 import Writer
     from rosbags.typesys import Stores, get_typestore
     from planner_replay._ghost_mask import rgb_difference
-    from planner_replay.cloud import first_voxel_indices
+    from planner_replay.cloud import CloudMap, first_voxel_indices
+    from planner_replay.preview_transport import prepare_preview
     from planner_replay.composition import Composition, ImageLayer, TextLayer, VideoLayer, compose
     from planner_replay.gui import RendererApp
     from planner_replay.project_file import ProjectFile, load_project, save_project, save_workspace_folder
@@ -30,6 +31,9 @@ def smoke():
 
     assert vtk.vtkVersion.GetVTKMajorVersion() >= 9
     assert cv2.TrackerCSRT_create() is not None
+    cloud = CloudMap(range_color=True, range_limits=(0., 2.))
+    cloud.xyz = np.array([[0., 0., 0.], [2., 0., 0.]])
+    assert cloud.colors_from([0., 0., 0.]).tolist() == [[30, 148, 47], [172, 79, 237]]
     assert rgb_difference(bytes([10, 40, 30]), bytes([9, 20, 31])) == bytes([20])
     assert first_voxel_indices([[.1, 0., 0.], [.2, 0., 0.], [-.1, 0., 0.]], 1.).tolist() == [2, 0]
     root = tk.Tk()
@@ -70,6 +74,9 @@ def smoke():
         restored = load_project(project_path).composition
         frame, layers = compose(Image.new("RGB", (320, 180)), restored, (), .25, (3., 4., 2.))
         assert restored == project and ("speed", 0) in layers and ("text", 0) in layers
+        base = np.zeros((180, 320, 3), dtype=np.uint8)
+        prepared = prepare_preview((base, (), .25, (3., 4., 2.), {}), project, (320, 180))
+        assert prepared.image.size == (320, 180) and ("text", 0) in prepared.layers
         path = folder / "smoke.mp4"
         with imageio.get_writer(path, fps=60, codec="libx264", macro_block_size=2) as writer:
             writer.append_data(np.asarray(frame.convert("RGB")))

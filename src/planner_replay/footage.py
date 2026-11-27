@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from math import isfinite
 
 import av
+from av.video.reformatter import Interpolation
 import numpy as np
 from PIL import Image
 
@@ -186,16 +187,25 @@ class FlightVideo:
         pts = self.reader.time(frame)
         key = pts, max_width
         if key != self.cached_key:
-            image = self.reader.image(frame)
-            if self.edit.crop != FULL_FRAME:
-                width, height = image.size
-                x0, y0, x1, y1 = self.edit.crop
-                left, top = min(width - 1, round(x0 * width)), min(height - 1, round(y0 * height))
-                image = image.crop((left, top, max(left + 1, round(x1 * width)),
-                                                max(top + 1, round(y1 * height))))
-            if max_width is not None:
-                image.thumbnail((max_width, max_width), Image.Resampling.BILINEAR)
-            self.cached_frame = np.asarray(image)
+            if (max_width is not None and self.edit.crop == FULL_FRAME and not getattr(frame, "rotation", 0)
+                    and max(frame.width, frame.height) > max_width):
+                ratio = max_width / max(frame.width, frame.height)
+                width, height = max(1, round(frame.width * ratio)), max(1, round(frame.height * ratio))
+                # Convert and scale together in libswscale instead of allocating full-resolution RGB first.
+                proxy = frame.reformat(width=width, height=height, format="rgb24",
+                                       interpolation=Interpolation.BILINEAR)
+                self.cached_frame = proxy.to_ndarray()
+            else:
+                image = self.reader.image(frame)
+                if self.edit.crop != FULL_FRAME:
+                    width, height = image.size
+                    x0, y0, x1, y1 = self.edit.crop
+                    left, top = min(width - 1, round(x0 * width)), min(height - 1, round(y0 * height))
+                    image = image.crop((left, top, max(left + 1, round(x1 * width)),
+                                                    max(top + 1, round(y1 * height))))
+                if max_width is not None:
+                    image.thumbnail((max_width, max_width), Image.Resampling.BILINEAR)
+                self.cached_frame = np.asarray(image)
             self.cached_key = key
         return self.cached_frame
 

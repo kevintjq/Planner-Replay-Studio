@@ -1,5 +1,16 @@
 # Validation record
 
+## Point-cloud and playback performance
+
+Measured on the same Linux runner with a synthetic 850,000-point XYZ/RGB frame. Timings are best-of-four five-call averages, excluding ROS bag parsing, OpenGL drawing, and file I/O.
+
+| Operation | v0.4.2 | C++ data path |
+| --- | ---: | ---: |
+| PointCloud2 unpacking and invalid point filtering | 43.18 ms | 7.00 ms |
+| Distance coloring | 66.61 ms | 8.96 ms |
+
+The synthetic inputs produced matching XYZ/RGB results. Tests also cover organized rows with padding, mixed field types, big-endian color and nonfinite coordinates. Desktop checks exercised ROS1 playback with two videos, background composition, timeline seeking, portable projects, and 60 fps export.
+
 ## Native preview
 
 The Windows x64 workflow compiled the native app, ran its bag-reader and startup tests, and launched the packaged executable in smoke-test mode. [Windows build and test run](https://github.com/kevintjq/Planner-Replay-Studio/actions/runs/45853048677)

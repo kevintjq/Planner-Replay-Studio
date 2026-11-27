@@ -1,45 +1,42 @@
 """PointCloud2 decoding including organized row padding and endian conversion."""
 import numpy as np
 
-from . import _voxel
+from . import _cloud
 
-DTYPES = {1:'i1', 2:'u1', 3:'i2', 4:'u2', 5:'i4', 6:'u4', 7:'f4', 8:'f8'}
+FIELD_SIZES = {1: 1, 2: 1, 3: 2, 4: 2, 5: 4, 6: 4, 7: 4, 8: 8}
 
 
 def decode(msg):
-    endian = '>' if msg.is_bigendian else '<'
-    fields = {f.name:f for f in msg.fields}
-    if not all(k in fields for k in ('x', 'y', 'z')):
+    fields = {field.name: field for field in msg.fields}
+    if not all(name in fields for name in ("x", "y", "z")):
         raise ValueError("PointCloud2 must contain x,y,z")
-    if msg.row_step < msg.width*msg.point_step or len(msg.data) < msg.row_step*msg.height:
-        raise ValueError("Truncated/invalid PointCloud2 strides")
-    def field(name):
-        f = fields[name]
-        if f.count != 1 or f.datatype not in DTYPES:
+
+    def descriptor(name):
+        field = fields[name]
+        if field.count != 1 or field.datatype not in FIELD_SIZES:
             raise ValueError(f"Unsupported PointField {name}")
-        dtype = np.dtype(endian+DTYPES[f.datatype])
-        if f.offset < 0 or f.offset+dtype.itemsize > msg.point_step:
+        if field.offset < 0 or field.offset + FIELD_SIZES[field.datatype] > msg.point_step:
             raise ValueError("PointField exceeds point_step")
-        return np.ndarray((msg.height, msg.width), dtype=dtype, buffer=msg.data,
-                          offset=f.offset, strides=(msg.row_step, msg.point_step)).reshape(-1)
-    xyz = np.column_stack([field(k) for k in ('x','y','z')]).astype(float)
-    rgb = None
-    name = next((k for k in ('rgb', 'rgba') if k in fields), None)
-    if name:
-        packed = field(name)
-        if packed.dtype.itemsize != 4:
+        return field.offset, field.datatype
+
+    name = next((name for name in ("rgb", "rgba") if name in fields), None)
+    rgb = -1
+    if name is not None:
+        rgb, kind = descriptor(name)
+        if FIELD_SIZES[kind] != 4:
             raise ValueError("Packed RGB must be float32/uint32/int32")
-        bits = packed.view(np.dtype(endian+'u4')).astype(np.uint32)
-        rgb = np.column_stack([(bits >> 16)&255, (bits >> 8)&255, bits&255]).astype('u1')
-    mask = np.isfinite(xyz).all(axis=1)
-    return xyz[mask], None if rgb is None else rgb[mask]
+    points, colors, count = _cloud.decode_points(msg.data, msg.width, msg.height, msg.row_step,
+                                                 msg.point_step, msg.is_bigendian,
+                                                 *(descriptor(axis) for axis in ("x", "y", "z")), rgb)
+    xyz = np.frombuffer(points, dtype=np.float64, count=count*3).reshape(-1, 3)
+    return xyz, None if colors is None else np.frombuffer(colors, dtype=np.uint8, count=count*3).reshape(-1, 3)
 
 
 # Green at the low end, violet at the high end.
 SCAN_COLORS = np.array([
     [30, 148, 47], [36, 234, 77], [26, 241, 155], [18, 214, 230],
     [25, 131, 255], [52, 61, 251], [114, 46, 235], [172, 79, 237],
-], dtype=float)
+], dtype=np.uint8)
 
 
 def scan_colors(values, limits):
@@ -55,7 +52,7 @@ def first_voxel_indices(xyz, size):
     points = np.ascontiguousarray(xyz, dtype=np.float64)
     if points.ndim != 2 or points.shape[1] != 3:
         raise ValueError("Expected an array of XYZ points")
-    return np.frombuffer(_voxel.first_voxel_indices(points, size), dtype=np.intp)
+    return np.frombuffer(_cloud.first_voxel_indices(points, size), dtype=np.intp)
 
 
 class CloudMap:
@@ -92,9 +89,11 @@ class CloudMap:
         """Color the retained map relative to the body at the current playback time."""
         if not len(self.xyz):
             return self.rgb
-        offsets = self.xyz - position
-        distances = np.sqrt(np.einsum('ij,ij->i', offsets, offsets))
         if self.range_limits is None:
+            offsets = self.xyz - position
+            distances = np.sqrt(np.einsum("ij,ij->i", offsets, offsets))
             low, high = np.percentile(distances, (2, 98))
             self.range_limits = float(low), float(max(high, low + .5))
-        return scan_colors(distances, self.range_limits)
+        points = np.ascontiguousarray(self.xyz, dtype=np.float64)
+        colors = _cloud.range_colors(points, SCAN_COLORS, tuple(position), tuple(self.range_limits))
+        return np.frombuffer(colors, dtype=np.uint8).reshape(-1, 3)

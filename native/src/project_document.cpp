@@ -8,6 +8,8 @@
 #include <QJsonDocument>
 #include <QSaveFile>
 #include <QTemporaryDir>
+#include <QUuid>
+#include <algorithm>
 #include <stdexcept>
 #include <utility>
 
@@ -134,6 +136,66 @@ void ProjectDocument::setValue(const QString &key, const QString &value)
     auto settings = values();
     settings.insert(key, value);
     root_.insert("values", settings);
+}
+
+std::vector<VideoClip> ProjectDocument::videos() const
+{
+    std::vector<VideoClip> result;
+    const auto layers = root_.value("composition").toObject().value("videos").toArray();
+    result.reserve(layers.size());
+    for (const auto &entry : layers) {
+        const auto item = entry.toObject();
+        const auto path = absoluteMedia(item.value("path").toString());
+        const auto position = item.value("position").toArray();
+        VideoClip clip;
+        clip.path = path;
+        clip.id = item.value("id").toString();
+        clip.label = QFileInfo(path).fileName();
+        clip.timing = VideoTiming::fromJson(item.value("edit").toObject());
+        clip.width = std::clamp(item.value("width").toDouble(clip.width), .05, .90);
+        clip.opacity = std::clamp(item.value("opacity").toDouble(clip.opacity), 0., 1.);
+        if (position.size() == 2) {
+            clip.horizontal = std::clamp(position[0].toDouble(clip.horizontal), 0., 1.);
+            clip.vertical = std::clamp(position[1].toDouble(clip.vertical), 0., 1.);
+        }
+        result.push_back(std::move(clip));
+    }
+    return result;
+}
+
+void ProjectDocument::addVideo(const QString &file)
+{
+    if (!QFileInfo(file).isFile())
+        fail(QStringLiteral("找不到实拍视频：%1").arg(file));
+    auto scene = root_.value("composition").toObject();
+    auto layers = scene.value("videos").toArray();
+    QJsonObject edit{{"offset", 0.}, {"trim_in", 0.}, {"trim_out", QJsonValue(QJsonValue::Null)},
+                     {"crop", QJsonArray{0., 0., 1., 1.}}, {"anchors", QJsonArray{}}};
+    const auto anchor = layers.size() % 4;
+    layers.append(QJsonObject{{"id", QUuid::createUuid().toString(QUuid::Id128)},
+                              {"path", path_.isEmpty() ? absolutePath(file)
+                                                       : referenceFrom(QFileInfo(path_).absolutePath(), absolutePath(file))},
+                              {"edit", edit}, {"width", .28}, {"opacity", .96},
+                              {"position", QJsonArray{anchor % 2 ? .94 : .055, anchor / 2 ? .52 : .84}}});
+    scene.insert("videos", layers);
+    root_.insert("composition", scene);
+}
+
+void ProjectDocument::setVideoTiming(qsizetype index, const QJsonObject &changes)
+{
+    auto scene = root_.value("composition").toObject();
+    auto layers = scene.value("videos").toArray();
+    if (index < 0 || index >= layers.size())
+        fail(QStringLiteral("视频图层已失效。"));
+    auto layer = layers[index].toObject();
+    auto edit = layer.value("edit").toObject();
+    for (auto it = changes.begin(); it != changes.end(); ++it)
+        edit.insert(it.key(), it.value());
+    VideoTiming::fromJson(edit);
+    layer.insert("edit", edit);
+    layers.replace(index, layer);
+    scene.insert("videos", layers);
+    root_.insert("composition", scene);
 }
 
 QString ProjectDocument::absoluteMedia(const QString &reference) const

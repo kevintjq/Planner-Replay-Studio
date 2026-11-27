@@ -3,6 +3,8 @@
 #include <QtConcurrentRun>
 #include <QDir>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QVariantMap>
 #include <algorithm>
 #include <cmath>
 #include <exception>
@@ -27,7 +29,7 @@ ReplayController::ReplayController(QObject *parent) : QObject(parent), record_(r
             status_ = result.record->odometryTopic.isEmpty() ? tr("点云已载入。此记录没有里程计。")
                 : result.record->poses.empty() ? tr("点云已载入。所选里程计与点云坐标系不匹配。") : tr("载入完成");
             if (project_)
-                status_ += tr(" · 项目设置已保留，当前预览点云。");
+                status_ += tr(" · 项目已载入。");
             install(std::move(result.record));
         } else {
             status_ = cancelRequested_ ? tr("已取消读取") : result.issue;
@@ -54,6 +56,7 @@ void ReplayController::install(std::shared_ptr<const replay::Recording> record)
     pause();
     record_ = std::move(record);
     position_ = 0.;
+    refreshVideoLayers();
     emit recordingChanged();
     emit positionChanged();
 }
@@ -82,6 +85,7 @@ void ReplayController::openProject(const QUrl &url)
         return;
     try {
         auto project = replay::ProjectDocument::load(url.toLocalFile());
+        project.videos();
         if (!project.bag().isEmpty()) {
             if (!QFileInfo(project.bag()).isFile())
                 throw std::runtime_error(tr("找不到项目录包：%1").arg(project.bag()).toUtf8().constData());
@@ -295,4 +299,114 @@ int ReplayController::pointCount() const
 {
     const auto &frame = record_->frameAt(record_->stampAt(position_));
     return frame.end - (record_->replace ? frame.first : 0);
+}
+
+void ReplayController::refreshVideoLayers()
+{
+    clips_ = project_ ? project_->videos() : std::vector<replay::VideoClip>();
+    QVariantList layers;
+    for (const auto &clip : clips_) {
+        const auto &timing = clip.timing;
+        QVariantList anchors, crop;
+        for (const auto &[replaySeconds, sourceSeconds] : timing.anchors)
+            anchors.append(QVariant::fromValue(QVariantList{replaySeconds, sourceSeconds}));
+        for (double value : timing.crop)
+            crop.append(value);
+        layers.append(QVariantMap{
+            {"url", QUrl::fromLocalFile(clip.path)}, {"label", clip.label},
+            {"width", clip.width}, {"opacity", clip.opacity},
+            {"horizontal", clip.horizontal}, {"vertical", clip.vertical},
+            {"offset", QString::number(timing.offset, 'g', 16)},
+            {"trimIn", QString::number(timing.trimIn, 'g', 16)},
+            {"trimOut", timing.trimOut ? QString::number(*timing.trimOut, 'g', 16) : QString()},
+            {"rate", timing.rate()}, {"anchors", anchors}, {"crop", crop}
+        });
+    }
+    videoLayers_ = std::move(layers);
+    emit videoLayersChanged();
+}
+
+double ReplayController::videoSeconds(int index) const
+{
+    if (index < 0 || size_t(index) >= clips_.size())
+        return -1.;
+    const auto &timing = clips_[size_t(index)].timing;
+    const double seconds = timing.sourceSeconds(position_);
+    return seconds >= -1e-9 && timing.includes(seconds) ? std::max(0., seconds) : -1.;
+}
+
+void ReplayController::addVideo(const QUrl &url)
+{
+    if (loading_ || !url.isLocalFile())
+        return;
+    try {
+        auto document = projectSnapshot();
+        document.addVideo(url.toLocalFile());
+        project_ = std::move(document);
+        refreshVideoLayers();
+        status_ = tr("已添加实拍视频。");
+    } catch (const std::exception &error) {
+        status_ = QString::fromUtf8(error.what());
+    }
+    emit stateChanged();
+}
+
+void ReplayController::editVideo(int index, const QJsonObject &changes)
+{
+    if (loading_ || !project_)
+        return;
+    try {
+        project_->setVideoTiming(index, changes);
+        refreshVideoLayers();
+        status_ = tr("视频设置已更新。");
+    } catch (const std::exception &error) {
+        status_ = QString::fromUtf8(error.what());
+    }
+    emit stateChanged();
+}
+
+void ReplayController::setVideoTrim(int index, const QString &trimIn, const QString &trimOut,
+                                    const QString &offset)
+{
+    bool inOk, outOk, offsetOk;
+    const double in = trimIn.toDouble(&inOk);
+    const double out = trimOut.toDouble(&outOk);
+    const double shift = offset.toDouble(&offsetOk);
+    const bool openEnd = trimOut.trimmed().isEmpty();
+    if (!inOk || !std::isfinite(in) || !offsetOk || !std::isfinite(shift) ||
+        (!openEnd && (!outOk || !std::isfinite(out)))) {
+        status_ = tr("请输入有效的秒数，结束时间可留空。");
+        emit stateChanged();
+        return;
+    }
+    editVideo(index, {{"trim_in", in}, {"trim_out", openEnd ? QJsonValue(QJsonValue::Null) : QJsonValue(out)},
+                      {"offset", shift}});
+}
+
+void ReplayController::setVideoAnchor(int index, int slot, const QString &seconds)
+{
+    if (index < 0 || size_t(index) >= clips_.size() || slot < 0 || slot > 1)
+        return;
+    bool ok;
+    const auto source = seconds.toDouble(&ok);
+    const auto &anchors = clips_[size_t(index)].timing.anchors;
+    if (!ok || !std::isfinite(source) || source < 0. || (slot == 1 && anchors.empty())) {
+        status_ = tr("请先设置锚点 1，并输入有效的视频时间。");
+        emit stateChanged();
+        return;
+    }
+    QJsonArray values;
+    for (const auto &[replaySeconds, sourceSeconds] : anchors)
+        values.append(QJsonArray{replaySeconds, sourceSeconds});
+    const QJsonArray anchor{position_, source};
+    if (slot < values.size())
+        values.replace(slot, anchor);
+    else
+        values.append(anchor);
+    editVideo(index, {{"anchors", values}});
+}
+
+void ReplayController::clearVideoAnchors(int index)
+{
+    editVideo(index, {{"anchors", QJsonArray{}}});
 }

@@ -28,6 +28,7 @@ jobs:
         with:
           version: ${{ env.QT_VERSION }}
           arch: win64_msvc2022_64
+          modules: qtmultimedia
           cache: true
       - name: Install ROS1 bag compression libraries
         shell: pwsh
@@ -73,11 +74,20 @@ jobs:
           $pythonRuntime = Get-ChildItem -Path (Join-Path $target 'app') -File -Recurse |
             Where-Object { $_.Name -match '^python.*\.(dll|exe)$' -or $_.Extension -in '.py', '.pyd', '.pyc' }
           if ($pythonRuntime) { throw "Unexpected Python runtime: $($pythonRuntime.Name)" }
+          $fixture = Join-Path $env:RUNNER_TEMP 'planner-replay-video-smoke.mp4'
+          $ffmpeg = Get-Command ffmpeg -ErrorAction SilentlyContinue
+          if (!$ffmpeg) {
+            choco install ffmpeg --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw 'Could not install FFmpeg to generate the video fixture.' }
+            $ffmpeg = Get-Command "$env:ChocolateyInstall/bin/ffmpeg.exe"
+          }
+          & $ffmpeg.Source -v error -y -f lavfi -i 'testsrc2=size=160x90:rate=30:duration=3' -c:v libx264 -pix_fmt yuv420p $fixture
+          if ($LASTEXITCODE -ne 0) { throw 'Could not generate the video smoke fixture.' }
           $originalPath = $env:PATH
           try {
             $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
             Remove-Item Env:QT_PLUGIN_PATH, Env:QML_IMPORT_PATH, Env:QML2_IMPORT_PATH -ErrorAction SilentlyContinue
-            $app = Start-Process -FilePath $exe -ArgumentList '--smoke' -WorkingDirectory $target -Wait -PassThru
+            $app = Start-Process -FilePath $exe -ArgumentList '--smoke', ('"' + $fixture + '"') -WorkingDirectory $target -Wait -PassThru
             if ($app.ExitCode -ne 0) { throw "Installed application exited with $($app.ExitCode)." }
           } finally {
             $env:PATH = $originalPath

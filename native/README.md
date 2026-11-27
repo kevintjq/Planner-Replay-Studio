@@ -15,6 +15,12 @@
 
 本版覆盖原生点云回放。独立速度话题、通用 TF 树、规划及走廊图层、实拍合成和 60 fps 导出可在 [视频合成工作台](https://github.com/kevintjq/Planner-Replay-Studio/blob/main/docs/studio.zh-CN.md) 使用。
 
+### 实拍预览
+
+左侧「实拍视频」可同时导入多段素材。选择素材后设置视频入点、出点和偏移。需要校正两个机位的时钟漂移时，分别暂停在回放中的两个共同事件，并输入该机位中同一事件的时间作为锚点。「另存为」保留这些设置。
+
+打开旧项目后，视频预览读取保存的时间裁剪、画面裁剪、锚点和保留片段。当前使用点云回放驱动视频小窗，音轨合成、布局事件及视频导出仍在迁移中。
+
 ## 构建
 
-需要 CMake 3.22、支持 C++20 的编译器、Qt 6.5 或更高版本，以及 BZip2 和 LZ4。在 Windows 上可通过 vcpkg 的 `x64-windows-static-md` 安装压缩库。生成安装包还需要 NSIS。构建和安装测试命令见 [Windows 构建流程](https://github.com/kevintjq/Planner-Replay-Studio/blob/main/.github/workflows/native-windows.yml)。
+需要 CMake 3.22、支持 C++20 的编译器、Qt 6.8 或更高版本（含 Qt Multimedia），以及 BZip2 和 LZ4。在 Windows 上可通过 vcpkg 的 `x64-windows-static-md` 安装压缩库。生成安装包还需要 NSIS。构建和安装测试命令见 [Windows 构建流程](../.github/workflows/native-windows.yml)。

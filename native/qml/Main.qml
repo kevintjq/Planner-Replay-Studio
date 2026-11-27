@@ -53,6 +53,13 @@ ApplicationWindow {
         nameFilters: ["Planner Replay 项目 (*.slamfpv)"]
         onAccepted: replay.saveProjectAs(selectedFile)
     }
+    FileDialog {
+        id: videoDialog
+        title: "添加实拍视频"
+        fileMode: FileDialog.OpenFiles
+        nameFilters: ["视频 (*.mp4 *.mov *.mkv *.avi *.webm)", "所有文件 (*)"]
+        onAccepted: for (const file of selectedFiles) replay.addVideo(file)
+    }
     FolderDialog {
         id: packageDialog
         title: "选择打包项目的上级文件夹"
@@ -162,6 +169,54 @@ ApplicationWindow {
                         onClicked: replay.setReplacing(checked)
                     }
 
+                    PanelTitle { text: "实拍视频"; Layout.topMargin: 8 }
+                    Button {
+                        Layout.fillWidth: true
+                        text: "添加视频"
+                        enabled: !replay.loading
+                        onClicked: videoDialog.open()
+                    }
+                    ComboBox {
+                        id: videoPicker
+                        Layout.fillWidth: true
+                        model: replay.videoLayers
+                        textRole: "label"
+                        visible: count > 0
+                    }
+                    ColumnLayout {
+                        id: videoSettings
+                        readonly property var selectedClip: replay.videoLayers[videoPicker.currentIndex] || null
+                        Layout.fillWidth: true
+                        visible: selectedClip !== null
+                        enabled: !replay.loading
+                        GridLayout {
+                            Layout.fillWidth: true
+                            columns: 2
+                            Caption { text: "开始（秒）" }
+                            TextField { id: trimIn; Layout.fillWidth: true; text: videoSettings.selectedClip?.trimIn ?? "" }
+                            Caption { text: "结束（秒）" }
+                            TextField { id: trimOut; Layout.fillWidth: true; text: videoSettings.selectedClip?.trimOut ?? ""; placeholderText: "视频末尾" }
+                            Caption { text: "偏移（秒）" }
+                            TextField { id: offset; Layout.fillWidth: true; text: videoSettings.selectedClip?.offset ?? "" }
+                        }
+                        Button {
+                            Layout.fillWidth: true
+                            text: "应用裁剪与偏移"
+                            onClicked: replay.setVideoTrim(videoPicker.currentIndex, trimIn.text, trimOut.text, offset.text)
+                        }
+                        Caption {
+                            text: "暂停在回放事件处，输入实拍中同一事件的时间"
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                        }
+                        TextField { id: mediaTime; Layout.fillWidth: true; placeholderText: "视频时间（秒）" }
+                        RowLayout {
+                            Button { text: "锚点 1"; enabled: !replay.playing; onClicked: replay.setVideoAnchor(videoPicker.currentIndex, 0, mediaTime.text) }
+                            Button { text: "锚点 2"; enabled: !replay.playing && (videoSettings.selectedClip?.anchors.length ?? 0) > 0; onClicked: replay.setVideoAnchor(videoPicker.currentIndex, 1, mediaTime.text) }
+                            Button { text: "清除"; enabled: (videoSettings.selectedClip?.anchors.length ?? 0) > 0; onClicked: replay.clearVideoAnchors(videoPicker.currentIndex) }
+                        }
+                    }
+
                     PanelTitle { text: "视口"; Layout.topMargin: 8 }
                     ComboBox {
                         Layout.fillWidth: true
@@ -250,6 +305,17 @@ ApplicationWindow {
                             cloud.zoom(wheel.angleDelta.y / 120)
                             wheel.accepted = true
                         }
+                    }
+                }
+
+                Repeater {
+                    model: replay.videoLayers
+                    delegate: FlightClip {
+                        required property int index
+                        required property var modelData
+                        controller: replay
+                        clipIndex: index
+                        footage: modelData
                     }
                 }
 

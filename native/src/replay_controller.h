@@ -8,6 +8,7 @@
 #include <QObject>
 #include <QTimer>
 #include <QUrl>
+#include <QVariantList>
 #include <atomic>
 
 class ReplayController : public QObject {
@@ -28,6 +29,7 @@ class ReplayController : public QObject {
     Q_PROPERTY(bool replacing READ replacing NOTIFY recordingChanged)
     Q_PROPERTY(bool demo READ demo NOTIFY recordingChanged)
     Q_PROPERTY(QString projectPath READ projectPath NOTIFY recordingChanged)
+    Q_PROPERTY(QVariantList videoLayers READ videoLayers NOTIFY videoLayersChanged)
 public:
     explicit ReplayController(QObject *parent = nullptr);
     ~ReplayController() override;
@@ -50,6 +52,13 @@ public:
     QString projectPath() const { return project_ ? project_->path() : QString(); }
     std::shared_ptr<const replay::Recording> recording() const { return record_; }
 
+    const QVariantList &videoLayers() const { return videoLayers_; }
+    Q_INVOKABLE double videoSeconds(int index) const;
+    Q_INVOKABLE void addVideo(const QUrl &url);
+    Q_INVOKABLE void setVideoTrim(int index, const QString &trimIn, const QString &trimOut, const QString &offset);
+    Q_INVOKABLE void setVideoAnchor(int index, int slot, const QString &seconds);
+    Q_INVOKABLE void clearVideoAnchors(int index);
+
     Q_INVOKABLE void openBag(const QUrl &url);
     Q_INVOKABLE void openDemo();
     Q_INVOKABLE void openProject(const QUrl &url);
@@ -68,6 +77,7 @@ signals:
     void playingChanged();
     void positionChanged();
     void recordingChanged();
+    void videoLayersChanged();
 
 private:
     struct Result {
@@ -82,11 +92,15 @@ private:
     replay::ProjectDocument projectSnapshot() const;
     void install(std::shared_ptr<const replay::Recording> record);
     void setPosition(double seconds);
+    void refreshVideoLayers();
+    void editVideo(int index, const QJsonObject &changes);
 
     std::shared_ptr<const replay::Recording> record_;
     QFutureWatcher<Result> watcher_;
     QFutureWatcher<QString> folderWatcher_;
     std::optional<replay::ProjectDocument> project_;
+    std::vector<replay::VideoClip> clips_;
+    QVariantList videoLayers_;
     QTimer timer_;
     QElapsedTimer clock_;
     QString path_, status_;

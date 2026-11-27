@@ -1,5 +1,7 @@
 #pragma once
 
+#include "video_timing.h"
+
 #include <QJsonObject>
 #include <QStringList>
 #include <functional>
@@ -20,6 +22,9 @@ public:
     const QJsonObject &json() const { return root_; }
     QJsonObject values() const;
     void setValue(const QString &key, const QString &value);
+    std::vector<VideoClip> videos() const;
+    void addVideo(const QString &file);
+    void setVideoTiming(qsizetype index, const QJsonObject &changes);
 
     ProjectDocument saveAs(const QString &manifest) const;
     QString exportFolder(const QString &folder, const std::function<bool()> &cancel = {}) const;

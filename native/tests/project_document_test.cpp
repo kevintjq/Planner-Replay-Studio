@@ -5,6 +5,7 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QTemporaryDir>
+#include <cmath>
 #include <iostream>
 #include <stdexcept>
 
@@ -42,6 +43,13 @@ int main(int argc, char **argv)
             const auto copy = replay::ProjectDocument::load(original.exportFolder(directory.filePath("package")));
             expect(copy.media().size() == original.media().size(), "workspace media count mismatch");
             expect(copy.values() == original.values(), "workspace settings mismatch");
+            const auto oldClips = original.videos();
+            const auto packedClips = copy.videos();
+            expect(oldClips.size() == packedClips.size(), "workspace videos lost");
+            for (size_t i = 0; i < oldClips.size(); ++i) {
+                expect(packedClips[i].timing.anchors == oldClips[i].timing.anchors, "workspace anchors lost");
+                expect(packedClips[i].timing.segments == oldClips[i].timing.segments, "workspace segments lost");
+            }
             for (qsizetype i = 0; i < copy.media().size(); ++i)
                 expect(read(copy.media()[i]) == read(original.media()[i]), "workspace asset bytes mismatch");
             return 0;
@@ -89,6 +97,29 @@ int main(int argc, char **argv)
                "opaque timeline preserved");
         expect(saved.json().value("composition").toObject().value("videos").toArray()[0].toObject().value("edit") ==
                settings.value("videos").toArray()[0].toObject().value("edit"), "anchors and crop preserved");
+
+        const auto clips = project.videos();
+        expect(clips.size() == 3 && clips[0].path == videoPath, "old media opened");
+        expect(std::abs(clips[0].timing.sourceSeconds(1.5) - 3.6) < 1e-9, "two-anchor drift");
+        expect(clips[0].timing.crop[2] == .9 && clips[1].timing.includes(0), "old video defaults and crop");
+        auto edited = project;
+        edited.setVideoTiming(0, {{"trim_in", 2.5}, {"trim_out", 5.}, {"anchors", QJsonArray{QJsonArray{3, 5.2}, QJsonArray{0, 2}}},
+                                  {"segments", QJsonArray{QJsonArray{2.5, 3.}, QJsonArray{4., 5.5}}}});
+        edited.setVideoTiming(1, {{"segments", QJsonArray{}}});
+        edited.addVideo(videoPath);
+        auto reloaded = replay::ProjectDocument::load(edited.saveAs(directory.filePath("relocated/edited.slamfpv")).path());
+        const auto updated = reloaded.videos();
+        expect(updated.size() == 4 && updated[3].path == videoPath && !updated[3].id.isEmpty(), "new video persisted");
+        expect(std::abs(updated[0].timing.sourceSeconds(1.5) - 3.6) < 1e-9, "reversed anchor entry order");
+        expect(updated[0].timing.includes(2.5) && !updated[0].timing.includes(3.) &&
+               updated[0].timing.includes(4.5) && !updated[0].timing.includes(5.), "trim and deleted segments");
+        expect(updated[0].timing.crop[2] == .9, "editing timing preserves crop");
+        expect(!updated[1].timing.includes(2.), "explicitly empty video remains hidden");
+        const auto initialEdit = edited.json();
+        bool invalidEdit = false;
+        try { edited.setVideoTiming(0, {{"anchors", QJsonArray{QJsonArray{0, 2}, QJsonArray{3, 1}}}}); }
+        catch (const std::exception &) { invalidEdit = true; }
+        expect(invalidEdit && edited.json() == initialEdit, "invalid timing leaves project unchanged");
 
         bool refused = false;
         try { project.saveAs(videoPath); } catch (const std::exception &) { refused = true; }

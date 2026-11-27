@@ -19,7 +19,7 @@ else()
     find_library(LZ4_LIBRARY NAMES lz4 REQUIRED)
 endif()
 
-add_library(replay_data STATIC src/replay_data.cpp src/project_document.cpp src/video_timing.cpp src/rviz_layout.cpp src/transform_tree.cpp)
+add_library(replay_data STATIC src/replay_data.cpp src/project_document.cpp src/video_timing.cpp src/rviz_layout.cpp src/transform_tree.cpp src/ros_topic_message.cpp)
 target_include_directories(replay_data PUBLIC src)
 if(LZ4_INCLUDE_DIR)
     target_include_directories(replay_data PRIVATE "${LZ4_INCLUDE_DIR}")
@@ -31,9 +31,9 @@ target_link_libraries(trajectory_image PUBLIC Qt6::Gui PRIVATE ${OpenCV_LIBS})
 
 qt_add_executable(PlannerReplayNative WIN32 src/main.cpp src/cloud_view.cpp src/cloud_view.h
     src/replay_controller.cpp src/replay_controller.h
-    src/trajectory_controller.cpp src/trajectory_controller.h src/movie_exporter.cpp src/movie_exporter.h)
+    src/trajectory_controller.cpp src/trajectory_controller.h src/movie_exporter.cpp src/movie_exporter.h src/topic_inspector.cpp src/topic_inspector.h)
 qt_add_resources(PlannerReplayNative "interface" PREFIX "/" FILES qml/Main.qml qml/FlightClip.qml qml/VideoTimeline.qml
-    qml/SceneOverlays.qml qml/SceneLayerEditor.qml qml/MarkerTimeline.qml qml/LayoutEditor.qml qml/TrajectoryPane.qml)
+    qml/SceneOverlays.qml qml/SceneLayerEditor.qml qml/MarkerTimeline.qml qml/LayoutEditor.qml qml/TrajectoryPane.qml qml/TopicInspector.qml)
 target_link_libraries(PlannerReplayNative PRIVATE replay_data trajectory_image ${OpenCV_LIBS} Qt6::Quick Qt6::QuickControls2 Qt6::OpenGL Qt6::Concurrent Qt6::Multimedia)
 if(MSVC)
     target_compile_options(replay_data PRIVATE /utf-8)

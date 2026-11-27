@@ -4,6 +4,9 @@
 #include <QCoreApplication>
 #include <QTemporaryDir>
 #include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QtEndian>
 #include <algorithm>
 #include <bit>
@@ -132,6 +135,30 @@ int main(int argc, char **argv)
                 inverse->map(world->translation) == QVector3D(), "TF chain interpolation or inverse is incorrect.");
         require(!tree.lookup("map", "body", 1'500'000'000), "TF extrapolated outside recorded coverage.");
 
+        const QByteArray schema =
+            "Header header\nSensor[] readings\nuint64 count\n"
+            "================================================================================\n"
+            "MSG: fixture/Sensor\nstring name\nfloat64[] samples\n";
+        QByteArray message = u32(1) + stamp(2) + blob("map") + u32(1) + blob("lidar") + u32(129);
+        for (int i = 0; i < 129; ++i)
+            message += number64(double(i) / 4.);
+        message += QByteArray(8, char(255));
+        const auto inspected = replay::decodeTopicMessage("fixture/Reading", schema, message, 2'000'000'000);
+        const auto object = QJsonDocument::fromJson(inspected.fields.toUtf8()).object();
+        const auto readings = object.value("readings").toArray();
+        require(!readings.isEmpty() && object.value("count").toString() == "18446744073709551615" &&
+                object.value("header").toObject().value("frame_id").toString() == "map",
+                "Custom ROS message fields did not decode.");
+        const auto samples = readings[0].toObject().value("samples").toObject();
+        require(samples.value("total").toInt() == 129 &&
+                samples.value("firstItems").toArray().at(4).toDouble() == 1., "Large ROS array summary is incorrect.");
+        const auto imageBuffer = u32(1) + stamp(2) + blob("optical") + u32(2) + u32(1) + blob("bgr8") +
+            QByteArray(1, 0) + u32(4) + blob(QByteArray::fromHex("0708090028323c00"));
+        const auto imageMessage = replay::decodeTopicMessage("sensor_msgs/Image", {}, imageBuffer, 2'000'000'000);
+        require(imageMessage.image.size() == QSize(1, 2) &&
+                imageMessage.image.pixelColor(0, 0) == QColor(9, 8, 7) &&
+                imageMessage.image.pixelColor(0, 1) == QColor(60, 50, 40), "ROS camera frame row stride was not honored.");
+
         QTemporaryDir dir;
         QFile file(dir.filePath("synthetic.bag"));
         require(file.open(QIODevice::WriteOnly), "Could not create temporary test file.");
@@ -162,6 +189,10 @@ int main(int argc, char **argv)
         require(bag->duration() == 2. && bag->points.back().x == 9.f, "ROS1 PointCloud2 data was misread.");
         require(bag->frameAt(bag->stampAt(1)).first == 0 && bag->frameAt(bag->stampAt(2)).first == 1,
                 "Timeline chose the wrong PointCloud2 frame.");
+        const auto topicAtTime = replay::inspectBagTopic(file.fileName(), "/plan", 2'500'000'000);
+        require(topicAtTime && topicAtTime->stamp == 2'000'000'000 && topicAtTime->type == "nav_msgs/Path" &&
+                !replay::inspectBagTopic(file.fileName(), "/plan", 1'900'000'000),
+                "Topic inspection did not select the latest message before the playhead.");
         replay::LoadOptions configured;
         configured.showMainCloud = false;
         configured.showPlan = false;

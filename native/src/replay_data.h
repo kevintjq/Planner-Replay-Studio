@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rviz_layout.h"
+#include "ros_topic_message.h"
 
 #include <QStringList>
 #include <QQuaternion>
@@ -60,6 +61,8 @@ struct Recording {
     QString frameId;
     QStringList cloudTopics;
     QStringList odometryTopics;
+    QStringList topics;
+    qint64 recordedOrigin = 0;
     std::vector<Point> points;
     std::vector<Frame> frames;
     std::vector<Pose> poses;
@@ -91,6 +94,8 @@ struct LoadOptions {
 using Cancel = std::function<bool()>;
 using Progress = std::function<void(double)>;
 
+std::optional<TopicMessage> inspectBagTopic(const QString &path, const QString &topic, qint64 stamp,
+                                            const Cancel &cancel = {});
 std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions &options = {},
                                          const Cancel &cancel = {}, const Progress &progress = {});
 std::shared_ptr<const Recording> makeDemo();

@@ -6,13 +6,13 @@
 #include <cmath>
 #include <stdexcept>
 
-void TrajectoryImages::setImage(const QImage &image)
+void PreviewImages::setImage(const QImage &image)
 {
     const QMutexLocker locker(&lock_);
     image_ = image;
 }
 
-QImage TrajectoryImages::requestImage(const QString &, QSize *size, const QSize &requestedSize)
+QImage PreviewImages::requestImage(const QString &, QSize *size, const QSize &requestedSize)
 {
     QImage image;
     {
@@ -27,7 +27,7 @@ QImage TrajectoryImages::requestImage(const QString &, QSize *size, const QSize 
     return image;
 }
 
-TrajectoryController::TrajectoryController(TrajectoryImages &images) : images_(images)
+TrajectoryController::TrajectoryController(PreviewImages &images) : images_(images)
 {
     connect(&watcher_, &QFutureWatcher<Result>::finished, this, [this] {
         auto result = watcher_.result();

@@ -18,11 +18,13 @@ ApplicationWindow {
     header: TabBar {
         id: workspace
         enabled: !movie.exporting
-        onCurrentIndexChanged: if (currentIndex === 1) replay.pause()
+        onCurrentIndexChanged: if (currentIndex !== 0) replay.pause()
         TabButton { text: "回放与合成" }
         TabButton { text: "固定机位拖影" }
+        TabButton { text: "话题查看" }
     }
 
+    readonly property var topicInspector: inspector
     property int selectedVideo: 0
     readonly property var activeLayout: replay.activeLayout
     readonly property bool videoOnly: activeLayout.mode === "video" && (movie.exporting
@@ -123,6 +125,14 @@ ApplicationWindow {
     component Caption: Label {
         color: window.muted
         font.pixelSize: 12
+    }
+
+    TopicInspector {
+        anchors.fill: parent
+        anchors.margins: 18
+        visible: workspace.currentIndex === 2
+        inspector: window.topicInspector
+        controller: replay
     }
 
     TrajectoryPane {

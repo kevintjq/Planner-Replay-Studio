@@ -70,6 +70,7 @@ public:
     bool replacing() const { return record_->replace; }
     bool demo() const { return path_.isEmpty() && (!project_ || project_->source() == "demo"); }
     QString projectPath() const { return project_ ? project_->path() : QString(); }
+    QString bagPath() const { return path_; }
     std::shared_ptr<const replay::Recording> recording() const { return record_; }
 
     const std::vector<replay::VideoClip> &videoClips() const { return clips_; }

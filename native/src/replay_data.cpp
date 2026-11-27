@@ -112,12 +112,15 @@ HeaderMessage messageHeader(Bytes &reader)
 struct Connection {
     QString topic;
     QByteArray type;
+    QByteArray definition;
 };
 struct Chunk {
     qint64 offset;
     qsizetype size;
     qsizetype unpacked;
     QByteArray compression;
+    qint64 recordOffset;
+    qint64 low = 0, high = 0;
 };
 
 void checkCancel(const Cancel &cancel)
@@ -706,6 +709,56 @@ void bounds(Recording &record, const Cancel &cancel = {})
     record.center = {lo.x + (hi.x - lo.x) / 2, lo.y + (hi.y - lo.y) / 2, lo.z + (hi.z - lo.z) / 2};
     record.radius = std::max(1.f, QVector3D(hi.x-lo.x, hi.y-lo.y, hi.z-lo.z).length() * .5f);
 }
+std::pair<std::vector<Chunk>, std::map<quint32, Connection>> readBagDirectory(QFile &file, const Cancel &cancel)
+{
+    if (!file.open(QIODevice::ReadOnly))
+        fail("无法读取所选 bag 文件。");
+    if (file.readLine(14).trimmed() != "#ROSBAG V2.0")
+        fail("原生预览版支持 ROS1 bag 2.0。");
+
+    std::vector<Chunk> chunks;
+    std::map<quint32, Connection> connections;
+    QHash<qint64, std::pair<qint64, qint64>> ranges;
+    while (!file.atEnd()) {
+        checkCancel(cancel);
+        const qint64 offset = file.pos();
+        const auto header = readHeader(file);
+        const auto sizeBytes = readExactly(file, 4);
+        const auto size = qsizetype(Bytes(sizeBytes).u32());
+        switch (opcode(header)) {
+        case 0x05:
+            if (size > MaxChunkBytes)
+                fail("bag 数据块超过预览版的 256 MB 限制。");
+            chunks.push_back({file.pos(), size, qsizetype(number(header, "size")), header.value("compression"), offset});
+            break;
+        case 0x07: {
+            if (size > 1024 * 1024)
+                fail("bag 连接描述过大。");
+            const auto id = number(header, "conn");
+            const auto metadata = fields(readExactly(file, size));
+            connections.insert_or_assign(id, Connection{QString::fromUtf8(header.value("topic")),
+                                                        metadata.value("type"), metadata.value("message_definition")});
+            continue;
+        }
+        case 0x06:
+            if (header.value("chunk_pos").size() == 8 && header.value("start_time").size() == 8 &&
+                header.value("end_time").size() == 8) {
+                const auto key = qFromLittleEndian<qint64>(header.value("chunk_pos").constData());
+                ranges.insert(key, {Bytes(header.value("start_time")).time(), Bytes(header.value("end_time")).time()});
+            }
+            break;
+        }
+        if (size > file.size() - file.pos() || !file.seek(file.pos() + size))
+            fail("bag 记录长度无效。");
+    }
+
+    for (auto &chunk : chunks) {
+        const auto range = ranges.value(chunk.recordOffset);
+        chunk.low = range.first;
+        chunk.high = range.second;
+    }
+    return {std::move(chunks), std::move(connections)};
+}
 } // namespace
 
 const TopicOverlay::Sample *TopicOverlay::sampleAt(qint64 stamp) const
@@ -763,49 +816,69 @@ std::optional<Pose> Recording::poseAt(qint64 stamp) const
                 QQuaternion::slerp(before.rotation, next->rotation, weight), speed};
 }
 
+std::optional<TopicMessage> inspectBagTopic(const QString &path, const QString &topic, qint64 stamp,
+                                            const Cancel &cancel)
+{
+    QFile file(path);
+    auto [chunks, connections] = readBagDirectory(file, cancel);
+    QHash<quint32, const Connection *> selected;
+    for (const auto &[id, connection] : connections) {
+        if (connection.topic == topic)
+            selected.insert(id, &connection);
+    }
+    if (selected.isEmpty())
+        fail("录包中找不到所选话题。");
+
+    QByteArray payload;
+    qint64 chosen = -1;
+    const Connection *definition = nullptr;
+    for (auto chunk = chunks.rbegin(); chunk != chunks.rend(); ++chunk) {
+        checkCancel(cancel);
+        if ((chunk->low > 0 && chunk->low > stamp) || (chunk->high > 0 && chunk->high < chosen))
+            continue;
+        if (!file.seek(chunk->offset))
+            fail("无法定位 bag 数据块。");
+        const auto bytes = unpack(readExactly(file, chunk->size), *chunk);
+        Bytes reader(bytes);
+        while (!reader.empty()) {
+            checkCancel(cancel);
+            const auto metadata = fields(reader.blob());
+            const auto body = reader.blob();
+            if (opcode(metadata) != 0x02)
+                continue;
+            const auto connection = selected.value(number(metadata, "conn"), nullptr);
+            if (!connection)
+                continue;
+            const auto recorded = Bytes(metadata.value("time")).time();
+            if (recorded <= stamp && recorded >= chosen) {
+                payload = body.toByteArray();
+                chosen = recorded;
+                definition = connection;
+            }
+        }
+    }
+    if (!definition)
+        return {};
+    return decodeTopicMessage(definition->type, definition->definition, payload, chosen);
+}
+
 std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions &options,
                                          const Cancel &cancel, const Progress &progress)
 {
     QFile file(path);
-    if (!file.open(QIODevice::ReadOnly))
-        fail("无法读取所选 bag 文件。");
-    if (file.readLine(14).trimmed() != "#ROSBAG V2.0")
-        fail("原生预览版支持 ROS1 bag 2.0。");
-
-    std::vector<Chunk> chunks;
-    std::map<quint32, Connection> connections;
+    auto [chunks, connections] = readBagDirectory(file, cancel);
     auto record = std::make_shared<Recording>();
     record->name = QFileInfo(file).fileName();
-    while (!file.atEnd()) {
-        checkCancel(cancel);
-        const auto header = readHeader(file);
-        const auto sizeBytes = readExactly(file, 4);
-        const auto size = qsizetype(Bytes(sizeBytes).u32());
-        switch (opcode(header)) {
-        case 0x05:
-            if (size > MaxChunkBytes)
-                fail("bag 数据块超过预览版的 256 MB 限制。");
-            chunks.push_back({file.pos(), size, qsizetype(number(header, "size")), header.value("compression")});
-            break;
-        case 0x07: {
-            if (size > 1024 * 1024)
-                fail("bag 连接描述过大。");
-            const auto id = number(header, "conn");
-            const auto type = fields(readExactly(file, size)).value("type");
-            connections.insert_or_assign(id, Connection{QString::fromUtf8(header.value("topic")), type});
-            continue;
-        }
-        }
-        if (size > file.size() - file.pos() || !file.seek(file.pos() + size))
-            fail("bag 记录长度无效。");
-    }
 
     for (const auto &[id, connection] : connections) {
+        record->topics.append(connection.topic);
         if (connection.type == "sensor_msgs/PointCloud2")
             record->cloudTopics.append(connection.topic);
         if (connection.type == "nav_msgs/Odometry")
             record->odometryTopics.append(connection.topic);
     }
+    record->topics.removeDuplicates();
+    record->topics.sort();
     record->cloudTopics.removeDuplicates();
     record->odometryTopics.removeDuplicates();
     record->cloudTopics.sort();
@@ -891,9 +964,12 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
             if (entry == connections.end())
                 continue;
             const auto &connection = entry->second;
-            if (connection.topic == record->cloudTopic && connection.type == "sensor_msgs/PointCloud2")
-                readCloud(*record, data, Bytes(header.value("time")).time(), cancel);
-            else if (connection.topic == record->odometryTopic && connection.type == "nav_msgs/Odometry")
+            if (connection.topic == record->cloudTopic && connection.type == "sensor_msgs/PointCloud2") {
+                const auto recorded = Bytes(header.value("time")).time();
+                if (record->frames.empty())
+                    record->recordedOrigin = recorded;
+                readCloud(*record, data, recorded, cancel);
+            } else if (connection.topic == record->odometryTopic && connection.type == "nav_msgs/Odometry")
                 odometry.push_back(readOdometry(data));
             const auto layers = overlayIndices.constFind(connection.topic);
             if (importTransforms && (connection.type == "tf2_msgs/TFMessage" || connection.type == "tf/tfMessage") &&

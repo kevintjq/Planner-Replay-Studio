@@ -1,6 +1,7 @@
 #include "cloud_view.h"
 #include "movie_exporter.h"
 #include "replay_controller.h"
+#include "topic_inspector.h"
 #include "trajectory_controller.h"
 
 #include <QGuiApplication>
@@ -188,13 +189,17 @@ int main(int argc, char **argv)
                                                  "Provided by the application");
 
     ReplayController replay;
-    auto *trajectoryImages = new TrajectoryImages;
+    auto *trajectoryImages = new PreviewImages;
     auto *movieImages = new MovieImages;
+    auto *rosImages = new PreviewImages;
+    TopicInspector inspector(replay, *rosImages);
     TrajectoryController trajectory(*trajectoryImages);
     MovieExporter movie(replay, *movieImages);
     QQmlApplicationEngine engine;
     engine.addImageProvider(QStringLiteral("trajectory"), trajectoryImages);
     engine.addImageProvider(QStringLiteral("movie"), movieImages);
+    engine.addImageProvider(QStringLiteral("ros-inspector"), rosImages);
+    engine.rootContext()->setContextProperty("inspector", &inspector);
     engine.rootContext()->setContextProperty("trajectory", &trajectory);
     engine.rootContext()->setContextProperty("movie", &movie);
     const bool smoke = app.arguments().contains("--smoke");

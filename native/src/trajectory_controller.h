@@ -10,9 +10,9 @@
 #include <QVariantList>
 #include <atomic>
 
-class TrajectoryImages final : public QQuickImageProvider {
+class PreviewImages final : public QQuickImageProvider {
 public:
-    TrajectoryImages() : QQuickImageProvider(QQuickImageProvider::Image) {}
+    PreviewImages() : QQuickImageProvider(QQuickImageProvider::Image) {}
     void setImage(const QImage &image);
     QImage requestImage(const QString &id, QSize *size, const QSize &requestedSize) override;
 
@@ -32,7 +32,7 @@ class TrajectoryController final : public QObject {
     Q_PROPERTY(QUrl image READ image NOTIFY changed)
     Q_PROPERTY(QVariantList frames READ frames NOTIFY changed)
 public:
-    explicit TrajectoryController(TrajectoryImages &images);
+    explicit TrajectoryController(PreviewImages &images);
     ~TrajectoryController() override;
 
     bool working() const { return working_; }
@@ -68,7 +68,7 @@ private:
     void setImage(const QImage &image);
     void updatePreview();
 
-    TrajectoryImages &images_;
+    PreviewImages &images_;
     QFutureWatcher<Result> watcher_;
     std::shared_ptr<const replay::FixedCameraTrajectory> trajectory_;
     std::atomic_bool cancelled_ = false;

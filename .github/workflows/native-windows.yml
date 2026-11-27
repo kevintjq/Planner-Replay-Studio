@@ -137,8 +137,15 @@ jobs:
             $env:QT_QPA_PLATFORM = 'offscreen'
             $env:QT_QUICK_BACKEND = 'software'
             $batchPng = Join-Path $env:RUNNER_TEMP 'planner-batch-smoke.png'
-            & $cli demo --start 0.25 --output $batchPng
-            if ($LASTEXITCODE -ne 0 -or !(Test-Path $batchPng)) { throw 'The installed CLI did not export a PNG.' }
+            $batchErr = Join-Path $env:RUNNER_TEMP 'planner-batch-smoke.err'
+            $batch = Start-Process -FilePath $cli -ArgumentList 'demo', '--start', '0.25', '--output', ('"' + $batchPng + '"') -RedirectStandardError $batchErr -PassThru
+            if (!$batch.WaitForExit(45000)) {
+              Stop-Process -Id $batch.Id -Force
+              throw 'The installed CLI did not exit within 45 seconds.'
+            }
+            if ($batch.ExitCode -ne 0 -or !(Test-Path $batchPng)) {
+              throw "The installed CLI did not export a PNG. $(Get-Content $batchErr -Raw)"
+            }
             Remove-Item Env:QT_QPA_PLATFORM, Env:QT_QUICK_BACKEND -ErrorAction SilentlyContinue
           } finally {
             $env:PATH = $originalPath

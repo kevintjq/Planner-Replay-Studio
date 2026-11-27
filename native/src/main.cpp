@@ -195,7 +195,10 @@ int main(int argc, char **argv)
         return smokePng(app);
     if (app.arguments().contains("--smoke-mp4"))
         return smokeMovie(app);
-    QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
+    const auto args = app.arguments();
+    const bool batch = args.size() > 1 && args[1] == QStringLiteral("--batch");
+    const bool software = batch && qEnvironmentVariable("QT_QUICK_BACKEND") == QStringLiteral("software");
+    QQuickWindow::setGraphicsApi(software ? QSGRendererInterface::Software : QSGRendererInterface::OpenGL);
     qmlRegisterType<CloudView>("PlannerReplay", 1, 0, "CloudView");
     qmlRegisterUncreatableType<ReplayController>("PlannerReplay", 1, 0, "ReplayController",
                                                  "Provided by the application");
@@ -214,9 +217,7 @@ int main(int argc, char **argv)
     engine.rootContext()->setContextProperty("inspector", &inspector);
     engine.rootContext()->setContextProperty("trajectory", &trajectory);
     engine.rootContext()->setContextProperty("movie", &movie);
-    const bool smoke = app.arguments().contains("--smoke");
-    const auto args = app.arguments();
-    const bool batch = args.size() > 1 && args[1] == QStringLiteral("--batch");
+    const bool smoke = args.contains("--smoke");
     engine.rootContext()->setContextProperty("replay", &replay);
     engine.rootContext()->setContextProperty("smokeTest", smoke);
     engine.load(QUrl(batch ? QStringLiteral("qrc:/qml/BatchExport.qml") : QStringLiteral("qrc:/qml/Main.qml")));
@@ -248,6 +249,18 @@ int main(int argc, char **argv)
         const auto closed = QObject::connect(window, &QWindow::visibleChanged, &app, [completed](bool visible) {
             if (!visible)
                 completed(false, QStringLiteral("The export window was closed."));
+        });
+        QTimer renderTimeout;
+        renderTimeout.setSingleShot(true);
+        renderTimeout.setInterval(30'000);
+        QObject::connect(&movie, &MovieExporter::changed, &renderTimeout, [&] {
+            if (movie.exporting())
+                renderTimeout.start();
+            else
+                renderTimeout.stop();
+        });
+        QObject::connect(&renderTimeout, &QTimer::timeout, &app, [completed] {
+            completed(false, QStringLiteral("The export window did not produce another frame within 30 seconds."));
         });
         const auto exportLoaded = [&] {
             if ((!demo && !source.isFile()) || (project && replay.projectPath().isEmpty()) ||

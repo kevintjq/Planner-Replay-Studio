@@ -45,7 +45,7 @@ public:
     QString message() const { return message_; }
     const QVariantList &frames() const { return frames_; }
     Q_INVOKABLE void start(const QUrl &destination, QQuickItem *canvas, double begin, double end,
-                           double speed, int audioIndex, int width = 1920, int height = 1080, int fps = 60, int quality = 18);
+                           double speed, int audioIndex, int width = 1920, int height = 1080, int fps = 60, int quality = 18, int supersample = 1, bool nvenc = false);
     Q_INVOKABLE void cancel();
     void startStill(const QUrl &destination, QQuickItem *canvas, double time);
 
@@ -82,7 +82,8 @@ private:
     QByteArray diagnostic_;
     double begin_ = 0., speed_ = 1., previous_ = 0., audioOrigin_ = 0.;
     qint64 index_ = 0, count_ = 0;
-    int width_ = 1920, height_ = 1080, fps_ = 60, quality_ = 18;
+    int width_ = 1920, height_ = 1080, fps_ = 60, quality_ = 18, supersample_ = 1;
+    bool nvenc_ = false;
     bool exporting_ = false, awaitingWrite_ = false, still_ = false;
     quint64 revision_ = 0;
 };

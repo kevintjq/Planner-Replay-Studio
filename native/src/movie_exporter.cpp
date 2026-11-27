@@ -191,7 +191,7 @@ double MovieExporter::progress() const
 }
 
 void MovieExporter::start(const QUrl &destination, QQuickItem *canvas, double begin, double end,
-                          double speed, int audioIndex, int width, int height, int fps, int quality)
+                          double speed, int audioIndex, int width, int height, int fps, int quality, int supersample, bool nvenc)
 {
     if (exporting_ || process_.state() != QProcess::NotRunning || watcher_.isRunning() || replay_.loading() || replay_.capturing() || !canvas)
         return;
@@ -211,7 +211,7 @@ void MovieExporter::start(const QUrl &destination, QQuickItem *canvas, double be
         return;
     }
     if (width < 320 || width > 3840 || width % 4 || height < 240 || height > 2160 || height % 2 ||
-        fps < 1 || fps > 120 || quality < 0 || quality > 51) {
+        fps < 1 || fps > 120 || quality < 0 || quality > 51 || (supersample != 1 && supersample != 2)) {
         reject(tr("请检查导出尺寸、帧率和 CRF。"));
         return;
     }
@@ -219,6 +219,8 @@ void MovieExporter::start(const QUrl &destination, QQuickItem *canvas, double be
     height_ = height;
     fps_ = fps;
     quality_ = quality;
+    supersample_ = supersample;
+    nvenc_ = nvenc;
     const auto &clips = replay_.videoClips();
     if (audioIndex < -1 || (audioIndex >= 0 && size_t(audioIndex) >= clips.size())) {
         reject(tr("所选音轨已失效。"));
@@ -352,8 +354,12 @@ QStringList MovieExporter::encoderArguments() const
     } else {
         arguments << "-an";
     }
-    arguments << "-c:v" << "libx264" << "-preset" << "veryfast" << "-crf" << QString::number(quality_)
-              << "-pix_fmt" << "yuv420p" << "-movflags" << "+faststart" << staging_->filePath("movie.mp4");
+    if (nvenc_)
+        arguments << "-c:v" << "h264_nvenc" << "-preset" << "p5" << "-rc" << "vbr"
+                  << "-cq" << QString::number(quality_) << "-b:v" << "0";
+    else
+        arguments << "-c:v" << "libx264" << "-preset" << "veryfast" << "-crf" << QString::number(quality_);
+    arguments << "-pix_fmt" << "yuv420p" << "-movflags" << "+faststart" << staging_->filePath("movie.mp4");
     return arguments;
 }
 
@@ -411,7 +417,7 @@ void MovieExporter::grabFrame()
         return;
     }
     const QSize fit = canvas_->size().toSize().scaled(width_, height_, Qt::KeepAspectRatio);
-    grab_ = canvas_->grabToImage(fit);
+    grab_ = canvas_->grabToImage(fit * supersample_);
     if (!grab_) {
         finish(tr("无法获取合成帧。"));
         return;
@@ -420,7 +426,9 @@ void MovieExporter::grabFrame()
         const auto grabbed = std::move(grab_);
         if (!exporting_ || cancelled_)
             return;
-        const auto frame = grabbed->image();
+        auto frame = grabbed->image();
+        if (supersample_ > 1 && !frame.isNull())
+            frame = frame.scaled(frame.size() / supersample_, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
         if (frame.isNull()) {
             finish(tr("合成帧为空。"));
             return;

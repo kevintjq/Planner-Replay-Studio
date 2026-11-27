@@ -178,7 +178,7 @@ jobs:
         run: |
           current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
           if [ "$current" != "$GITHUB_SHA" ]; then exit 0; fi
-          tag="native-v0.1.1-preview.2"
+          tag="native-v0.1.1-preview.3"
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             exit 0
           fi

@@ -37,9 +37,11 @@ int main(int argc, char **argv)
     const QCommandLineOption width("width", "MP4 width (multiple of four).", "pixels", "1920");
     const QCommandLineOption height("height", "MP4 height (even).", "pixels", "1080");
     const QCommandLineOption fps("fps", "MP4 frame rate.", "fps", "60");
+    const QCommandLineOption supersample("supersample", "MP4 rendering scale (1 or 2).", "scale", "1");
+    const QCommandLineOption encoder("encoder", "MP4 H.264 encoder (cpu or nvenc).", "encoder", "cpu");
     const QCommandLineOption crf("crf", "H.264 constant rate factor.", "quality", "18");
     parser.addOptions({output, start, duration, port, delay, cloud, odometry, world, body, pose, gap, extrinsics,
-                       width, height, fps, crf});
+                       width, height, fps, crf, supersample, encoder});
     parser.addHelpOption();
     parser.addPositionalArgument("command", "inspect, export, bag, demo, or listen.");
     parser.addPositionalArgument("source", "ROS1 bag or .slamfpv project.", "[source]");
@@ -116,7 +118,7 @@ int main(int argc, char **argv)
         window.setProcessChannelMode(QProcess::ForwardedChannels);
         window.start(program, {"--batch", source, destination.absoluteFilePath(),
                                QString::number(begin, 'g', 17), QString::number(exportSeconds, 'g', 17),
-                               parser.value(width), parser.value(height), parser.value(fps), parser.value(crf)});
+                               parser.value(width), parser.value(height), parser.value(fps), parser.value(crf), parser.value(supersample), parser.value(encoder)});
         if (!window.waitForStarted() || !window.waitForFinished(-1) || window.exitStatus() != QProcess::NormalExit) {
             QTextStream(stderr) << "Could not run the native export window: " << window.errorString() << Qt::endl;
             return 1;

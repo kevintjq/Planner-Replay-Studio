@@ -131,6 +131,20 @@ void ReplayController::setTopicDisplayEnabled(int index, bool enabled)
     }
 }
 
+void ReplayController::setFixedFrame(const QString &frame)
+{
+    if (loading_ || path_.isEmpty())
+        return;
+    auto normalized = frame.trimmed();
+    while (normalized.startsWith('/'))
+        normalized.remove(0, 1);
+    auto layout = projectSnapshot().topicLayout();
+    if (layout.fixedFrame != normalized) {
+        layout.fixedFrame = normalized;
+        applyTopicLayout(layout);
+    }
+}
+
 void ReplayController::openRviz(const QUrl &url)
 {
     if (loading_ || !url.isLocalFile())

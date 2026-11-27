@@ -6,11 +6,14 @@ Rectangle {
     required property var controller
     required property var exporter
     property bool interactive: true
+    property alias showPath: cloud.showPath
+    property alias pointSize: cloud.pointSize
     readonly property var activeLayout: controller.activeLayout
     readonly property bool videoOnly: activeLayout.mode === "video" && (exporter.exporting
         ? exporter.frames.some((frame, index) => frame.width > 0 && controller.videoLayers[index]?.id === activeLayout.video_id)
         : activeLayout.fullHasMedia)
     readonly property bool cloudOnly: activeLayout.mode === "cloud"
+    function resetCamera() { cloud.resetCamera() }
     signal insetSelected(string id)
     signal sceneSelected(string id)
     color: canvas.controller.captureMatte === 1 ? "black" : canvas.controller.captureMatte === 2 ? "white"

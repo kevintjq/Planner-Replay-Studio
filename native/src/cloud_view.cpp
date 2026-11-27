@@ -115,6 +115,10 @@ public:
     {
         auto *gl = QOpenGLContext::currentContext()->extraFunctions();
         const auto size = framebufferObject()->size();
+        gl->glDisable(GL_SCISSOR_TEST);
+        gl->glDisable(GL_BLEND);
+        gl->glDepthMask(GL_TRUE);
+        gl->glDepthFunc(GL_LESS);
         gl->glViewport(0, 0, size.width(), size.height());
         if (transparent_)
             gl->glClearColor(0.f, 0.f, 0.f, 0.f);
@@ -141,7 +145,8 @@ public:
         program_.setUniformValue("bodyPosition", body);
         program_.setUniformValue("colorRange", std::max(5.f, recording_->radius * .65f));
         program_.setUniformValue("pixelSize", pointSize_);
-        program_.setUniformValue("solid", false);
+        program_.setUniformValue("fixedColor", QVector3D(.75f, .82f, .88f));
+        program_.setUniformValue("solid", true);
         program_.setUniformValue("tfAxes", false);
 
         if (cloud_ && cloud_->buffer.isCreated()) {

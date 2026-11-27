@@ -198,7 +198,8 @@ int main(int argc, char **argv)
         return smokeMovie(app);
     const auto args = app.arguments();
     const bool batch = args.size() > 1 && args[1] == QStringLiteral("--batch");
-    const bool software = batch && qEnvironmentVariable("QT_QUICK_BACKEND") == QStringLiteral("software");
+    const bool layoutSmoke = args.contains("--smoke-layout");
+    const bool software = layoutSmoke || (batch && qEnvironmentVariable("QT_QUICK_BACKEND") == QStringLiteral("software"));
     QQuickWindow::setGraphicsApi(software ? QSGRendererInterface::Software : QSGRendererInterface::OpenGL);
     qmlRegisterType<CloudView>("PlannerReplay", 1, 0, "CloudView");
     qmlRegisterUncreatableType<ReplayController>("PlannerReplay", 1, 0, "ReplayController",
@@ -224,20 +225,38 @@ int main(int argc, char **argv)
     engine.load(QUrl(batch ? QStringLiteral("qrc:/qml/BatchExport.qml") : QStringLiteral("qrc:/qml/Main.qml")));
     if (engine.rootObjects().isEmpty())
         return 1;
+    if (layoutSmoke) {
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+        if (!window)
+            return 1;
+        window->resize(980, 640);
+        QTimer::singleShot(250, &app, [&] {
+            const auto *canvas = window->findChild<QQuickItem *>(QStringLiteral("previewCanvas"));
+            const auto image = window->grabWindow();
+            const auto destination = args.value(args.indexOf("--smoke-layout") + 1);
+            const bool valid = canvas && canvas->width() > 350. && canvas->height() > 190. &&
+                std::abs(canvas->width() / canvas->height() - 16. / 9.) < .01 && !image.isNull();
+            app.exit(valid && (destination.isEmpty() || image.save(destination)) ? 0 : 1);
+        });
+        return app.exec();
+    }
     if (batch) {
-        if (args.size() != 6 && args.size() != 10)
+        if (args.size() != 6 && args.size() != 10 && args.size() != 12)
             return 2;
         bool beginOk = false, secondsOk = false;
         const double begin = args[4].toDouble(&beginOk), seconds = args[5].toDouble(&secondsOk);
         if (!beginOk || !secondsOk || !std::isfinite(begin) || !std::isfinite(seconds) || begin < 0. || seconds < 0.)
             return 2;
-        std::array<int, 4> videoOptions{1920, 1080, 60, 18};
-        for (int i = 0; args.size() == 10 && i < int(videoOptions.size()); ++i) {
+        std::array<int, 5> videoOptions{1920, 1080, 60, 18, 1};
+        for (int i = 0; i < std::min(int(videoOptions.size()), int(args.size()) - 6); ++i) {
             bool ok = false;
             videoOptions[i] = args[6 + i].toInt(&ok);
             if (!ok)
                 return 2;
         }
+        const auto encoder = args.value(11, QStringLiteral("cpu"));
+        if (encoder != "cpu" && encoder != "nvenc")
+            return 2;
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
         auto *canvas = window ? window->findChild<QQuickItem *>(QStringLiteral("batchCanvas")) : nullptr;
         if (!canvas)
@@ -282,7 +301,7 @@ int main(int argc, char **argv)
                 const auto prefs = replay.moviePreferences();
                 const auto end = seconds > 0. ? std::min(replay.duration(), begin + seconds) : replay.duration();
                 movie.start(destination, canvas, begin, end, prefs.value("speed").toDouble(), prefs.value("audioIndex").toInt(),
-                            videoOptions[0], videoOptions[1], videoOptions[2], videoOptions[3]);
+                            videoOptions[0], videoOptions[1], videoOptions[2], videoOptions[3], videoOptions[4], encoder == "nvenc");
             }
         };
         bool exportScheduled = false;

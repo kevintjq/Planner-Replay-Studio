@@ -159,6 +159,7 @@ public:
 
     QVariantList topicDisplays() const;
     Q_INVOKABLE void setTopicDisplayEnabled(int index, bool enabled);
+    Q_INVOKABLE void setFixedFrame(const QString &frame);
     Q_INVOKABLE void openRviz(const QUrl &url);
     Q_INVOKABLE void openBag(const QUrl &url);
     Q_INVOKABLE void openDemo();

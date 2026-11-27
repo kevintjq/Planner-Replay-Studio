@@ -95,6 +95,14 @@ font.pixelSize: appearance.metrics.body
         onAccepted: replay.openRviz(selectedFile)
     }
     FileDialog {
+        id: rvizExportDialog
+        title: "导出 RViz 配置 · 保留原插件属性"
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "rviz"
+        nameFilters: ["RViz configuration (*.rviz)"]
+        onAccepted: replay.exportRviz(selectedFile)
+    }
+    FileDialog {
         id: projectDialog
         title: "打开 UAV Studio 项目（兼容旧格式）"
         nameFilters: ["UAV Studio 项目（兼容旧格式） (*.slamfpv)"]
@@ -400,6 +408,12 @@ font.pixelSize: appearance.metrics.body
                             enabled: !replay.loading
                             onClicked: rvizDialog.open()
                         }
+                        StudioButton {
+                            text: "Export RViz · 导出 RViz 配置"
+                            Layout.fillWidth: true; enabled: !replay.loading && (replay.topicDisplays.length > 0 || replay.rvizCompatibility.length > 0)
+                            onClicked: rvizExportDialog.open()
+                        }
+                        Caption { text: replay.rvizCompatibility; visible: text.length > 0; wrapMode: Text.Wrap; Layout.fillWidth: true }
                         StudioButton {
                             id: topicDisplayToggle
                             Layout.fillWidth: true

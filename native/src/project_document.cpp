@@ -683,6 +683,8 @@ RvizLayout ProjectDocument::topicLayout() const
     const auto composition = root_.value("composition").toObject();
     RvizLayout layout;
     layout.fixedFrame = composition.value("display_fixed_frame").toString();
+    layout.sourceYaml = composition.value("rviz_source_yaml").toString();
+    for (const auto &name : composition.value("rviz_unrendered_plugins").toArray()) layout.skipped.append(name.toString());
     const auto displays = composition.value("topic_displays").toArray();
     for (const auto &display : displays)
         layout.displays.push_back(TopicDisplay::fromJson(display.toObject()));
@@ -700,6 +702,8 @@ void ProjectDocument::setTopicLayout(const RvizLayout &layout)
     }
     composition.insert("topic_displays", displays);
     composition.insert("display_fixed_frame", layout.fixedFrame);
+    composition.insert("rviz_source_yaml", layout.sourceYaml);
+    composition.insert("rviz_unrendered_plugins", QJsonArray::fromStringList(layout.skipped));
     composition.insert("show_main_cloud", !hasCloud);
     root_.insert("composition", composition);
 }

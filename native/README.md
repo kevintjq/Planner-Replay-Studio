@@ -42,6 +42,8 @@
 
 点击「导入 RViz 配置」打开 `.rviz`、`.yaml` 或 `.yml`。原生预览使用配置里的话题、颜色和启用状态。展开「RViz 话题显示」即可显隐各图层，另存后会保留配置。当前可叠加 PointCloud2、LaserScan、Path、Marker / MarkerArray、位置消息和 TF 坐标轴。原生回放按消息时间应用录包内的静态和动态 TF。配置所需的固定坐标系有完整覆盖时，主点云也会转换到该坐标系。状态栏会提示找不到话题、消息类型不受支持或 TF 覆盖不足的显示项。
 
+新导入配置的完整原文、嵌套分组、未知插件及属性现在保存在项目里；兼容说明明确列出未按原插件渲染的项目。点击「Export RViz」可导回 `.rviz`：没有编辑时保留原始字节和 UTF-8 BOM，有编辑时只更新已支持的显示字段及 Fixed Frame，保留 Topic QoS、相机、工具等其他内容；重新序列化可能改变注释和格式。原生层仍是渲染子集，未知属性保留不代表原生插件或编辑器已实现。UAV 专用图层过滤及视角布置不冒充标准 RViz 属性。禁用父分组与拆分 TF 的冲突会明确拒绝导出；旧项目之前已经丢失的原配置需重新导入，不能凭空恢复。
+
 ### 话题查看
 
 通过「话题查看」选择录包中的任意话题，读取播放位置之前最近的一条消息。可查看和复制自定义字段，检查常见 ROS 图像的像素预览。长数组显示总项数及开头 128 项，无法解析的类型显示原始字节摘要。
@@ -83,9 +85,14 @@ uav-studio-cli export project.slamfpv --start 1.5 --output still.png
 uav-studio-cli export project.slamfpv --start 1.5 --seconds 4 --output flight.mp4
 uav-studio-cli bag recording.bag --start 0 --seconds 3 --output preview.mp4
 uav-studio-cli demo --start 0.5 --output demo.png
+uav-studio-cli rviz-roundtrip original.rviz --output restored.rviz
 ```
 
 MP4 的播放速度和音轨使用项目设置，时间参数以回放秒数为单位。省略 `--seconds` 时导出到录制结束。
+
+`rviz-roundtrip` 在 C++ 项目中保存并重开配置后导出，输出 JSON 说明逐字节一致性、显示数量及未原生渲染插件，禁止覆盖输入文件。
+
+可选的真实 RViz 配置验收工具在 `native/tools/rviz-probe`。它单独使用 ROS Noetic / Qt5；不进入 Qt6 主程序或 Windows 安装包依赖。已有 Noetic 开发环境中 source 设置后，通过独立 CMake 工程编译 `rviz-config-probe`，输入配置路径和输出前缀；工具核对 RViz 实际显示树，保存截图及 RViz 自身另存结果。该检查不等于录包播放或三维场景对照通过。
 
 在已安装 ROS1 Noetic 的 Linux 端，可编译 C++ 点云发送端。先启动接收端，再启动发送端。
 

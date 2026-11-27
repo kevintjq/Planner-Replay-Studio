@@ -170,6 +170,35 @@ void ReplayController::openRviz(const QUrl &url)
     }
 }
 
+QString ReplayController::rvizCompatibility() const
+{
+    if (!project_) return {};
+    const auto layout = project_->topicLayout();
+    if (layout.sourceYaml.isEmpty()) return {};
+    auto report = tr("原始分组、插件及属性完整保存在项目；本地渲染为支持子集。 / Original RViz configuration retained; native rendering is a subset.");
+    if (!layout.skipped.isEmpty()) report += tr(" 未按原插件渲染：%1").arg(layout.skipped.join(QStringLiteral("、")));
+    return report;
+}
+
+void ReplayController::exportRviz(const QUrl &url)
+{
+    if (loading_ || !url.isLocalFile()) return;
+    try {
+        if (QFileInfo(url.toLocalFile()).suffix().compare("rviz", Qt::CaseInsensitive) != 0 || referencesFile(url.toLocalFile()))
+            throw std::runtime_error("请选择 .rviz 文件，不能覆盖项目素材。 / Invalid RViz destination.");
+        auto layout = projectSnapshot().topicLayout();
+        if (layout.sourceYaml.isEmpty() && layout.displays.empty())
+            throw std::runtime_error("请先导入 RViz 配置。 / Import an RViz configuration first.");
+        if (layout.fixedFrame.isEmpty()) layout.fixedFrame = worldFrame();
+        const auto bytes = replay::serializeRviz(layout);
+        QSaveFile file(url.toLocalFile());
+        if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit())
+            throw std::runtime_error("无法写入 RViz 配置。 / Cannot write RViz configuration.");
+        status_ = tr("已导出 RViz 配置；保留原插件属性。本地视角图层过滤等 UAV 专属设置不属于 RViz 配置。 / RViz configuration exported.");
+    } catch (const std::exception &error) { status_ = QString::fromUtf8(error.what()); }
+    emit stateChanged();
+}
+
 void ReplayController::applyTopicLayout(const replay::RvizLayout &layout)
 {
     auto document = projectSnapshot();

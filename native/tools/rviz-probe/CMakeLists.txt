@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.10)
+project(UAVStudioRvizProbe LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+find_package(catkin REQUIRED COMPONENTS rviz)
+find_package(Qt5 REQUIRED COMPONENTS Widgets)
+add_executable(rviz-config-probe ../rviz_config_probe.cpp)
+target_include_directories(rviz-config-probe PRIVATE ${catkin_INCLUDE_DIRS})
+target_link_libraries(rviz-config-probe PRIVATE ${catkin_LIBRARIES} Qt5::Widgets)

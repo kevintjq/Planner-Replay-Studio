@@ -5,8 +5,10 @@
 #include <QCommandLineParser>
 #include <QCoreApplication>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QFileInfo>
 #include <QProcess>
+#include <QSaveFile>
 #include <QTemporaryDir>
 #include <cmath>
 #include <QTextStream>
@@ -22,7 +24,7 @@ int main(int argc, char **argv)
     app.setApplicationName(QStringLiteral("uav-studio-cli"));
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("Inspect ROS1 bags and export UAV Studio scenes."));
-    const QCommandLineOption output("output", "Save a PNG or MP4 to this path.", "file");
+    const QCommandLineOption output("output", "Save a PNG, MP4, or RViz round-trip configuration to this path.", "file");
     const QCommandLineOption start("start", "Start at this playback time in seconds.", "seconds", "0");
     const QCommandLineOption duration("seconds", "Export this many seconds, or 0 for the entire remaining interval.", "seconds", "0");
     const QCommandLineOption port("port", "Loopback port for the ROS relay.", "port", "8765");
@@ -43,12 +45,35 @@ int main(int argc, char **argv)
     parser.addOptions({output, start, duration, port, delay, cloud, odometry, world, body, pose, gap, extrinsics,
                        width, height, fps, crf, supersample, encoder});
     parser.addHelpOption();
-    parser.addPositionalArgument("command", "inspect, export, bag, demo, or listen.");
+    parser.addPositionalArgument("command", "inspect, export, bag, demo, listen, or rviz-roundtrip.");
     parser.addPositionalArgument("source", "ROS1 bag or .slamfpv project.", "[source]");
     parser.process(app);
 
     const auto args = parser.positionalArguments();
     const auto command = args.value(0);
+    if (command == "rviz-roundtrip") {
+        try {
+            if (args.size() != 2 || !parser.isSet(output)) parser.showHelp(2);
+            const QFileInfo source(args[1]), destination(parser.value(output));
+            if (destination.suffix().compare("rviz", Qt::CaseInsensitive) != 0 ||
+                source.absoluteFilePath() == destination.absoluteFilePath() ||
+                (destination.exists() && source.canonicalFilePath() == destination.canonicalFilePath()))
+                throw std::runtime_error("Select a separate .rviz output file; source configurations are read-only.");
+            const auto layout = replay::readRviz(source.absoluteFilePath());
+            QTemporaryDir scratch;
+            if (!scratch.isValid()) throw std::runtime_error("Cannot create project round-trip staging directory.");
+            auto document = replay::ProjectDocument::create("demo"); document.setTopicLayout(layout);
+            const auto stored = document.saveAs(scratch.filePath("roundtrip.slamfpv"));
+            const auto restored = replay::ProjectDocument::load(stored.path()).topicLayout();
+            const auto bytes = replay::serializeRviz(restored);
+            QSaveFile file(destination.absoluteFilePath());
+            if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit()) throw std::runtime_error("Cannot write RViz output.");
+            const QJsonObject report{{"output", destination.absoluteFilePath()}, {"native_display_count", int(restored.displays.size())},
+                {"unrendered_plugins", QJsonArray::fromStringList(restored.skipped)}, {"byte_identical", bytes == layout.sourceYaml.toUtf8()},
+                {"project_roundtrip", true}, {"native_plugin_parity", false}};
+            QTextStream(stdout) << QString::fromUtf8(QJsonDocument(report).toJson()); return 0;
+        } catch (const std::exception &error) { QTextStream(stderr) << QString::fromUtf8(error.what()) << Qt::endl; return 1; }
+    }
     if (command == "export" || command == "bag" || command == "demo" || command == "listen") {
         const bool demo = command == "demo";
         const bool live = command == "listen";

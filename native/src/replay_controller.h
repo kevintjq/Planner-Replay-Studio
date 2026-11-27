@@ -50,6 +50,7 @@ class ReplayController : public QObject {
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY editHistoryChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY editHistoryChanged)
     Q_PROPERTY(QVariantList markers READ markers NOTIFY markersChanged)
+    Q_PROPERTY(QString rvizCompatibility READ rvizCompatibility NOTIFY recordingChanged)
     Q_PROPERTY(QVariantList planningEvents READ planningEvents NOTIFY recordingChanged)
     Q_PROPERTY(bool comparePlans READ comparePlans NOTIFY recordingChanged)
     Q_PROPERTY(QVariantMap planningLayers READ planningLayers NOTIFY recordingChanged)
@@ -166,6 +167,8 @@ public:
     Q_INVOKABLE void setTopicDisplayEnabled(int index, bool enabled);
     Q_INVOKABLE void setFixedFrame(const QString &frame);
     Q_INVOKABLE void openRviz(const QUrl &url);
+    Q_INVOKABLE void exportRviz(const QUrl &url);
+    QString rvizCompatibility() const;
     Q_INVOKABLE void openBag(const QUrl &url);
     Q_INVOKABLE void openDemo();
     Q_INVOKABLE void openProject(const QUrl &url);

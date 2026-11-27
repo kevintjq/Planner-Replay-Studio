@@ -3,6 +3,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
+#include <QSet>
 #include <QtEndian>
 #include <bzlib.h>
 #include <lz4frame.h>
@@ -35,6 +36,7 @@ public:
     }
     quint8 byte() { return quint8(take(1)[0]); }
     quint32 u32() { return qFromLittleEndian<quint32>(take(4).data()); }
+    float float32() { return std::bit_cast<float>(u32()); }
     double real() { return std::bit_cast<double>(qFromLittleEndian<quint64>(take(8).data())); }
     QByteArrayView blob() { return take(u32()); }
     QString string() { return QString::fromUtf8(blob()); }
@@ -179,18 +181,8 @@ float pointComponent(QByteArrayView point, quint32 offset, quint8 type, bool big
     return float(std::bit_cast<double>(bits));
 }
 
-void readCloud(Recording &record, QByteArrayView data, qint64 recorded, const Cancel &cancel)
+void readCloudPoints(std::vector<Point> &points, Bytes &reader, const Cancel &cancel)
 {
-    Bytes reader(data);
-    const auto header = messageHeader(reader);
-    const auto stamp = header.stamp == 0 ? recorded : header.stamp;
-    if (!record.frames.empty() && stamp < record.frames.back().stamp)
-        fail("点云时间戳倒退，请检查 bag 内的话题时间。");
-    if (record.frames.empty())
-        record.frameId = header.frame;
-    if (record.frameId.isEmpty() || header.frame != record.frameId)
-        fail("点云话题必须使用同一坐标系。");
-
     const auto height = reader.u32(), width = reader.u32(), fieldCount = reader.u32();
     if (fieldCount > 512)
         fail("PointCloud2 字段数无效。");
@@ -214,7 +206,6 @@ void readCloud(Recording &record, QByteArrayView data, qint64 recorded, const Ca
             fail("PointCloud2 需要有效的 x、y、z 浮点字段。");
     }
 
-    const auto begin = int(record.points.size());
     for (quint32 y = 0; width && y < height; ++y) {
         if ((y & 63) == 0)
             checkCancel(cancel);
@@ -224,13 +215,103 @@ void readCloud(Recording &record, QByteArrayView data, qint64 recorded, const Ca
                               pointComponent(point, axes[1].offset, axes[1].type, big),
                               pointComponent(point, axes[2].offset, axes[2].type, big)};
             if (std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z)) {
-                if (record.points.size() >= MaxPoints)
+                if (points.size() >= MaxPoints)
                     fail("点数超过原生预览版的 1600 万点上限，请使用较短的 bag。");
-                record.points.push_back(value);
+                points.push_back(value);
             }
         }
     }
+}
+
+void readCloud(Recording &record, QByteArrayView data, qint64 recorded, const Cancel &cancel)
+{
+    Bytes reader(data);
+    const auto header = messageHeader(reader);
+    const auto stamp = header.stamp == 0 ? recorded : header.stamp;
+    if (!record.frames.empty() && stamp < record.frames.back().stamp)
+        fail("点云时间戳倒退，请检查 bag 内的话题时间。");
+    if (record.frames.empty())
+        record.frameId = header.frame;
+    if (record.frameId.isEmpty() || header.frame != record.frameId)
+        fail("点云话题必须使用同一坐标系。");
+
+    const auto begin = int(record.points.size());
+    readCloudPoints(record.points, reader, cancel);
     record.frames.push_back({stamp, begin, int(record.points.size())});
+}
+
+bool supportsTopic(const QString &kind, const QByteArray &type)
+{
+    if (kind == "cloud")
+        return type == "sensor_msgs/PointCloud2";
+    if (kind == "laser")
+        return type == "sensor_msgs/LaserScan";
+    if (kind == "path")
+        return type == "nav_msgs/Path";
+    if (kind == "position")
+        return type == "geometry_msgs/PointStamped" || type == "geometry_msgs/PoseStamped" ||
+               type == "geometry_msgs/PoseWithCovarianceStamped" || type == "nav_msgs/Odometry";
+    return false;
+}
+
+void appendPoint(std::vector<Point> &points, const Point &point)
+{
+    if (std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z)) {
+        if (points.size() >= MaxPoints)
+            fail("附加图层的点数超过 1600 万。");
+        points.push_back(point);
+    }
+}
+
+Point readPosition(Bytes &message)
+{
+    return {float(message.real()), float(message.real()), float(message.real())};
+}
+
+void readOverlay(TopicOverlay &overlay, const QByteArray &type, QByteArrayView data, qint64 recorded,
+                 const Cancel &cancel)
+{
+    Bytes message(data);
+    const auto header = messageHeader(message);
+    const int start = int(overlay.points.size());
+    if (type == "sensor_msgs/PointCloud2") {
+        readCloudPoints(overlay.points, message, cancel);
+    } else if (type == "sensor_msgs/LaserScan") {
+        const double minimumAngle = message.float32();
+        message.take(4); // Maximum angle is derived from the range index.
+        const double increment = message.float32();
+        message.take(8); // Time increment and scan time.
+        const float minimumRange = message.float32(), maximumRange = message.float32();
+        const auto count = message.u32();
+        Bytes ranges(message.take(qsizetype(count) * 4));
+        for (quint32 i = 0; i < count; ++i) {
+            if ((i & 1023) == 0)
+                checkCancel(cancel);
+            const auto range = ranges.float32();
+            if (range >= minimumRange && range <= maximumRange) {
+                const auto angle = minimumAngle + i * increment;
+                appendPoint(overlay.points, {float(range * std::cos(angle)), float(range * std::sin(angle)), 0.f});
+            }
+        }
+    } else if (type == "nav_msgs/Path") {
+        const auto count = message.u32();
+        for (quint32 i = 0; i < count; ++i) {
+            if ((i & 1023) == 0)
+                checkCancel(cancel);
+            const auto pose = messageHeader(message);
+            const auto point = readPosition(message);
+            message.take(4 * 8);
+            if (pose.frame.isEmpty() || pose.frame == header.frame)
+                appendPoint(overlay.points, point);
+        }
+    } else {
+        if (type == "nav_msgs/Odometry")
+            message.blob(); // Child frame.
+        appendPoint(overlay.points, readPosition(message));
+    }
+
+    overlay.samples.push_back({{header.stamp == 0 ? recorded : header.stamp,
+                                start, int(overlay.points.size())}, header.frame});
 }
 
 struct Odometry {
@@ -274,6 +355,13 @@ void bounds(Recording &record, const Cancel &cancel = {})
     record.radius = std::max(1.f, QVector3D(hi.x-lo.x, hi.y-lo.y, hi.z-lo.z).length() * .5f);
 }
 } // namespace
+
+const TopicOverlay::Sample *TopicOverlay::sampleAt(qint64 stamp) const
+{
+    const auto next = std::upper_bound(samples.begin(), samples.end(), stamp,
+        [](qint64 time, const Sample &sample) { return time < sample.range.stamp; });
+    return next == samples.begin() ? nullptr : &*std::prev(next);
+}
 
 qint64 Recording::stampAt(double seconds) const
 {
@@ -377,6 +465,23 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
         fail("所选里程计话题不存在。");
     record->replace = options.mapMode ? *options.mapMode == MapMode::Replace : plannerMap(record->cloudTopic);
 
+    QHash<QString, std::vector<size_t>> overlayIndices;
+    for (const auto &display : options.topicLayout.displays) {
+        if (!display.enabled)
+            continue;
+
+        const auto match = std::find_if(connections.begin(), connections.end(), [&](const auto &entry) {
+            return entry.second.topic == display.topic && supportsTopic(display.kind, entry.second.type);
+        });
+        if (match == connections.end()) {
+            record->topicWarnings.append(display.name.isEmpty() ? display.topic : display.name);
+            continue;
+        }
+        overlayIndices[display.topic].push_back(record->topicOverlays.size());
+        record->topicOverlays.push_back({display});
+    }
+    QSet<QString> unreadableTopics;
+    size_t overlayPoints = 0;
     std::vector<Odometry> odometry;
     for (size_t i = 0; i < chunks.size(); ++i) {
         checkCancel(cancel);
@@ -399,6 +504,25 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
                 readCloud(*record, data, Bytes(header.value("time")).time(), cancel);
             else if (connection.topic == record->odometryTopic && connection.type == "nav_msgs/Odometry")
                 odometry.push_back(readOdometry(data));
+            const auto layers = overlayIndices.constFind(connection.topic);
+            if (layers != overlayIndices.cend()) {
+                for (const auto index : *layers) {
+                    auto &overlay = record->topicOverlays[index];
+                    if (!supportsTopic(overlay.display.kind, connection.type))
+                        continue;
+                    const auto before = overlay.points.size();
+                    try {
+                        readOverlay(overlay, connection.type, data, Bytes(header.value("time")).time(), cancel);
+                    } catch (const std::runtime_error &) {
+                        checkCancel(cancel);
+                        overlay.points.resize(before);
+                        unreadableTopics.insert(overlay.display.topic);
+                    }
+                    overlayPoints += overlay.points.size() - before;
+                    if (overlayPoints > MaxPoints)
+                        fail("附加图层的点数超过 1600 万，请减少导入的图层。");
+                }
+            }
         }
         if (progress)
             progress(.88 * double(i + 1) / double(chunks.size()));
@@ -432,6 +556,23 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
         }
         record->frameId = odometry.front().parent;
     }
+
+    bool importedCloud = false;
+    for (auto &overlay : record->topicOverlays) {
+        checkCancel(cancel);
+        std::erase_if(overlay.samples, [&](const auto &sample) { return sample.frameId != record->frameId; });
+        std::stable_sort(overlay.samples.begin(), overlay.samples.end(), [](const auto &a, const auto &b) {
+            return a.range.stamp < b.range.stamp;
+        });
+        if (overlay.samples.empty())
+            record->topicWarnings.append(overlay.display.topic);
+        else if (overlay.display.kind == "cloud")
+            importedCloud = true;
+    }
+    record->showMainCloud = options.showMainCloud || !importedCloud;
+    record->topicWarnings.append(unreadableTopics.values());
+    record->topicWarnings.removeDuplicates();
+    record->topicWarnings.sort();
 
     bounds(*record, cancel);
     if (progress)

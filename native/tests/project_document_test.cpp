@@ -89,6 +89,47 @@ int main(int argc, char **argv)
         auto project = replay::ProjectDocument::load(manifest);
         expect(project.media().size() == 5, "deduplicated media paths");
         expect(project.bag().endsWith("素材/run.bag"), "bag reference");
+        const auto rviz = directory.filePath("import.rviz");
+        write(rviz, R"yaml(
+Visualization Manager:
+  Global Options:
+    Fixed Frame: /map
+  Displays:
+    - Class: rviz/PointCloud2
+      Topic: /cloud
+      Color: 10; 20; 30
+    - Class: rviz_default_plugins/Group
+      Enabled: false
+      Displays:
+        - Class: rviz_default_plugins/Path
+          Topic: {Value: /path}
+        - Class: rviz/MarkerArray
+          Marker Topic: /markers
+    - Class: rviz_default_plugins/Image
+      Topic: {Value: /camera/image}
+    - Class: example/Custom
+      Name: Custom data
+      Topic: /custom
+    - Class: rviz/Grid
+      Name: Grid
+    - Class: rviz/TF
+)yaml");
+        const auto layout = replay::readRviz(rviz);
+        expect(layout.fixedFrame == "map" && layout.displays.size() == 7, "RViz display count and fixed frame");
+        expect(layout.displays[0].topic == "/cloud" && layout.displays[0].color == QColor("#0a141e"),
+               "RViz topic and configured color");
+        expect(!layout.displays[1].enabled && layout.displays[1].kind == "path" && layout.displays[1].topic == "/path" &&
+               !layout.displays[2].enabled && layout.displays[2].topic == "/markers", "Nested and disabled RViz displays");
+        expect(layout.displays[3].kind == "image" && layout.displays[4].kind == "message" &&
+               layout.displays[5].topic == "/tf" && layout.displays[6].topic == "/tf_static" &&
+               layout.skipped.contains("Grid"), "RViz image, custom, TF and unsupported displays");
+        auto configured = project;
+        configured.setTopicLayout(layout);
+        const auto imported = configured.saveAs(directory.filePath("relocated/rviz.slamfpv"));
+        const auto importedLayout = replay::ProjectDocument::load(imported.path()).topicLayout();
+        expect(importedLayout.fixedFrame == "map" && importedLayout.displays[3].id == layout.displays[3].id &&
+               importedLayout.displays[4].name == "Custom data", "RViz settings survive project round trip");
+
         const auto settings = project.json().value("composition").toObject();
         auto saved = project.saveAs(directory.filePath("relocated/edit.slamfpv"));
         expect(replay::ProjectDocument::load(saved.path()).media() == project.media(), "save as must rebase references");

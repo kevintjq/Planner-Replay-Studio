@@ -29,6 +29,7 @@ class ReplayController : public QObject {
     Q_PROPERTY(int pointCount READ pointCount NOTIFY positionChanged)
     Q_PROPERTY(bool replacing READ replacing NOTIFY recordingChanged)
     Q_PROPERTY(bool demo READ demo NOTIFY recordingChanged)
+    Q_PROPERTY(QVariantList topicDisplays READ topicDisplays NOTIFY recordingChanged)
     Q_PROPERTY(QString projectPath READ projectPath NOTIFY recordingChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY editHistoryChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY editHistoryChanged)
@@ -70,6 +71,9 @@ public:
     bool canUndo() const { return !undo_.empty(); }
     bool canRedo() const { return !redo_.empty(); }
 
+    QVariantList topicDisplays() const;
+    Q_INVOKABLE void setTopicDisplayEnabled(int index, bool enabled);
+    Q_INVOKABLE void openRviz(const QUrl &url);
     Q_INVOKABLE void openBag(const QUrl &url);
     Q_INVOKABLE void openDemo();
     Q_INVOKABLE void openProject(const QUrl &url);
@@ -98,11 +102,15 @@ private:
         QString issue;
         std::optional<replay::MapMode> mode;
         std::optional<replay::ProjectDocument> project;
+        bool keepSession = false;
+        QStringList skipped;
     };
     void load(const QString &path, const replay::LoadOptions &options,
-              std::optional<replay::ProjectDocument> project = {});
+              std::optional<replay::ProjectDocument> project = {}, bool keepSession = false,
+              const QStringList &skipped = {});
     replay::ProjectDocument projectSnapshot() const;
-    void install(std::shared_ptr<const replay::Recording> record);
+    void install(std::shared_ptr<const replay::Recording> record, bool keepSession = false);
+    void applyTopicLayout(const replay::RvizLayout &layout);
     void setPosition(double seconds);
     void refreshVideoLayers();
     void editVideo(int index, const QJsonObject &changes);

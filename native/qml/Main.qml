@@ -42,6 +42,12 @@ ApplicationWindow {
         onAccepted: replay.openBag(selectedFile)
     }
     FileDialog {
+        id: rvizDialog
+        title: "导入 RViz 显示配置"
+        nameFilters: ["RViz 配置 (*.rviz *.yaml *.yml)"]
+        onAccepted: replay.openRviz(selectedFile)
+    }
+    FileDialog {
         id: projectDialog
         title: "打开 Planner Replay 项目"
         nameFilters: ["Planner Replay 项目 (*.slamfpv)"]
@@ -174,6 +180,42 @@ ApplicationWindow {
                         checked: replay.replacing
                         enabled: !replay.loading && !replay.demo
                         onClicked: replay.setReplacing(checked)
+                    }
+
+                    Button {
+                        text: "导入 RViz 配置"
+                        Layout.fillWidth: true
+                        enabled: !replay.loading
+                        onClicked: rvizDialog.open()
+                    }
+                    Button {
+                        id: topicDisplayToggle
+                        Layout.fillWidth: true
+                        visible: replay.topicDisplays.length > 0
+                        text: (checked ? "收起" : "展开") + " RViz 话题显示（" + replay.topicDisplays.length + "）"
+                        checkable: true
+                    }
+                    Repeater {
+                        model: topicDisplayToggle.checked ? replay.topicDisplays : []
+                        delegate: CheckBox {
+                            id: topicDisplay
+                            required property int index
+                            required property var modelData
+                            Layout.fillWidth: true
+                            checked: modelData.enabled
+                            text: modelData.label
+                            enabled: !replay.loading
+                            onClicked: replay.setTopicDisplayEnabled(index, checked)
+                            ToolTip.visible: hovered
+                            ToolTip.text: text
+                            contentItem: Label {
+                                text: topicDisplay.text
+                                color: topicDisplay.modelData.color
+                                leftPadding: topicDisplay.indicator.width + topicDisplay.spacing
+                                verticalAlignment: Text.AlignVCenter
+                                elide: Text.ElideMiddle
+                            }
+                        }
                     }
 
                     PanelTitle { text: "实拍视频"; Layout.topMargin: 8 }

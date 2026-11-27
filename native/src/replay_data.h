@@ -1,5 +1,7 @@
 #pragma once
 
+#include "rviz_layout.h"
+
 #include <QStringList>
 #include <QQuaternion>
 #include <QVector3D>
@@ -29,6 +31,17 @@ struct Pose {
 
 enum class MapMode { Accumulate, Replace };
 
+struct TopicOverlay {
+    struct Sample {
+        Frame range;
+        QString frameId;
+    };
+    TopicDisplay display;
+    std::vector<Point> points;
+    std::vector<Sample> samples;
+    const Sample *sampleAt(qint64 stamp) const;
+};
+
 struct Recording {
     QString name;
     QString cloudTopic;
@@ -39,6 +52,9 @@ struct Recording {
     std::vector<Point> points;
     std::vector<Frame> frames;
     std::vector<Pose> poses;
+    std::vector<TopicOverlay> topicOverlays;
+    QStringList topicWarnings;
+    bool showMainCloud = true;
     QVector3D center;
     float radius = 1.f;
     bool replace = false;
@@ -53,6 +69,8 @@ struct LoadOptions {
     QString cloudTopic;
     QString odometryTopic;
     std::optional<MapMode> mapMode;
+    RvizLayout topicLayout;
+    bool showMainCloud = true;
 };
 
 using Cancel = std::function<bool()>;

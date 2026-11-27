@@ -30,7 +30,19 @@ ReplayController::ReplayController(QObject *parent) : QObject(parent), record_(r
                 : result.record->poses.empty() ? tr("点云已载入。所选里程计与点云坐标系不匹配。") : tr("载入完成");
             if (project_)
                 status_ += tr(" · 项目已载入。");
-            install(std::move(result.record));
+            if (!result.record->topicWarnings.isEmpty()) {
+                const auto &warnings = result.record->topicWarnings;
+                status_ += tr(" · 暂不可显示 %1 个导入项（消息类型、话题或坐标系不匹配）：%2")
+                               .arg(warnings.size()).arg(warnings.mid(0, 5).join(QStringLiteral("、")));
+            }
+            if (project_) {
+                const auto fixedFrame = project_->topicLayout().fixedFrame;
+                if (!fixedFrame.isEmpty() && fixedFrame != result.record->frameId)
+                    status_ += tr(" · 固定坐标系 %1 已保存，当前使用 %2。").arg(fixedFrame, result.record->frameId);
+            }
+            if (!result.skipped.isEmpty())
+                status_ += tr(" · 无法按原插件显示：%1").arg(result.skipped.mid(0, 5).join(QStringLiteral("、")));
+            install(std::move(result.record), result.keepSession);
         } else {
             status_ = cancelRequested_ ? tr("已取消读取") : result.issue;
             emit recordingChanged();
@@ -51,24 +63,103 @@ ReplayController::~ReplayController()
     folderWatcher_.waitForFinished();
 }
 
-void ReplayController::install(std::shared_ptr<const replay::Recording> record)
+void ReplayController::install(std::shared_ptr<const replay::Recording> record, bool keepSession)
 {
     pause();
     record_ = std::move(record);
-    position_ = 0.;
-    undo_.clear();
-    redo_.clear();
-    videoDurations_.clear();
+    position_ = keepSession ? std::min(position_, duration()) : 0.;
+    if (!keepSession) {
+        undo_.clear();
+        redo_.clear();
+        const auto nextClips = project_ ? project_->videos() : std::vector<replay::VideoClip>();
+        QHash<QString, double> durations;
+        for (const auto &clip : nextClips) {
+            if (videoDurations_.contains(clip.path))
+                durations.insert(clip.path, videoDurations_.value(clip.path));
+        }
+        videoDurations_.swap(durations);
+        emit editHistoryChanged();
+    }
     refreshVideoLayers();
-    emit editHistoryChanged();
     emit recordingChanged();
     emit positionChanged();
 }
 
+QVariantList ReplayController::topicDisplays() const
+{
+    QVariantList result;
+    if (!project_)
+        return result;
+
+    const auto layout = project_->topicLayout();
+    for (const auto &display : layout.displays) {
+        const auto label = display.name.isEmpty() ? display.topic : display.name + QStringLiteral(" · ") + display.topic;
+        result.append(QVariantMap{{"label", label}, {"enabled", display.enabled}, {"color", display.color}});
+    }
+    return result;
+}
+
+void ReplayController::setTopicDisplayEnabled(int index, bool enabled)
+{
+    if (loading_ || !project_)
+        return;
+    auto layout = project_->topicLayout();
+    if (index < 0 || size_t(index) >= layout.displays.size())
+        return;
+    if (layout.displays[size_t(index)].enabled != enabled) {
+        layout.displays[size_t(index)].enabled = enabled;
+        applyTopicLayout(layout);
+    }
+}
+
+void ReplayController::openRviz(const QUrl &url)
+{
+    if (loading_ || !url.isLocalFile())
+        return;
+    try {
+        applyTopicLayout(replay::readRviz(url.toLocalFile()));
+    } catch (const std::exception &error) {
+        status_ = QString::fromUtf8(error.what());
+        emit stateChanged();
+    }
+}
+
+void ReplayController::applyTopicLayout(const replay::RvizLayout &layout)
+{
+    auto document = projectSnapshot();
+    document.setTopicLayout(layout);
+    if (!path_.isEmpty()) {
+        load(path_, {cloudTopic(), odometryTopic(), mapMode_}, std::move(document), true, layout.skipped);
+        return;
+    }
+
+    project_ = std::move(document);
+    status_ = tr("已保存 %1 个 RViz 话题显示。打开录包后载入匹配的图层。").arg(layout.displays.size());
+    if (!layout.skipped.isEmpty())
+        status_ += tr(" · 无法按原插件显示：%1").arg(layout.skipped.mid(0, 5).join(QStringLiteral("、")));
+    emit recordingChanged();
+    emit stateChanged();
+}
+
 void ReplayController::openBag(const QUrl &url)
 {
-    if (url.isLocalFile())
-        load(url.toLocalFile(), {});
+    if (!url.isLocalFile())
+        return;
+    const auto path = url.toLocalFile();
+    if (!path_.isEmpty() || !project_) {
+        load(path, {});
+        return;
+    }
+
+    const auto layout = project_->topicLayout();
+    if (layout.fixedFrame.isEmpty() && layout.displays.empty()) {
+        load(path, {});
+        return;
+    }
+
+    auto document = replay::ProjectDocument::create(QStringLiteral("bag"), path);
+    document.setTopicLayout(layout);
+    load(path, {}, std::move(document));
 }
 
 void ReplayController::openDemo()
@@ -185,7 +276,7 @@ void ReplayController::setCloudTopic(const QString &topic)
         auto document = project_;
         if (document)
             document->setValue("cloud_topic", topic);
-        load(path_, {topic, odometryTopic(), mapMode_}, std::move(document));
+        load(path_, {topic, odometryTopic(), mapMode_}, std::move(document), true);
     }
 }
 
@@ -195,7 +286,7 @@ void ReplayController::setOdometryTopic(const QString &topic)
         auto document = project_;
         if (document)
             document->setValue("odom_topic", topic);
-        load(path_, {cloudTopic(), topic, mapMode_}, std::move(document));
+        load(path_, {cloudTopic(), topic, mapMode_}, std::move(document), true);
     }
 }
 
@@ -206,12 +297,13 @@ void ReplayController::setReplacing(bool replace)
         if (document)
             document->setValue("cloud_mode", replace ? QStringLiteral("替换整图") : QStringLiteral("累积扫描"));
         load(path_, {cloudTopic(), odometryTopic(), replace ? replay::MapMode::Replace : replay::MapMode::Accumulate},
-             std::move(document));
+             std::move(document), true);
     }
 }
 
 void ReplayController::load(const QString &path, const replay::LoadOptions &options,
-                            std::optional<replay::ProjectDocument> project)
+                            std::optional<replay::ProjectDocument> project, bool keepSession,
+                            const QStringList &skipped)
 {
     if (loading_)
         return;
@@ -221,7 +313,13 @@ void ReplayController::load(const QString &path, const replay::LoadOptions &opti
     progress_ = 0.;
     cancelRequested_ = false;
     emit stateChanged();
-    watcher_.setFuture(QtConcurrent::run([this, path, options, project = std::move(project)]() mutable {
+    auto settings = options;
+    if (project) {
+        settings.topicLayout = project->topicLayout();
+        settings.showMainCloud = project->json().value("composition").toObject().value("show_main_cloud").toBool(true);
+    }
+    watcher_.setFuture(QtConcurrent::run([this, path, options = std::move(settings), project = std::move(project),
+                                          keepSession, skipped]() mutable {
         try {
             int lastPercent = -1;
             auto updateProgress = [this, &lastPercent](double value) {
@@ -235,7 +333,7 @@ void ReplayController::load(const QString &path, const replay::LoadOptions &opti
                 }
             };
             auto record = replay::loadBag(path, options, [this] { return cancelRequested_.load(); }, updateProgress);
-            return Result{std::move(record), path, {}, options.mapMode, std::move(project)};
+            return Result{std::move(record), path, {}, options.mapMode, std::move(project), keepSession, skipped};
         } catch (const std::exception &error) {
             return Result{nullptr, path, QString::fromUtf8(error.what()), {}, {}};
         }

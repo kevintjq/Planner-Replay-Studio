@@ -138,6 +138,32 @@ void ProjectDocument::setValue(const QString &key, const QString &value)
     root_.insert("values", settings);
 }
 
+RvizLayout ProjectDocument::topicLayout() const
+{
+    const auto composition = root_.value("composition").toObject();
+    RvizLayout layout;
+    layout.fixedFrame = composition.value("display_fixed_frame").toString();
+    const auto displays = composition.value("topic_displays").toArray();
+    for (const auto &display : displays)
+        layout.displays.push_back(TopicDisplay::fromJson(display.toObject()));
+    return layout;
+}
+
+void ProjectDocument::setTopicLayout(const RvizLayout &layout)
+{
+    auto composition = root_.value("composition").toObject();
+    QJsonArray displays;
+    bool hasCloud = false;
+    for (const auto &display : layout.displays) {
+        displays.append(display.toJson());
+        hasCloud = hasCloud || (display.enabled && display.kind == "cloud");
+    }
+    composition.insert("topic_displays", displays);
+    composition.insert("display_fixed_frame", layout.fixedFrame);
+    composition.insert("show_main_cloud", !hasCloud);
+    root_.insert("composition", composition);
+}
+
 std::vector<VideoClip> ProjectDocument::videos() const
 {
     std::vector<VideoClip> result;

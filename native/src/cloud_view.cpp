@@ -96,7 +96,6 @@ public:
         if (needsStorage_)
             allocate();
         const auto &frame = recording_->frameAt(stamp_);
-        upload(frame.end);
         const auto pose = recording_->poseAt(stamp_);
         const auto body = pose ? pose->position : recording_->center;
         program_.setUniformValue("cameraMatrix", cameraMatrix(size, pose));
@@ -105,9 +104,13 @@ public:
         program_.setUniformValue("pixelSize", pointSize_);
         program_.setUniformValue("solid", false);
 
-        bind(cloud_);
-        const int from = recording_->replace ? frame.first : 0;
-        gl->glDrawArrays(GL_POINTS, from, frame.end - from);
+        if (recording_->showMainCloud) {
+            upload(frame.end);
+            bind(cloud_);
+            const int from = recording_->replace ? frame.first : 0;
+            gl->glDrawArrays(GL_POINTS, from, frame.end - from);
+        }
+        drawTopicOverlays(gl);
 
         if (showPath_ && !recording_->poses.empty()) {
             const auto &poses = recording_->poses;
@@ -151,11 +154,46 @@ private:
         program_.setAttributeBuffer(0, GL_FLOAT, 0, 3, sizeof(Point));
     }
 
+    struct OverlayBuffer {
+        QOpenGLBuffer buffer;
+        const replay::TopicOverlay::Sample *sample = nullptr;
+    };
+
+    void drawTopicOverlays(QOpenGLExtraFunctions *gl)
+    {
+        for (size_t i = 0; i < recording_->topicOverlays.size(); ++i) {
+            const auto &overlay = recording_->topicOverlays[i];
+            const auto *sample = overlay.sampleAt(stamp_);
+            if (!sample || sample->range.first == sample->range.end)
+                continue;
+            auto &gpu = overlays_[i];
+            auto &buffer = gpu.buffer;
+            if (!buffer.isCreated()) {
+                if (!buffer.create())
+                    continue;
+                buffer.setUsagePattern(QOpenGLBuffer::DynamicDraw);
+            }
+            bind(buffer);
+            const int count = sample->range.end - sample->range.first;
+            if (gpu.sample != sample) {
+                buffer.allocate(overlay.points.data() + sample->range.first, count * int(sizeof(Point)));
+                gpu.sample = sample;
+            }
+            const auto &color = overlay.display.color;
+            program_.setUniformValue("solid", true);
+            program_.setUniformValue("fixedColor", QVector3D(color.redF(), color.greenF(), color.blueF()));
+            program_.setUniformValue("pixelSize", overlay.display.kind == "position" ? 8.f : pointSize_);
+            gl->glDrawArrays(overlay.display.kind == "path" ? GL_LINE_STRIP : GL_POINTS, 0, count);
+        }
+    }
+
     void allocate()
     {
+        overlays_.clear();
+        overlays_.resize(recording_->topicOverlays.size());
         cloud_.bind();
         cloud_.setUsagePattern(QOpenGLBuffer::DynamicDraw);
-        cloud_.allocate(int(recording_->points.size() * sizeof(Point)));
+        cloud_.allocate(recording_->showMainCloud ? int(recording_->points.size() * sizeof(Point)) : 0);
         uploaded_ = 0;
 
         std::vector<Point> path;
@@ -207,6 +245,7 @@ private:
     QOpenGLShaderProgram program_;
     QOpenGLVertexArrayObject vao_;
     QOpenGLBuffer cloud_, path_, marker_;
+    std::vector<OverlayBuffer> overlays_;
     bool initialized_ = false, ready_ = false, needsStorage_ = false, showPath_ = true;
     int uploaded_ = 0, camera_ = 0;
     qint64 stamp_ = 0;

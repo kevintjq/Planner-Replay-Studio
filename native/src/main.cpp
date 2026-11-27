@@ -130,8 +130,11 @@ int main(int argc, char **argv)
     } else if (app.arguments().size() == 2) {
         const auto path = QFileInfo(app.arguments().at(1)).absoluteFilePath();
         const auto url = QUrl::fromLocalFile(path);
-        if (QFileInfo(path).suffix().compare(QStringLiteral("slamfpv"), Qt::CaseInsensitive) == 0)
+        const auto extension = QFileInfo(path).suffix().toLower();
+        if (extension == QStringLiteral("slamfpv"))
             replay.openProject(url);
+        else if (extension == QStringLiteral("rviz") || extension == QStringLiteral("yaml") || extension == QStringLiteral("yml"))
+            replay.openRviz(url);
         else
             replay.openBag(url);
     }

@@ -30,7 +30,7 @@ Copy-Item "$crt/*.dll" $AppDirectory
 
 Copy-Item "$root/native/README.md", "$root/LICENSE", "$PSScriptRoot/THIRD_PARTY.md" $AppDirectory
 $licenses = New-Item -ItemType Directory -Force -Path "$AppDirectory/licenses"
-foreach ($dependency in @('bzip2', 'lz4')) {
+foreach ($dependency in @('bzip2', 'lz4', 'yaml-cpp')) {
     Copy-Item "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows-static-md/share/$dependency/copyright" "$licenses/$dependency.txt"
 }
 foreach ($license in @('LGPL-3.0-only', 'GPL-3.0-only')) {

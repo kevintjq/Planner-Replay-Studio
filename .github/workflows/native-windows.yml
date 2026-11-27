@@ -30,10 +30,10 @@ jobs:
           arch: win64_msvc2022_64
           modules: qtmultimedia
           cache: true
-      - name: Install ROS1 bag compression libraries
+      - name: Install native dependencies
         shell: pwsh
         run: |
-          & "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe" install bzip2:x64-windows-static-md lz4:x64-windows-static-md
+          & "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe" install bzip2:x64-windows-static-md lz4:x64-windows-static-md yaml-cpp:x64-windows-static-md
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build and test
         shell: pwsh

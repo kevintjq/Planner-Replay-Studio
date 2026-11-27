@@ -1,5 +1,6 @@
 #pragma once
 
+#include "rviz_layout.h"
 #include "video_timing.h"
 
 #include <QJsonObject>
@@ -23,6 +24,8 @@ public:
     QJsonObject values() const;
     void setValue(const QString &key, const QString &value);
     std::vector<VideoClip> videos() const;
+    RvizLayout topicLayout() const;
+    void setTopicLayout(const RvizLayout &layout);
     void addVideo(const QString &file);
     QJsonObject videoTiming(qsizetype index) const;
     void setVideoTiming(qsizetype index, const QJsonObject &changes);

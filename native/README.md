@@ -23,6 +23,10 @@
 
 当前使用点云回放驱动视频小窗，音轨合成、布局事件及视频导出仍在迁移中。
 
+### RViz 配置
+
+点击「导入 RViz 配置」打开 `.rviz`、`.yaml` 或 `.yml`。原生预览使用配置里的话题、颜色和启用状态。展开「RViz 话题显示」即可显隐各图层，另存后会保留配置。当前可叠加与主点云坐标系一致的 PointCloud2、LaserScan、Path 和位置消息。其他显示项和指定的固定坐标系会保存在项目中。状态栏会提示话题、消息类型或坐标系不匹配的项目。
+
 ## 构建
 
-需要 CMake 3.22、支持 C++20 的编译器、Qt 6.8 或更高版本（含 Qt Multimedia），以及 BZip2 和 LZ4。在 Windows 上可通过 vcpkg 的 `x64-windows-static-md` 安装压缩库。生成安装包还需要 NSIS。构建和安装测试命令见 [Windows 构建流程](../.github/workflows/native-windows.yml)。
+需要 CMake 3.22、支持 C++20 的编译器、Qt 6.8 或更高版本（含 Qt Multimedia），以及 BZip2、LZ4 和 yaml-cpp。在 Windows 上可通过 vcpkg 的 `x64-windows-static-md` 安装压缩库。生成安装包还需要 NSIS。构建和安装测试命令见 [Windows 构建流程](../.github/workflows/native-windows.yml)。

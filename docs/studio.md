@@ -6,7 +6,7 @@
 
 ## Quick start
 
-[Download the complete Windows setup EXE](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.3.1/PlannerReplayStudio-Setup.exe) and open **Planner Replay Studio Full** from the Start menu.
+[Download the complete Windows setup EXE](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.3.2/PlannerReplayStudio-Setup.exe) and open **Planner Replay Studio Full** from the Start menu.
 
 Open a ROS1 `.bag` under **Data** or choose **Use simulated data**. Pick views and layers, then generate a preview.
 
@@ -30,7 +30,7 @@ All clips use the same bag timeline and keep their own trim ranges and anchors. 
 | Latest LiDAR scan | `PointCloud2`, Livox `CustomMsg` or `LaserScan` |
 | Speed gauge | 3D linear speed in m/s from `Odometry`, `TwistStamped` or `Twist` |
 
-Choose a speed topic under **Data → Data source**. Automatic selection prefers odometry for the current vehicle. The gauge shows a dash when no valid reading is available. Stamped messages use header time, and `Twist` uses bag recording time.
+Choose the speed topic under **Layers → + Speed gauge**, or select an existing gauge and open **Settings**. Automatic selection prefers odometry for the current vehicle. The gauge shows a dash when no valid reading is available. Stamped messages use header time, and `Twist` uses bag recording time.
 
 Topics and frames are detected automatically and can be changed in the dropdowns. Enable data under **Spatial overlays**, then choose what each view shows. Use **Lines and markers** to set actual path, planned path and TF widths independently, and to size the solid goal dot. The preview reports scan source, age and missing data.
 

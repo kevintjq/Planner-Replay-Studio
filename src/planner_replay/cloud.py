@@ -1,6 +1,8 @@
 """PointCloud2 decoding including organized row padding and endian conversion."""
 import numpy as np
 
+from . import _voxel
+
 DTYPES = {1:'i1', 2:'u1', 3:'i2', 4:'u2', 5:'i4', 6:'u4', 7:'f4', 8:'f8'}
 
 
@@ -50,13 +52,10 @@ def scan_colors(values, limits):
 
 
 def first_voxel_indices(xyz, size):
-    cells = np.floor(xyz / size).astype(np.int64)
-    lower, upper = cells.min(axis=0), cells.max(axis=0)
-    if all(int(hi) - int(lo) < 2**21 for lo, hi in zip(lower, upper)):
-        x, y, z = (cells - lower).T
-        keys = (x << 42) | (y << 21) | z
-        return np.unique(keys, return_index=True)[1]
-    return np.unique(cells, axis=0, return_index=True)[1]
+    points = np.ascontiguousarray(xyz, dtype=np.float64)
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError("Expected an array of XYZ points")
+    return np.frombuffer(_voxel.first_voxel_indices(points, size), dtype=np.intp)
 
 
 class CloudMap:

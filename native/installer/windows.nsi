@@ -1,8 +1,10 @@
-Unicode true
+﻿Unicode true
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
 
 !include "MUI2.nsh"
+!include "FileFunc.nsh"
+!include "Sections.nsh"
 !ifndef PRODUCT
 !define PRODUCT "Planner Replay Studio"
 !endif
@@ -17,6 +19,7 @@ SetCompressor /SOLID lzma
 Name "${PRODUCT}"
 OutFile "${SETUP_FILE}"
 InstallDir "$LOCALAPPDATA\Programs\${PRODUCT}"
+InstallDirRegKey HKCU "${UNINSTALL_KEY}" "InstallLocation"
 VIProductVersion "${VERSION}.0"
 VIAddVersionKey "ProductName" "${PRODUCT}"
 VIAddVersionKey "FileDescription" "Planner Replay Studio Windows installer"
@@ -24,6 +27,8 @@ VIAddVersionKey "FileVersion" "${VERSION}"
 VIAddVersionKey "LegalCopyright" "Planner Replay Studio contributors"
 
 !define MUI_FINISHPAGE_RUN "$INSTDIR\app\${APP_EXE}"
+!insertmacro MUI_PAGE_DIRECTORY
+!insertmacro MUI_PAGE_COMPONENTS
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM
@@ -31,11 +36,10 @@ VIAddVersionKey "LegalCopyright" "Planner Replay Studio contributors"
 !insertmacro MUI_LANGUAGE "SimpChinese"
 !insertmacro MUI_LANGUAGE "English"
 
-Function .onInit
-    SetShellVarContext current
-    IfSilent +2
-    Call SetInstallerLanguage
-FunctionEnd
+LangString MainSection ${LANG_ENGLISH} "${PRODUCT} (required)"
+LangString MainSection ${LANG_SIMPCHINESE} "${PRODUCT}（必选）"
+LangString DesktopSection ${LANG_ENGLISH} "Create desktop shortcut"
+LangString DesktopSection ${LANG_SIMPCHINESE} "创建桌面快捷方式"
 
 Function SetInstallerLanguage
     System::Call 'kernel32::GetUserDefaultUILanguage() i.r0'
@@ -45,7 +49,8 @@ Function SetInstallerLanguage
     StrCpy $LANGUAGE ${LANG_ENGLISH}
 FunctionEnd
 
-Section
+Section "$(MainSection)" SecMain
+    SectionIn RO
     SetOutPath "$INSTDIR\app"
     SetOverwrite on
     ClearErrors
@@ -72,12 +77,44 @@ InstallFailed:
 InstallDone:
 SectionEnd
 
+Section /o "$(DesktopSection)" SecDesktop
+    ClearErrors
+    CreateShortcut "$DESKTOP\${PRODUCT}.lnk" "$INSTDIR\app\${APP_EXE}"
+    IfErrors 0 +3
+    SetErrorLevel 1
+    Abort
+SectionEnd
+
+Section -Shortcuts
+    SectionGetFlags ${SecDesktop} $0
+    IntOp $0 $0 & ${SF_SELECTED}
+    StrCmp $0 0 0 +2
+    Delete "$DESKTOP\${PRODUCT}.lnk"
+SectionEnd
+
+Function .onInit
+    SetShellVarContext current
+    IfSilent silent
+    Call SetInstallerLanguage
+    IfFileExists "$DESKTOP\${PRODUCT}.lnk" 0 done
+    !insertmacro SelectSection ${SecDesktop}
+    Goto done
+
+silent:
+    ${GetParameters} $R0
+    ${GetOptions} $R0 "/DESKTOPSHORTCUT=" $R1
+    StrCmp $R1 "1" 0 done
+    !insertmacro SelectSection ${SecDesktop}
+done:
+FunctionEnd
+
 Section "Uninstall"
     SetShellVarContext current
     ClearErrors
     RMDir /r "$INSTDIR\app"
     IfErrors UninstallFailed
     Delete "$SMPROGRAMS\${PRODUCT}.lnk"
+    Delete "$DESKTOP\${PRODUCT}.lnk"
     DeleteRegKey HKCU "${UNINSTALL_KEY}"
     Delete "$INSTDIR\Uninstall.exe"
     RMDir "$INSTDIR"

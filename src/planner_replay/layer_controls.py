@@ -6,6 +6,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import colorchooser, filedialog, messagebox, ttk
 
+from .sensor_topics import VELOCITY_TYPES
 from .composition import (
     POINT_CLOUD_VIEWS, VIEW_OVERLAYS, ImageLayer, PointCloudView, TextLayer, VideoLayer, load_overlay_image, view_overlays,
 )
@@ -422,15 +423,28 @@ class LayerControls:
 
     def edit_speed(self):
         p = self.project
+        source = self.values["speed_topic"]
+        choices = ("自动识别",)
+        if self.bag_path and self.bag_metadata:
+            choices += tuple(sorted({row["topic"] for row in self.bag_metadata["topics"]
+                                     if row["type"] in VELOCITY_TYPES}))
+        current = source.get() if source.get() in choices else choices[0]
+
         def save(values):
+            changed = values["speed_topic"] != source.get()
             self.project = replace(p, show_speed=True, speed_limit=float(values["limit"]),
                                    speed_start=float(values["start"]),
                                    speed_scale=float(values["scale"])/100,
                                    speed_transparent=values["background"] == MATTE_OPTIONS[0],
                                    speed_end=float(values["end"]) if values["end"] else None)
+            source.set(values["speed_topic"])
             self.selection = "speed", 0
             self.refresh_layers()
+            if changed and self.bag_path and self.frame is not None:
+                self.root.after_idle(lambda: self.start_render(True))
+
         self.layer_dialog("飞行速度表", (
+            ("speed_topic", "速度话题", current, choices),
             ("limit", "表盘上限 (m/s)", f"{p.speed_limit:g}"),
             ("scale", "缩放 (%)", f"{p.speed_scale*100:g}"),
             background_field(p.speed_transparent),

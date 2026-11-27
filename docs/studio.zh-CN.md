@@ -6,7 +6,7 @@
 
 ## 快速开始
 
-[下载完整工作台 Windows EXE](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.3.1/PlannerReplayStudio-Setup.exe)，安装后从开始菜单打开 **Planner Replay Studio Full**。
+[下载完整工作台 Windows EXE](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.3.2/PlannerReplayStudio-Setup.exe)，安装后从开始菜单打开 **Planner Replay Studio Full**。
 
 在「数据」打开 ROS1 `.bag`，或点「使用模拟数据」查看效果。选择机位和图层后点「生成预览」。
 
@@ -30,7 +30,7 @@
 | 雷达当前帧 | `PointCloud2`、Livox `CustomMsg` 或 `LaserScan` |
 | 速度表 | `Odometry`、`TwistStamped` 或 `Twist` 的三维线速度，单位 m/s |
 
-在「数据 → 数据来源」选择速度话题。自动识别优先使用同机体的里程计。无有效速度样本时显示「—」。带时间戳的话题按消息时间对齐，`Twist` 使用 bag 记录时间。
+在「图层 → + 速度表」添加速度表，或选中已有速度表后点「设置」选择速度话题。自动识别优先使用同机体的里程计。无有效速度样本时显示「—」。带时间戳的话题按消息时间对齐，`Twist` 使用 bag 记录时间。
 
 话题和坐标系自动识别，可从下拉列表更换。点云可选 SLAM 配准输出、EGO 的 `grid_map/occupancy` 或 SUPER 的 `rog_map/occ` 等 `PointCloud2` 话题。选择已识别的占据地图话题时默认「替换整图」。若该话题未填消息时间戳，使用 bag 的记录时间。
 

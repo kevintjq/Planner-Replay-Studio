@@ -20,12 +20,14 @@ def smoke():
     from rosbags.highlevel import AnyReader
     from rosbags.rosbag1 import Writer
     from rosbags.typesys import Stores, get_typestore
+    from planner_replay.cloud import first_voxel_indices
     from planner_replay.composition import Composition, ImageLayer, TextLayer, VideoLayer, compose
     from planner_replay.gui import RendererApp
     from planner_replay.project_file import ProjectFile, load_project, save_project, save_workspace_folder
 
     assert vtk.vtkVersion.GetVTKMajorVersion() >= 9
     assert cv2.TrackerCSRT_create() is not None
+    assert first_voxel_indices([[.1, 0., 0.], [.2, 0., 0.], [-.1, 0., 0.]], 1.).tolist() == [2, 0]
     root = tk.Tk()
     try:
         root.withdraw()

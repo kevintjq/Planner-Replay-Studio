@@ -27,3 +27,7 @@ captures/
 /native/out/
 /native/.vs/
 CMakeUserPresets.json
+
+# In-place C++ extension builds.
+src/planner_replay/_voxel*.so
+src/planner_replay/_voxel*.pyd

@@ -24,7 +24,7 @@
 
 ## 快速开始
 
-1. [下载 Windows x64 安装包](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.3.1/PlannerReplayStudio-Setup.exe)，双击安装，从开始菜单打开 **Planner Replay Studio Full**。依赖随安装包提供。
+1. [下载 Windows x64 安装包](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.3.2/PlannerReplayStudio-Setup.exe)，双击安装，从开始菜单打开 **Planner Replay Studio Full**。默认装到 `%LOCALAPPDATA%\Programs\Planner Replay Studio Full`，安装时可改路径，也可勾选桌面快捷方式。
 2. 在「数据」打开 ROS1 `.bag`，或点「使用模拟数据」。确认点云和位姿话题，选择视角后点「生成预览」。
 3. 在「图层」添加实拍、图片或文字。拖动画面调整位置和大小，在时间轴上调整显示时段或添加缩窗过渡。
 
@@ -34,7 +34,7 @@
 | --- | --- |
 | 点云与位姿 | `PointCloud2`、`Odometry` 和 TF。支持累积扫描、整图替换及按机体距离着色 |
 | 规划 | EGO / SUPER 规划轨迹、目标点和安全走廊。各图层可单独开关 |
-| 传感器 | 相机 FOV、雷达当前帧高亮、话题线速度（m/s） |
+| 传感器 | 相机 FOV、雷达当前帧高亮、话题线速度（m/s）。在速度表的「设置」中选择速度话题 |
 
 在「数据 → 空间叠加」启用所需数据并确认自动识别结果。可从下拉列表更换话题，并在各视角单独选择要显示的图层。
 

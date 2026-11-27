@@ -24,7 +24,7 @@
 
 ## Quick start
 
-1. [Download the Windows x64 installer](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.3.1/PlannerReplayStudio-Setup.exe), run it, and open **Planner Replay Studio Full** from the Start menu. The installer includes the runtime.
+1. [Download the Windows x64 installer](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.3.2/PlannerReplayStudio-Setup.exe), run it, and open **Planner Replay Studio Full** from the Start menu. The default folder is `%LOCALAPPDATA%\Programs\Planner Replay Studio Full`. You can change it during setup and opt in to a desktop shortcut.
 2. In **Data**, open a ROS1 `.bag` or choose **Use simulated data**. Confirm the cloud and pose topics, select views, and generate a preview.
 3. Add footage, images, or text under **Layers**. Drag to place and resize layers in the preview. Set visibility intervals and transitions on the timeline.
 
@@ -34,7 +34,7 @@
 | --- | --- |
 | Point clouds and pose | `PointCloud2`, `Odometry`, and TF. Accumulate scans, replace the map, or color points by distance to the drone |
 | Planner output | EGO / SUPER planned paths, goals, and safety corridors. Each layer can be toggled independently |
-| Sensors | Camera FOV, latest LiDAR scan highlighting, and topic-based speed in m/s |
+| Sensors | Camera FOV, latest LiDAR scan highlighting, and topic-based speed in m/s. Choose its topic in the speed gauge settings |
 
 Enable overlays under **Data → Spatial overlays** and check the automatically selected topics. Use the dropdowns to change topics and choose which overlays appear in each view.
 

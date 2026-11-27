@@ -31,7 +31,7 @@ from .sources import inspect_bag
 from .project_file import WORKSPACE_PROJECT, ProjectFile, load_project, save_project, save_workspace_folder
 from .export_media import inspect_export, publish_output
 from .spatial import CORRIDOR_TYPES, EGO_SPLINES, GOAL_TYPES, PLAN_TYPES, LayerStatus
-from .sensor_topics import CAMERA_INFO, SCAN_TYPES, VELOCITY_TYPES, camera_choices, connected_frames, planner_map_topic, pose_frames, suggested_topic
+from .sensor_topics import CAMERA_INFO, SCAN_TYPES, camera_choices, connected_frames, planner_map_topic, pose_frames, suggested_topic
 
 
 SPATIAL_TOPIC_TYPES = {"plan": PLAN_TYPES, "goal": GOAL_TYPES, "corridor": CORRIDOR_TYPES,
@@ -527,8 +527,7 @@ class RendererApp(LayerControls):
         self.field(source, 10, "导出起点 (s)", "start", "0")
         self.field(source, 11, "导出时长 (s)", "seconds", "6")
         self.field(source, 12, "片段内预览位置 (s)", "preview_offset", "1")
-        self.speed_topics = self.field(source, 13, "速度话题", "speed_topic", "自动识别", ("自动识别",))
-        self.speed_topics.state(["disabled"])
+        self.values["speed_topic"] = tk.StringVar(value="自动识别")
         self.values["pose_source"].trace_add("write", self.change_source_frames)
         for widget in (self.world_frames, self.body_frames):
             widget.bind("<<ComboboxSelected>>", lambda _: self.sync_spatial())
@@ -1060,7 +1059,6 @@ class RendererApp(LayerControls):
             self.reset_alignment()
         self.bag_path = None
         self.demo_selected = True
-        self.speed_topics.state(["disabled"])
         self.bag_name.set("模拟点云与轨迹")
         self.sync_spatial()
         self.start_render(True)
@@ -1078,10 +1076,7 @@ class RendererApp(LayerControls):
         topics = data["topics"]
         clouds = sorted({row["topic"] for row in topics if row["type"] == "sensor_msgs/msg/PointCloud2"})
         odometry = sorted({row["topic"] for row in topics if row["type"] == "nav_msgs/msg/Odometry"})
-        velocities = sorted({row["topic"] for row in topics if row["type"] in VELOCITY_TYPES})
-        self.speed_topics.configure(values=("自动识别", *velocities))
-        self.speed_topics.state(["!disabled"])
-        self.speed_topics.set("自动识别")
+        self.values["speed_topic"].set("自动识别")
         for widget, choices, fallback in ((self.cloud_topics, clouds, "/cloud_registered"),
                                           (self.odom_topics, odometry, "/Odometry")):
             widget.configure(values=choices)

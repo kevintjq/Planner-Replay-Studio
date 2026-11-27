@@ -170,6 +170,10 @@ MovieExporter::MovieExporter(ReplayController &replay, MovieImages &images) : re
         }
     });
     connect(&watcher_, &QFutureWatcher<DecodedFrame>::finished, this, &MovieExporter::collectFrame);
+    connect(&replay_, &ReplayController::frameExported, this, [this](bool success) {
+        if (exporting_ && still_)
+            finish(success ? QString() : replay_.status());
+    });
 }
 
 MovieExporter::~MovieExporter()
@@ -195,6 +199,7 @@ void MovieExporter::start(const QUrl &destination, QQuickItem *canvas, double be
     const auto reject = [this](const QString &error) {
         message_ = error;
         emit changed();
+        emit finished(false, message_);
     };
     if (!destination.isLocalFile() || QFileInfo(destination.toLocalFile()).suffix().compare("mp4", Qt::CaseInsensitive) != 0 ||
         !std::isfinite(begin) || !std::isfinite(end) || begin < 0. || end <= begin || end > replay_.duration() + 1e-6 ||
@@ -241,6 +246,7 @@ void MovieExporter::start(const QUrl &destination, QQuickItem *canvas, double be
     canvas_ = canvas;
     begin_ = begin;
     speed_ = speed;
+    still_ = false;
     index_ = 0;
     count_ = std::max(qint64(1), qint64(std::ceil((end - begin) * FrameRate / speed - 1e-8)));
     cancelled_ = false;
@@ -252,6 +258,34 @@ void MovieExporter::start(const QUrl &destination, QQuickItem *canvas, double be
     exporting_ = true;
     emit changed();
     process_.start(executable_, encoderArguments());
+}
+
+void MovieExporter::startStill(const QUrl &destination, QQuickItem *canvas, double time)
+{
+    if (exporting_ || process_.state() != QProcess::NotRunning || watcher_.isRunning() || replay_.loading() || replay_.capturing() || !canvas)
+        return;
+    if (!destination.isLocalFile() || QFileInfo(destination.toLocalFile()).suffix().compare("png", Qt::CaseInsensitive) != 0 ||
+        replay_.referencesFile(destination.toLocalFile()) || !std::isfinite(time) || time < 0. || time > replay_.duration()) {
+        message_ = tr("请选择 PNG 输出路径和有效的截图时间。");
+        emit changed();
+        emit finished(false, message_);
+        return;
+    }
+    replay_.pause();
+    previous_ = replay_.position();
+    canvas_ = canvas;
+    destination_ = destination.toLocalFile();
+    begin_ = time;
+    speed_ = 1.;
+    count_ = 1;
+    index_ = 0;
+    cancelled_ = false;
+    still_ = true;
+    decoder_ = std::make_shared<Decoder>(replay_.videoClips(), cancelled_);
+    exporting_ = true;
+    message_ = tr("正在导出 PNG…");
+    emit changed();
+    requestNext();
 }
 
 QStringList MovieExporter::encoderArguments() const
@@ -361,7 +395,11 @@ void MovieExporter::grabFrame()
     if (!exporting_ || cancelled_)
         return;
     if (!canvas_ || canvas_->width() <= 0. || canvas_->height() <= 0.) {
-        finish(tr("无法读取视频画布。"));
+        finish(tr("无法读取导出画布。"));
+        return;
+    }
+    if (still_) {
+        replay_.exportFrame(QUrl::fromLocalFile(destination_), canvas_);
         return;
     }
     const QSize fit = canvas_->size().toSize().scaled(Width, Height, Qt::KeepAspectRatio);
@@ -414,9 +452,11 @@ void MovieExporter::finish(const QString &error)
     images_.prepare({});
     staging_.reset();
     replay_.seek(previous_);
-    message_ = error.isEmpty() ? tr("已导出 MP4：%1").arg(destination_) : error;
+    message_ = error.isEmpty() ? tr("已导出 %1：%2").arg(still_ ? QStringLiteral("PNG") : QStringLiteral("MP4"), destination_)
+                               : error;
     emit framesChanged();
     emit changed();
+    emit finished(error.isEmpty(), message_);
 }
 
 void MovieExporter::cancel()

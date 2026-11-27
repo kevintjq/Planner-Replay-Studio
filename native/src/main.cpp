@@ -18,6 +18,8 @@
 #include <QSet>
 #include <QSurfaceFormat>
 #include <QTemporaryDir>
+#include <QTextStream>
+#include <cmath>
 #include <QTimer>
 #include <QVideoFrame>
 #include <QVideoSink>
@@ -213,11 +215,77 @@ int main(int argc, char **argv)
     engine.rootContext()->setContextProperty("trajectory", &trajectory);
     engine.rootContext()->setContextProperty("movie", &movie);
     const bool smoke = app.arguments().contains("--smoke");
+    const auto args = app.arguments();
+    const bool batch = args.size() > 1 && args[1] == QStringLiteral("--batch");
     engine.rootContext()->setContextProperty("replay", &replay);
     engine.rootContext()->setContextProperty("smokeTest", smoke);
-    engine.load(QUrl(QStringLiteral("qrc:/qml/Main.qml")));
+    engine.load(QUrl(batch ? QStringLiteral("qrc:/qml/BatchExport.qml") : QStringLiteral("qrc:/qml/Main.qml")));
     if (engine.rootObjects().isEmpty())
         return 1;
+    if (batch) {
+        if (args.size() != 6)
+            return 2;
+        bool beginOk = false, secondsOk = false;
+        const double begin = args[4].toDouble(&beginOk), seconds = args[5].toDouble(&secondsOk);
+        if (!beginOk || !secondsOk || !std::isfinite(begin) || !std::isfinite(seconds) || begin < 0. || seconds < 0.)
+            return 2;
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+        auto *canvas = window ? window->findChild<QQuickItem *>(QStringLiteral("batchCanvas")) : nullptr;
+        if (!canvas)
+            return 1;
+        const bool demo = args[2] == QStringLiteral(":demo:");
+        const QFileInfo source(demo ? QString() : args[2]);
+        const auto destination = QUrl::fromLocalFile(QFileInfo(args[3]).absoluteFilePath());
+        const bool still = QFileInfo(destination.toLocalFile()).suffix().compare(QStringLiteral("png"), Qt::CaseInsensitive) == 0;
+        const bool project = source.suffix().compare(QStringLiteral("slamfpv"), Qt::CaseInsensitive) == 0;
+        const auto completed = [&app](bool success, const QString &message) {
+            QTextStream stream(success ? stdout : stderr);
+            stream << message << Qt::endl;
+            app.exit(success ? 0 : 1);
+        };
+        QObject::connect(&movie, &MovieExporter::finished, &app, completed);
+        app.setQuitOnLastWindowClosed(false);
+        const auto closed = QObject::connect(window, &QWindow::visibleChanged, &app, [completed](bool visible) {
+            if (!visible)
+                completed(false, QStringLiteral("The export window was closed."));
+        });
+        const auto exportLoaded = [&] {
+            if ((!demo && !source.isFile()) || (project && replay.projectPath().isEmpty()) ||
+                (!demo && !project && replay.bagPath().isEmpty())) {
+                completed(false, replay.status().isEmpty() ? QStringLiteral("Cannot open the export source.") : replay.status());
+                return;
+            }
+            if (still)
+                movie.startStill(destination, canvas, begin);
+            else {
+                const auto prefs = replay.moviePreferences();
+                const auto end = seconds > 0. ? std::min(replay.duration(), begin + seconds) : replay.duration();
+                movie.start(destination, canvas, begin, end, prefs.value("speed").toDouble(), prefs.value("audioIndex").toInt());
+            }
+        };
+        bool exportScheduled = false;
+        QMetaObject::Connection loadProgress;
+        const auto schedule = [&] {
+            if (!replay.loading() && !exportScheduled) {
+                exportScheduled = true;
+                QTimer::singleShot(0, &app, exportLoaded);
+            }
+        };
+        QTimer::singleShot(0, &app, [&] {
+            const auto url = QUrl::fromLocalFile(source.absoluteFilePath());
+            if (!demo && project)
+                replay.openProject(url);
+            else if (!demo)
+                replay.openBag(url);
+            if (replay.loading())
+                loadProgress = QObject::connect(&replay, &ReplayController::stateChanged, &app, schedule);
+            schedule();
+        });
+        const int result = app.exec();
+        QObject::disconnect(closed);
+        QObject::disconnect(loadProgress);
+        return result;
+    }
     if (smoke) {
         QTimer::singleShot(0, &app, [&app, &engine, &replay] {
             try {

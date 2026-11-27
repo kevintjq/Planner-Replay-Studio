@@ -134,6 +134,12 @@ jobs:
             if ($app.ExitCode -ne 0) { throw "Installed application exited with $($app.ExitCode)." }
             & $cli --help | Out-Null
             if ($LASTEXITCODE -ne 0) { throw "Installed CLI exited with $LASTEXITCODE." }
+            $env:QT_QPA_PLATFORM = 'offscreen'
+            $env:QT_QUICK_BACKEND = 'software'
+            $batchPng = Join-Path $env:RUNNER_TEMP 'planner-batch-smoke.png'
+            & $cli demo --start 0.25 --output $batchPng
+            if ($LASTEXITCODE -ne 0 -or !(Test-Path $batchPng)) { throw 'The installed CLI did not export a PNG.' }
+            Remove-Item Env:QT_QPA_PLATFORM, Env:QT_QUICK_BACKEND -ErrorAction SilentlyContinue
           } finally {
             $env:PATH = $originalPath
           }

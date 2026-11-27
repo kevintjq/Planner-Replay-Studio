@@ -176,6 +176,7 @@ public:
 
 signals:
     void stateChanged();
+    void frameExported(bool success);
     void playingChanged();
     void positionChanged();
     void recordingChanged();

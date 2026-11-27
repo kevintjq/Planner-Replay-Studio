@@ -660,13 +660,15 @@ void ReplayController::grabFrame(QQuickItem *canvas, const QString &path, int ma
 void ReplayController::finishFrame(const QString &path, const QImage &image)
 {
     QSaveFile output(path);
-    if (!image.isNull() && output.open(QIODevice::WriteOnly) && image.save(&output, "PNG") && output.commit())
+    const bool success = !image.isNull() && output.open(QIODevice::WriteOnly) && image.save(&output, "PNG") && output.commit();
+    if (success)
         status_ = tr("已导出 PNG：%1").arg(QDir::toNativeSeparators(path));
     else
         status_ = tr("无法导出 PNG：%1").arg(QDir::toNativeSeparators(path));
     captureMatte_ = 0;
     capturing_ = false;
     emit stateChanged();
+    emit frameExported(success);
 }
 
 void ReplayController::refreshLayoutCues()

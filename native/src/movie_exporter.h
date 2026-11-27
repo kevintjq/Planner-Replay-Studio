@@ -47,10 +47,12 @@ public:
     Q_INVOKABLE void start(const QUrl &destination, QQuickItem *canvas, double begin, double end,
                            double speed, int audioIndex);
     Q_INVOKABLE void cancel();
+    void startStill(const QUrl &destination, QQuickItem *canvas, double time);
 
 signals:
     void changed();
     void framesChanged();
+    void finished(bool success, const QString &message);
 
 private:
     struct Decoder;
@@ -80,6 +82,6 @@ private:
     QByteArray diagnostic_;
     double begin_ = 0., speed_ = 1., previous_ = 0., audioOrigin_ = 0.;
     qint64 index_ = 0, count_ = 0;
-    bool exporting_ = false, awaitingWrite_ = false;
+    bool exporting_ = false, awaitingWrite_ = false, still_ = false;
     quint64 revision_ = 0;
 };

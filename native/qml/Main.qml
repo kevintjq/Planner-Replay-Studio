@@ -618,95 +618,14 @@ ApplicationWindow {
                 radius: 8
                 clip: true
 
-                Rectangle {
+                ReplayCanvas {
                     id: canvas
                     anchors.fill: parent
                     anchors.margins: 1
-                    color: replay.captureMatte === 1 ? "black" : replay.captureMatte === 2 ? "white"
-                         : replay.transparentCanvas ? "transparent" : "#08101a"
-                    clip: true
-
-                    CloudView {
-                        id: cloud
-                        z: 1
-                        visible: !window.videoOnly
-                        transparent: replay.transparentCanvas || (!window.cloudOnly
-                                     && (window.activeLayout.backdropId.length > 0 || window.activeLayout.progress === 0))
-                        readonly property rect geometry: {
-                            if (window.cloudOnly)
-                                return Qt.rect(0, 0, canvas.width, canvas.height)
-                            const settings = replay.mainView
-                            const w = canvas.width * settings.width
-                            const h = canvas.height * settings.width
-                            const base = Qt.rect((canvas.width - w) * settings.x, (canvas.height - h) * settings.y, w, h)
-                            return replay.layerMotions.length
-                                ? replay.animatedLayer("main", "", replay.position, base, Qt.size(canvas.width, canvas.height))
-                                : base
-                        }
-                        x: geometry.x
-                        y: geometry.y
-                        width: geometry.width
-                        height: geometry.height
-                        controller: replay
-                        camera: replay.cameraIndex
-                        cameraZoom: replay.mainView.zoom
-                        MouseArea {
-                            anchors.fill: parent
-                            acceptedButtons: Qt.LeftButton | Qt.RightButton
-                            property real lastX: 0
-                            property real lastY: 0
-                            onPressed: function(mouse) { lastX = mouse.x; lastY = mouse.y }
-                            onPositionChanged: function(mouse) {
-                                if (!pressed) return
-                                if (pressedButtons & Qt.RightButton)
-                                    cloud.pan(mouse.x - lastX, mouse.y - lastY)
-                                else
-                                    cloud.orbit(mouse.x - lastX, mouse.y - lastY)
-                                lastX = mouse.x; lastY = mouse.y
-                            }
-                            onWheel: function(wheel) {
-                                cloud.zoom(wheel.angleDelta.y / 120)
-                                wheel.accepted = true
-                            }
-                        }
-                    }
-
-                    CloudInsets {
-                        z: 2
-                        anchors.fill: parent
-                        controller: replay
-                        pointSize: cloud.pointSize
-                        allowed: !window.videoOnly && !window.cloudOnly
-                        onSelected: id => insetEditor.selectedId = id
-                    }
-                    Repeater {
-                        model: replay.videoLayers.length
-                        delegate: FlightClip {
-                            required property int index
-                            controller: replay
-                            clipIndex: index
-                            footage: replay.videoLayers[index]
-                            layout: window.activeLayout
-                            videoOnly: window.videoOnly
-                            cloudOnly: window.cloudOnly
-                            exporting: movie.exporting
-                            exportFrame: movie.frames[index] ?? null
-                        }
-                    }
-
-                    SceneOverlays {
-                        z: 3
-                        showText: !window.videoOnly && !window.cloudOnly
-                        anchors.fill: parent
-                        controller: replay
-                        onSelected: (id) => sceneLayerEditor.selectedId = id
-                    }
-                    SpeedGauge {
-                        z: 4
-                        controller: replay
-                        allowed: !window.videoOnly && !window.cloudOnly
-                    }
-
+                    controller: replay
+                    exporter: movie
+                    onInsetSelected: id => insetEditor.selectedId = id
+                    onSceneSelected: id => sceneLayerEditor.selectedId = id
                 }
 
                 Rectangle {

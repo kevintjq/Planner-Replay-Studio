@@ -3,6 +3,7 @@ import QtQuick
 Item {
     id: scene
     required property var controller
+    property bool interactive: true
     property bool showText: true
     signal selected(string id)
 
@@ -46,7 +47,7 @@ Item {
             Image {
                 id: image
                 source: layer.picture ? layer.modelData.url : ""
-                asynchronous: true
+                asynchronous: scene.interactive
                 width: scene.width * layer.modelData.width
                 height: sourceSize.width > 0 ? Math.min(scene.height, width * sourceSize.height / sourceSize.width) : 0
                 fillMode: Image.PreserveAspectFit
@@ -73,7 +74,7 @@ Item {
 
             MouseArea {
                 anchors.fill: parent
-                enabled: !scene.controller.loading
+                enabled: scene.interactive && !scene.controller.loading
                 cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
                 property point origin
                 onPressed: (mouse) => {

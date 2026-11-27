@@ -61,3 +61,14 @@
 需要 CMake 3.22、支持 C++20 的编译器、Qt 6.8 或更高版本（含 Qt Multimedia），以及 BZip2、LZ4、yaml-cpp 和含 tracking、videoio 的 OpenCV 4.8 或更高版本。在 Windows 上可通过 vcpkg 的 `x64-windows-static-md` 安装压缩库。生成安装包还需要 NSIS。构建和安装测试命令见 [Windows 构建流程](../.github/workflows/native-windows.yml)。
 
 `PlannerReplayCli inspect recording.bag` 输出 JSON，包含话题类型、消息数量、录制时间范围和 TF 坐标系关系。Windows 安装后可在安装目录的 `app` 文件夹运行。
+
+命令行可复用桌面版合成设置。导出时会打开渲染窗口，完成后自动退出。
+
+```sh
+PlannerReplayCli export project.slamfpv --start 1.5 --output still.png
+PlannerReplayCli export project.slamfpv --start 1.5 --seconds 4 --output flight.mp4
+PlannerReplayCli bag recording.bag --start 0 --seconds 3 --output preview.mp4
+PlannerReplayCli demo --start 0.5 --output demo.png
+```
+
+MP4 的播放速度和音轨使用项目设置，时间参数以回放秒数为单位。省略 `--seconds` 时导出到录制结束。

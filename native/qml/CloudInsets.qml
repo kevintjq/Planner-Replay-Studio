@@ -6,6 +6,7 @@ Item {
     required property var controller
     required property real pointSize
     required property bool allowed
+    property bool interactive: true
     signal selected(string id)
 
     Repeater {
@@ -45,6 +46,7 @@ Item {
 
             MouseArea {
                 id: move
+                enabled: insets.interactive
                 anchors.fill: parent
                 cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
                 property point start

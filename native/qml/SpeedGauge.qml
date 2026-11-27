@@ -5,6 +5,7 @@ Item {
     id: gauge
     required property var controller
     required property bool allowed
+    property bool interactive: true
     readonly property var settings: controller.speedGauge
     readonly property real horizontal: Math.max(0, parent.width - width)
     readonly property real vertical: Math.max(0, parent.height - height)
@@ -73,6 +74,7 @@ Item {
         font.pixelSize: Math.max(8, parent.width * .10)
     }
     MouseArea {
+        enabled: gauge.interactive
         anchors.fill: parent
         cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
         property point origin

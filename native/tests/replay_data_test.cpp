@@ -66,6 +66,43 @@ QByteArray transform(const QByteArray &child, double x)
     return result;
 }
 
+QByteArray number64(double value)
+{
+    char bytes[8];
+    qToLittleEndian(std::bit_cast<quint64>(value), bytes);
+    return QByteArray(bytes, sizeof(bytes));
+}
+
+QByteArray spline(quint32 seconds)
+{
+    QByteArray data = u32(1) + QByteArray(8, 0) + stamp(seconds) + u32(4);
+    for (double value : {0., 0., 1., 1.})
+        data += number64(value);
+    data += u32(2);
+    for (double value : {1., 2., 3., 9., 2., 3.})
+        data += number64(value);
+    return data + u32(0) + number64(0.);
+}
+
+QByteArray cameraInfo(quint32 seconds)
+{
+    QByteArray result = u32(0) + stamp(seconds) + blob("optical") + u32(480) + u32(640) + blob("plumb_bob") + u32(0);
+    for (const double coefficient : {320., 0., 320., 0., 240., 240., 0., 0., 1.})
+        result += number64(coefficient);
+    return result + QByteArray((9+12)*8 + 2*4 + 4*4 + 1, 0);
+}
+
+QByteArray marker(quint32 seconds, quint32 id, quint32 type, quint32 action, quint32 lifetime = 0)
+{
+    QByteArray data = u32(0) + stamp(seconds) + blob("map") + blob("native");
+    data += u32(id) + u32(type) + u32(action);
+    for (double value : {4., 2., 3., 0., 0., 0., 1., 2., 2., 2.})
+        data += number64(value);
+    for (float value : {1.f, .4f, 0.f, .5f})
+        data += u32(std::bit_cast<quint32>(value));
+    return data + stamp(lifetime) + QByteArray(1, 0) + QByteArray(4*4+1, 0);
+}
+
 void require(bool good, const char *message)
 {
     if (!good)
@@ -127,6 +164,7 @@ int main(int argc, char **argv)
                 "Timeline chose the wrong PointCloud2 frame.");
         replay::LoadOptions configured;
         configured.showMainCloud = false;
+        configured.showPlan = false;
         configured.topicLayout.displays = {
             {"one", "/secondary", "cloud", "Second sensor", QColor("#0a141e")},
             {"two", "/secondary", "cloud", "Disabled sensor", QColor("#ffffff"), false},
@@ -162,6 +200,55 @@ int main(int argc, char **argv)
         try { replay::loadBag(file.fileName(), {}, [] { return true; }); }
         catch (const std::runtime_error &) { cancelled = true; }
         require(cancelled, "Cancelled bag import did not stop.");
+
+        QFile plannerFile(dir.filePath("planners.bag"));
+        require(plannerFile.open(QIODevice::WriteOnly), "Could not create the EGO/SUPER fixture.");
+        const auto splineConnection = field("conn", u32(1));
+        const auto corridorConnection = field("conn", u32(2));
+        const auto goalConnection = field("conn", u32(3));
+        const auto cameraConnection = field("conn", u32(4));
+        const auto plannerTf = field("conn", u32(5));
+        const auto plannerMessages =
+              record(2, connection + field("time", stamp(1)), cloud(1, 0.f))
+            + record(2, splineConnection + field("time", stamp(1)), spline(1))
+            + record(2, cameraConnection + field("time", stamp(1)), cameraInfo(1))
+            + record(2, plannerTf + field("time", stamp(1)), u32(1) + transform("optical", 2.))
+            + record(2, corridorConnection + field("time", stamp(1)), u32(2) + marker(1, 5, 1, 0) + marker(1, 6, 1, 0))
+            + record(2, goalConnection + field("time", stamp(1)), marker(1, 1, 2, 0, 1))
+            + record(2, corridorConnection + field("time", stamp(2)), u32(1) + marker(2, 0, 1, 3))
+            + record(2, connection + field("time", stamp(3)), cloud(3, 9.f));
+        const auto plannerFixture = QByteArray("#ROSBAG V2.0\n")
+            + record(5, field("compression", "none") + field("size", u32(quint32(plannerMessages.size()))), plannerMessages)
+            + record(7, connection + field("topic", "/cloud_registered"), field("type", "sensor_msgs/PointCloud2"))
+            + record(7, splineConnection + field("topic", "/drone/planning/bspline"), field("type", "traj_utils/Bspline"))
+            + record(7, corridorConnection + field("topic", "/drone/visualization/exp_sfc"), field("type", "visualization_msgs/MarkerArray"))
+            + record(7, goalConnection + field("topic", "/drone/visualization/goal"), field("type", "visualization_msgs/Marker"))
+            + record(7, cameraConnection + field("topic", "/camera/color/camera_info"), field("type", "sensor_msgs/CameraInfo"))
+            + record(7, plannerTf + field("topic", "/tf_static"), field("type", "tf2_msgs/TFMessage"));
+        require(plannerFile.write(plannerFixture) == plannerFixture.size(), "Could not write the planner fixture.");
+        plannerFile.close();
+        const auto planner = replay::loadBag(plannerFile.fileName());
+        require(planner->topicOverlays.size() == 5 && planner->planningEvents.size() == 2,
+                "Native EGO/SUPER topics or planning events were not detected.");
+        const auto &planned = planner->topicOverlays[0];
+        require(planned.display.plannerRole == "plan" && planned.points.size() > 16 &&
+                planned.points.front().x == 1.f && planned.points.back().x == 9.f,
+                "EGO spline was not evaluated at both endpoints.");
+        const auto &corridor1 = planner->topicOverlays[1];
+        const auto &corridor2 = planner->topicOverlays[4];
+        const auto &goal = planner->topicOverlays[2];
+        require(corridor1.points.size() == 24 && corridor2.points.size() == 24 &&
+                corridor1.sampleAt(1'500'000'000) && corridor2.sampleAt(1'500'000'000) &&
+                !corridor1.sampleAt(2'000'000'000) && !corridor2.sampleAt(2'000'000'000) &&
+                corridor1.sampleAt(1'500'000'000), "Marker identities or delete-all rewind are incorrect.");
+        require(goal.sampleAt(1'500'000'000) && !goal.sampleAt(2'000'000'000),
+                "Marker lifetime was not honored.");
+
+        const auto &camera = planner->topicOverlays[3];
+        const auto cameraPose = planner->transforms->lookup("map", "optical", 1'500'000'000);
+        require(camera.display.plannerRole == "camera" && camera.points.size() == 16 &&
+                camera.samples.front().frameLocked && std::abs(camera.points[1].z - .85f) < .001f &&
+                cameraPose && cameraPose->translation.x() == 2.f, "CameraInfo frustum or TF frame-lock is incorrect.");
 
         for (const auto &path : app.arguments().mid(1)) {
             const auto real = replay::loadBag(path);

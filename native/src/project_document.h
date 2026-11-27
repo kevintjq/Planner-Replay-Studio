@@ -24,6 +24,10 @@ public:
     const QJsonObject &json() const { return root_; }
     QJsonObject values() const;
     void setValue(const QString &key, const QString &value);
+    bool isLayerEnabled(const QString &layer) const;
+    void setLayerEnabled(const QString &layer, bool isEnabled);
+    bool comparePlans() const;
+    void setComparePlans(bool compare);
     std::vector<VideoClip> videos() const;
     QString cameraKind() const;
     void setCameraKind(const QString &kind);

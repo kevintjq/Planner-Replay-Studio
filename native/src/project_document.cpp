@@ -133,6 +133,30 @@ QString ProjectDocument::bag() const { return absoluteMedia(root_.value("bag").t
 bool ProjectDocument::isPortable() const { return root_.value("portable").toBool(); }
 QJsonObject ProjectDocument::values() const { return root_.value("values").toObject(); }
 
+bool ProjectDocument::isLayerEnabled(const QString &layer) const
+{
+    return root_.value("enabled").toObject().value(layer).toBool(true);
+}
+
+void ProjectDocument::setLayerEnabled(const QString &layer, bool isEnabled)
+{
+    auto enabled = root_.value("enabled").toObject();
+    enabled.insert(layer, isEnabled);
+    root_.insert("enabled", enabled);
+}
+
+bool ProjectDocument::comparePlans() const
+{
+    return root_.value("composition").toObject().value("compare_plans").toBool(false);
+}
+
+void ProjectDocument::setComparePlans(bool compare)
+{
+    auto composition = root_.value("composition").toObject();
+    composition.insert("compare_plans", compare);
+    root_.insert("composition", composition);
+}
+
 void ProjectDocument::setValue(const QString &key, const QString &value)
 {
     auto settings = values();

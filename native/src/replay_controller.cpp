@@ -334,6 +334,14 @@ void ReplayController::load(const QString &path, const replay::LoadOptions &opti
     auto settings = options;
     if (project) {
         settings.topicLayout = project->topicLayout();
+        const auto values = project->values();
+        settings.planTopic = values.value("plan_topic").toString();
+        settings.corridorTopic = values.value("corridor_topic").toString();
+        settings.goalTopic = values.value("goal_topic").toString();
+        settings.cameraTopic = values.value("camera_topic").toString();
+        settings.planFrame = values.value("plan_frame").toString().trimmed();
+        while (settings.planFrame.startsWith('/'))
+            settings.planFrame.remove(0, 1);
         settings.showMainCloud = project->json().value("composition").toObject().value("show_main_cloud").toBool(true);
     }
     watcher_.setFuture(QtConcurrent::run([this, path, options = std::move(settings), project = std::move(project),
@@ -654,6 +662,54 @@ void ReplayController::removeLayoutCue(double time)
     refreshLayoutCues();
     status_ = tr("已删除布局标记。");
     emit stateChanged();
+}
+
+bool ReplayController::planningLayerEnabled(const QString &role) const
+{
+    return !project_ || project_->isLayerEnabled(role);
+}
+
+QVariantMap ReplayController::planningLayers() const
+{
+    QVariantMap layers;
+    for (const auto &overlay : record_->topicOverlays) {
+        const auto &display = overlay.display;
+        if (!display.plannerRole.isEmpty() && !overlay.samples.empty())
+            layers.insert(display.plannerRole, QVariantMap{{"topic", display.topic},
+                          {"enabled", planningLayerEnabled(display.plannerRole)}});
+    }
+    return layers;
+}
+
+void ReplayController::setPlanningLayerEnabled(const QString &role, bool enabled)
+{
+    if (loading_ || (role != "plan" && role != "corridor" && role != "goal" && role != "camera"))
+        return;
+    auto document = projectSnapshot();
+    document.setLayerEnabled(role, enabled);
+    project_ = std::move(document);
+    emit recordingChanged();
+}
+
+void ReplayController::setComparePlans(bool compare)
+{
+    if (loading_ || compare == comparePlans())
+        return;
+    auto document = projectSnapshot();
+    document.setComparePlans(compare);
+    project_ = std::move(document);
+    emit recordingChanged();
+}
+
+QVariantList ReplayController::planningEvents() const
+{
+    QVariantList events;
+    for (const auto &[stamp, name] : record_->planningEvents) {
+        const double time = double(stamp - record_->frames.front().stamp) / 1.e9;
+        if (time >= 0. && time <= duration())
+            events.append(QVariantMap{{"time", time}, {"label", QString::number(time, 'f', 3) + " s · " + name}});
+    }
+    return events;
 }
 
 QVariantList ReplayController::markers() const

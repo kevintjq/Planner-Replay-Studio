@@ -1,6 +1,7 @@
 #include "cloud_view.h"
 
 #include "camera_presets.h"
+#include "transform_tree.h"
 
 #include <QMatrix4x4>
 #include <QOpenGLBuffer>
@@ -48,7 +49,8 @@ constexpr auto Fragment = R"glsl(
 #version 330 core
 in vec3 ink;
 out vec4 pixel;
-void main() { pixel = vec4(ink, 1.0); }
+uniform float opacity;
+void main() { pixel = vec4(ink * opacity, opacity); }
 )glsl";
 
 using replay::Point;
@@ -66,6 +68,11 @@ public:
                 needsStorage_ = true;
             }
             stamp_ = recording_->stampAt(view->controller_->position());
+            plan_ = view->controller_->planningLayerEnabled("plan");
+            corridor_ = view->controller_->planningLayerEnabled("corridor");
+            goal_ = view->controller_->planningLayerEnabled("goal");
+            cameraFrustum_ = view->controller_->planningLayerEnabled("camera");
+            comparePlans_ = view->controller_->comparePlans();
         }
         yaw_ = view->yaw_;
         pitch_ = view->pitch_;
@@ -109,7 +116,9 @@ public:
         const auto &frame = recording_->frameAt(stamp_);
         const auto pose = recording_->poseAt(stamp_);
         const auto body = pose ? pose->position : recording_->center;
-        program_.setUniformValue("cameraMatrix", cameraMatrix(size, pose));
+        const auto camera = cameraMatrix(size, pose);
+        program_.setUniformValue("cameraMatrix", camera);
+        program_.setUniformValue("opacity", 1.f);
         program_.setUniformValue("bodyPosition", body);
         program_.setUniformValue("colorRange", std::max(5.f, recording_->radius * .65f));
         program_.setUniformValue("pixelSize", pointSize_);
@@ -122,8 +131,10 @@ public:
             const int from = recording_->replace ? frame.first : 0;
             gl->glDrawArrays(GL_POINTS, from, frame.end - from);
         }
-        drawTopicOverlays(gl);
+        drawTopicOverlays(gl, camera);
         program_.setUniformValue("tfAxes", false);
+        program_.setUniformValue("cameraMatrix", camera);
+        program_.setUniformValue("opacity", 1.f);
 
         if (showPath_ && !recording_->poses.empty()) {
             const auto &poses = recording_->poses;
@@ -172,34 +183,84 @@ private:
         const replay::TopicOverlay::Sample *sample = nullptr;
     };
 
-    void drawTopicOverlays(QOpenGLExtraFunctions *gl)
+    void drawTopicOverlays(QOpenGLExtraFunctions *gl, const QMatrix4x4 &camera)
     {
         for (size_t i = 0; i < recording_->topicOverlays.size(); ++i) {
             const auto &overlay = recording_->topicOverlays[i];
+            const auto &role = overlay.display.plannerRole;
+            if ((role == "plan" && !plan_) || (role == "corridor" && !corridor_) || (role == "goal" && !goal_) ||
+                (role == "camera" && !cameraFrustum_))
+                continue;
             const auto *sample = overlay.sampleAt(stamp_);
             if (!sample || sample->range.first == sample->range.end)
                 continue;
-            auto &gpu = overlays_[i];
-            auto &buffer = gpu.buffer;
-            if (!buffer.isCreated()) {
-                if (!buffer.create())
-                    continue;
-                buffer.setUsagePattern(QOpenGLBuffer::DynamicDraw);
+            if (role == "plan" && comparePlans_ && sample != overlay.samples.data()) {
+                const auto *previous = sample - 1;
+                while (previous != overlay.samples.data() && previous->range.first == previous->range.end)
+                    --previous;
+                if (previous->range.first != previous->range.end)
+                    drawTopicSample(gl, camera, overlay, previous, comparisons_[i], true);
             }
-            bind(buffer);
-            const int count = sample->range.end - sample->range.first;
-            if (gpu.sample != sample) {
-                buffer.allocate(overlay.points.data() + sample->range.first, count * int(sizeof(Point)));
-                gpu.sample = sample;
+            drawTopicSample(gl, camera, overlay, sample, overlays_[i], false);
+        }
+    }
+
+    void drawTopicSample(QOpenGLExtraFunctions *gl, const QMatrix4x4 &camera, const replay::TopicOverlay &overlay,
+                         const replay::TopicOverlay::Sample *sample, OverlayBuffer &gpu, bool comparison)
+    {
+        auto transform = camera;
+        if (sample->frameLocked && sample->frameId != recording_->frameId) {
+            if (!recording_->transforms)
+                return;
+            const auto pose = recording_->transforms->lookup(recording_->frameId, sample->frameId, stamp_);
+            if (!pose)
+                return;
+            transform.translate(pose->translation);
+            transform.rotate(pose->rotation);
+        }
+        program_.setUniformValue("cameraMatrix", transform);
+        auto &buffer = gpu.buffer;
+        if (!buffer.isCreated()) {
+            if (!buffer.create())
+                return;
+            buffer.setUsagePattern(QOpenGLBuffer::DynamicDraw);
+        }
+        bind(buffer);
+        const int count = sample->range.end - sample->range.first;
+        if (gpu.sample != sample) {
+            buffer.allocate(overlay.points.data() + sample->range.first, count * int(sizeof(Point)));
+            gpu.sample = sample;
+        }
+        const auto color = comparison ? QColor("#c5aaed") :
+            (sample->color.isValid() ? sample->color : overlay.display.color);
+        const float opacity = comparison ? .35f : float(color.alphaF());
+        program_.setUniformValue("solid", true);
+        program_.setUniformValue("tfAxes", overlay.display.kind == "tf");
+        program_.setUniformValue("fixedColor", QVector3D(color.redF(), color.greenF(), color.blueF()));
+        program_.setUniformValue("pixelSize", sample->size > 0.f ? sample->size
+                                 : overlay.display.plannerRole == "goal" ? 12.f : overlay.display.kind == "position" ? 8.f : pointSize_);
+        program_.setUniformValue("opacity", opacity);
+        GLenum primitive = overlay.display.kind == "path" ? GL_LINE_STRIP
+            : overlay.display.kind == "tf" ? GL_LINES : GL_POINTS;
+        switch (sample->primitive) {
+        case replay::TopicOverlay::Primitive::Default: break;
+        case replay::TopicOverlay::Primitive::Points: primitive = GL_POINTS; break;
+        case replay::TopicOverlay::Primitive::Lines: primitive = GL_LINES; break;
+        case replay::TopicOverlay::Primitive::LineStrip: primitive = GL_LINE_STRIP; break;
+        case replay::TopicOverlay::Primitive::Triangles: primitive = GL_TRIANGLES; break;
+        }
+        if (opacity > 0.f) {
+            const bool blend = opacity < 1.f;
+            if (blend) {
+                gl->glEnable(GL_BLEND);
+                gl->glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+                gl->glDepthMask(GL_FALSE);
             }
-            const auto &color = overlay.display.color;
-            program_.setUniformValue("solid", true);
-            program_.setUniformValue("tfAxes", overlay.display.kind == "tf");
-            program_.setUniformValue("fixedColor", QVector3D(color.redF(), color.greenF(), color.blueF()));
-            program_.setUniformValue("pixelSize", overlay.display.kind == "position" ? 8.f : pointSize_);
-            const GLenum primitive = overlay.display.kind == "path" ? GL_LINE_STRIP
-                : overlay.display.kind == "tf" ? GL_LINES : GL_POINTS;
             gl->glDrawArrays(primitive, 0, count);
+            if (blend) {
+                gl->glDepthMask(GL_TRUE);
+                gl->glDisable(GL_BLEND);
+            }
         }
     }
 
@@ -207,6 +268,8 @@ private:
     {
         overlays_.clear();
         overlays_.resize(recording_->topicOverlays.size());
+        comparisons_.clear();
+        comparisons_.resize(recording_->topicOverlays.size());
         cloud_.bind();
         cloud_.setUsagePattern(QOpenGLBuffer::DynamicDraw);
         cloud_.allocate(recording_->showMainCloud ? int(recording_->points.size() * sizeof(Point)) : 0);
@@ -298,9 +361,10 @@ private:
     QOpenGLShaderProgram program_;
     QOpenGLVertexArrayObject vao_;
     QOpenGLBuffer cloud_, path_, marker_;
-    std::vector<OverlayBuffer> overlays_;
+    std::vector<OverlayBuffer> overlays_, comparisons_;
     bool initialized_ = false, ready_ = false, needsStorage_ = false, showPath_ = true, transparent_ = false;
     int uploaded_ = 0, camera_ = 0;
+    bool plan_ = true, corridor_ = true, goal_ = true, cameraFrustum_ = true, comparePlans_ = false;
     qint64 stamp_ = 0;
     float yaw_ = 0, pitch_ = 0, scale_ = 1, pointSize_ = 2, panX_ = 0, panY_ = 0;
 };

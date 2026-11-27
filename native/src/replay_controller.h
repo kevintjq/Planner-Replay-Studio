@@ -38,6 +38,9 @@ class ReplayController : public QObject {
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY editHistoryChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY editHistoryChanged)
     Q_PROPERTY(QVariantList markers READ markers NOTIFY markersChanged)
+    Q_PROPERTY(QVariantList planningEvents READ planningEvents NOTIFY recordingChanged)
+    Q_PROPERTY(bool comparePlans READ comparePlans NOTIFY recordingChanged)
+    Q_PROPERTY(QVariantMap planningLayers READ planningLayers NOTIFY recordingChanged)
     Q_PROPERTY(QStringList cameraLabels READ cameraLabels CONSTANT)
     Q_PROPERTY(int cameraIndex READ cameraIndex NOTIFY cameraChanged)
     Q_PROPERTY(bool transparentCanvas READ transparentCanvas NOTIFY transparentCanvasChanged)
@@ -73,6 +76,12 @@ public:
     bool referencesFile(const QString &path) const;
     const QVariantList &videoLayers() const { return videoLayers_; }
     QVariantList markers() const;
+    QVariantList planningEvents() const;
+    QVariantMap planningLayers() const;
+    bool comparePlans() const { return project_ && project_->comparePlans(); }
+    Q_INVOKABLE void setComparePlans(bool compare);
+    bool planningLayerEnabled(const QString &role) const;
+    Q_INVOKABLE void setPlanningLayerEnabled(const QString &role, bool isEnabled);
     QVariantList layoutCues() const { return layouts_.toVariantList(); }
     QVariantMap activeLayout() const;
     QStringList cameraLabels() const;

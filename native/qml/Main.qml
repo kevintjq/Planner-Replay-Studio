@@ -258,6 +258,42 @@ ApplicationWindow {
                         }
                     }
 
+                    Repeater {
+                        model: [
+                            {key: "plan", label: "规划轨迹"},
+                            {key: "corridor", label: "安全走廊"},
+                            {key: "goal", label: "目标点"},
+                            {key: "camera", label: "相机视场"}
+                        ]
+                        delegate: CheckBox {
+                            required property var modelData
+                            readonly property var plannerLayer: replay.planningLayers[modelData.key]
+                            visible: plannerLayer !== undefined
+                            checked: plannerLayer?.enabled ?? false
+                            text: modelData.label
+                            onClicked: replay.setPlanningLayerEnabled(modelData.key, checked)
+                            ToolTip.visible: hovered
+                            ToolTip.text: plannerLayer?.topic ?? ""
+                        }
+                    }
+                    CheckBox {
+                        visible: replay.planningLayers.plan !== undefined
+                        checked: replay.comparePlans
+                        text: "对比上一条规划"
+                        onClicked: replay.setComparePlans(checked)
+                    }
+                    ComboBox {
+                        Layout.fillWidth: true
+                        visible: count > 0
+                        model: replay.planningEvents
+                        textRole: "label"
+                        displayText: currentIndex < 0 ? "跳转到规划事件" : currentText
+                        onActivated: index => {
+                            replay.pause()
+                            replay.seek(replay.planningEvents[index].time)
+                        }
+                    }
+
                     PanelTitle { text: "实拍视频"; Layout.topMargin: 8 }
                     Button {
                         Layout.fillWidth: true

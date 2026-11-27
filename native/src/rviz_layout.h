@@ -14,6 +14,7 @@ struct TopicDisplay {
     QColor color;
     bool enabled = true;
     bool mainOnly = false;
+    QString plannerRole;
 
     static TopicDisplay fromJson(const QJsonObject &value);
     QJsonObject toJson() const;

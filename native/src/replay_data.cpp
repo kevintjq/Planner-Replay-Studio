@@ -242,6 +242,16 @@ void readCloud(Recording &record, QByteArrayView data, qint64 recorded, const Ca
     record.frames.push_back({stamp, begin, int(record.points.size())});
 }
 
+bool isSpline(const QByteArray &type)
+{
+    return type == "ego_planner/Bspline" || type == "traj_utils/Bspline" || type == "plan_manage/Bspline";
+}
+
+bool isMarker(const QByteArray &type)
+{
+    return type == "visualization_msgs/Marker" || type == "visualization_msgs/MarkerArray";
+}
+
 bool supportsTopic(const QString &kind, const QByteArray &type)
 {
     if (kind == "cloud")
@@ -249,7 +259,11 @@ bool supportsTopic(const QString &kind, const QByteArray &type)
     if (kind == "laser")
         return type == "sensor_msgs/LaserScan";
     if (kind == "path")
-        return type == "nav_msgs/Path";
+        return type == "nav_msgs/Path" || isSpline(type);
+    if (kind == "marker")
+        return isMarker(type);
+    if (kind == "camera-info")
+        return type == "sensor_msgs/CameraInfo";
     if (kind == "tf")
         return type == "tf2_msgs/TFMessage" || type == "tf/tfMessage";
     if (kind == "position")
@@ -316,6 +330,253 @@ void readOverlay(TopicOverlay &overlay, const QByteArray &type, QByteArrayView d
 
     overlay.samples.push_back({{header.stamp == 0 ? recorded : header.stamp,
                                 start, int(overlay.points.size())}, header.frame});
+}
+
+struct MarkerMessage {
+    HeaderMessage header;
+    QString nameSpace;
+    quint32 id, type, action;
+    RigidTransform pose;
+    Point scale;
+    QColor color;
+    qint64 lifetime;
+    bool locked;
+    std::vector<Point> points;
+};
+
+MarkerMessage readMarker(Bytes &message)
+{
+    const auto header = messageHeader(message);
+    const auto nameSpace = message.string();
+    const auto id = message.u32(), type = message.u32(), action = message.u32();
+    const auto position = readPosition(message);
+    const float x = float(message.real()), y = float(message.real()), z = float(message.real()), w = float(message.real());
+    const auto rotation = QQuaternion(w, x, y, z).normalized();
+    const auto scale = readPosition(message);
+    float rgba[4];
+    for (auto &value : rgba) {
+        const float channel = message.float32();
+        value = std::isfinite(channel) ? std::clamp(channel, 0.f, 1.f) : 0.f;
+    }
+    const auto lifeSeconds = qint32(message.u32());
+    const auto lifeNanos = qint32(message.u32());
+    const bool locked = message.byte() != 0;
+    const auto count = message.u32();
+    if (count > 1'000'000)
+        fail("Marker 包含过多顶点。");
+    std::vector<Point> points;
+    points.reserve(count);
+    for (quint32 i = 0; i < count; ++i)
+        points.push_back(readPosition(message));
+    const auto colors = message.u32();
+    message.take(qsizetype(colors) * 16);
+    message.blob(); // text
+    message.blob(); // mesh resource
+    message.byte(); // embedded materials
+    return {header, nameSpace, id, type, action,
+            {{position.x, position.y, position.z}, rotation.isNull() ? QQuaternion() : rotation}, scale,
+            QColor::fromRgbF(rgba[0], rgba[1], rgba[2], rgba[3]),
+            std::max(qint64(0), qint64(lifeSeconds) * Second + lifeNanos), locked, std::move(points)};
+}
+
+using Primitive = TopicOverlay::Primitive;
+
+std::pair<Primitive, std::vector<Point>> markerGeometry(const MarkerMessage &item, const QString &role)
+{
+    const auto &points = item.points;
+    if (role == "goal") {
+        if ((item.type == 0 || item.type == 4 || item.type == 5) && !points.empty())
+            return {Primitive::Points, {points.back()}};
+        if ((item.type == 7 || item.type == 8) && !points.empty())
+            return {Primitive::Points, points};
+        if (item.type == 0 || item.type == 1 || item.type == 2)
+            return {Primitive::Points, {{0.f, 0.f, 0.f}}};
+    }
+
+    switch (item.type) {
+    case 0:
+        if (points.empty())
+            return {Primitive::Lines, {{0.f, 0.f, 0.f}, {item.scale.x, 0.f, 0.f}}};
+        return {Primitive::Lines, points};
+    case 1: {
+        const float x = item.scale.x / 2.f, y = item.scale.y / 2.f, z = item.scale.z / 2.f;
+        const std::array<Point, 8> box{{{-x,-y,-z},{x,-y,-z},{x,y,-z},{-x,y,-z},
+                                      {-x,-y,z},{x,-y,z},{x,y,z},{-x,y,z}}};
+        constexpr std::array<int, 24> edges{0,1,1,2,2,3,3,0,4,5,5,6,6,7,7,4,0,4,1,5,2,6,3,7};
+        std::vector<Point> outline;
+        for (const auto i : edges)
+            outline.push_back(box[size_t(i)]);
+        return {Primitive::Lines, std::move(outline)};
+    }
+    case 2:
+    case 3: return {Primitive::Points, {{0.f, 0.f, 0.f}}};
+    case 4: return {Primitive::LineStrip, points};
+    case 5: return {Primitive::Lines, points};
+    case 6:
+    case 7:
+    case 8: return {Primitive::Points, points};
+    case 11: return {Primitive::Triangles, points};
+    default: return {Primitive::Default, {}};
+    }
+}
+
+void appendMarker(TopicOverlay &overlay, const MarkerMessage &item, qint64 stamp, quint64 order)
+{
+    const int start = int(overlay.points.size());
+    auto mode = Primitive::Default;
+    if (item.action == 0) {
+        const auto [primitive, points] = markerGeometry(item, overlay.display.plannerRole);
+        mode = primitive;
+        for (const auto &point : points) {
+            const auto located = item.pose.map({point.x, point.y, point.z});
+            appendPoint(overlay.points, {located.x(), located.y(), located.z()});
+        }
+    }
+    const auto expiry = item.lifetime > 0 && stamp <= std::numeric_limits<qint64>::max() - item.lifetime
+        ? stamp + item.lifetime : qint64(0);
+    QColor color = item.color;
+    if (!color.alpha() && !overlay.display.plannerRole.isEmpty())
+        color = overlay.display.color;
+    const float size = overlay.display.plannerRole == "goal" ? 12.f : 6.f;
+    overlay.samples.push_back({{stamp, start, int(overlay.points.size())}, item.header.frame,
+                               mode, color, expiry, order, item.locked, size});
+}
+
+void readSpline(TopicOverlay &overlay, QByteArrayView data, qint64 recorded, const QString &frame)
+{
+    Bytes input(data);
+    const auto degree = input.u32();
+    input.take(8); // trajectory ID
+    auto stamp = input.time();
+    const auto knotCount = input.u32();
+    if (knotCount < 3 || knotCount > 1'000'000)
+        fail("EGO B-spline 节点数无效。");
+    std::vector<double> knots(knotCount);
+    for (auto &knot : knots)
+        knot = input.real();
+    const auto count = input.u32();
+    if (degree < 1 || degree > 9 || degree >= count || count != knotCount - degree - 1 ||
+        !std::all_of(knots.begin(), knots.end(), [](double value) { return std::isfinite(value); }) ||
+        !std::is_sorted(knots.begin(), knots.end()) || knots[count] <= knots[degree])
+        fail("EGO B-spline 参数无效。");
+    std::vector<QVector3D> controlPoints;
+    controlPoints.reserve(count);
+    for (quint32 i = 0; i < count; ++i) {
+        const auto p = readPosition(input);
+        if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z))
+            fail("EGO B-spline 控制点无效。");
+        controlPoints.emplace_back(p.x, p.y, p.z);
+    }
+
+    const int first = int(overlay.points.size());
+    const double begin = knots[degree], end = knots[count];
+    if (!std::isfinite(end - begin))
+        fail("EGO B-spline 时间区间无效。");
+    const auto sampleCount = int(std::clamp(std::ceil((end-begin)/.03), 16., 800.));
+    for (int i = 0; i <= sampleCount; ++i) {
+        const double u = std::lerp(begin, end, double(i)/sampleCount);
+        const auto j = quint32(std::upper_bound(knots.begin(), knots.end(), u) - knots.begin() - 1);
+        const auto span = std::clamp(j, degree, count-1);
+        std::array<QVector3D, 10> values;
+        for (quint32 k = 0; k <= degree; ++k)
+            values[k] = controlPoints[span-degree+k];
+        for (quint32 r = 1; r <= degree; ++r) {
+            for (quint32 k = degree; k >= r; --k) {
+                const auto knot = span-degree+k;
+                const double width = knots[knot+degree-r+1] - knots[knot];
+                const float fraction = width > 0. ? float((u-knots[knot])/width) : 0.f;
+                values[k] = values[k-1]*(1.f-fraction) + values[k]*fraction;
+            }
+        }
+        const auto point = values[degree];
+        appendPoint(overlay.points, {point.x(), point.y(), point.z()});
+    }
+    overlay.samples.push_back({{stamp ? stamp : recorded, first, int(overlay.points.size())}, frame,
+                               Primitive::LineStrip});
+}
+
+void readCamera(TopicOverlay &overlay, QByteArrayView data, qint64 recorded)
+{
+    Bytes input(data);
+    const auto header = messageHeader(input);
+    const auto height = input.u32();
+    const auto width = input.u32();
+    input.blob(); // distortion model
+    const auto distortion = input.u32();
+    input.take(qsizetype(distortion) * 8);
+    const double fx = input.real();
+    input.real();
+    const double cx = input.real();
+    input.real();
+    const double fy = input.real();
+    const double cy = input.real();
+    if (!height || !width || !std::isfinite(fx) || !std::isfinite(fy) ||
+        !std::isfinite(cx) || !std::isfinite(cy) || fx <= 0. || fy <= 0.)
+        fail("CameraInfo 内参无效。");
+
+    constexpr auto distance = .85;
+    const float x0 = float(-cx / fx * distance), x1 = float((width - cx) / fx * distance);
+    const float y0 = float(-cy / fy * distance), y1 = float((height - cy) / fy * distance);
+    const std::array<Point, 4> corners{{{x0,y0,distance}, {x1,y0,distance}, {x1,y1,distance}, {x0,y1,distance}}};
+    const int first = int(overlay.points.size());
+    for (size_t i = 0; i < corners.size(); ++i) {
+        appendPoint(overlay.points, {0.f, 0.f, 0.f});
+        appendPoint(overlay.points, corners[i]);
+        appendPoint(overlay.points, corners[i]);
+        appendPoint(overlay.points, corners[(i+1)%corners.size()]);
+    }
+    overlay.samples.push_back({{header.stamp ? header.stamp : recorded, first, int(overlay.points.size())},
+                               header.frame, Primitive::Lines, {}, 0, 0, true});
+}
+
+QString selectPlannerTopic(const std::map<quint32, Connection> &connections, const QString &role, const QString &selected)
+{
+    if (!selected.isEmpty() && selected != QStringLiteral("自动识别"))
+        return selected;
+
+    const auto ending = [](const QString &topic, const QString &name) {
+        return topic == name || topic.endsWith("/" + name);
+    };
+    const auto containsAny = [](const QString &topic, std::initializer_list<const char *> words) {
+        return std::any_of(words.begin(), words.end(), [&](const char *word) { return topic.contains(word); });
+    };
+    const auto score = [&](const Connection &entry) {
+        const auto topic = entry.topic.toLower();
+        const auto marker = isMarker(entry.type);
+        const auto path = entry.type == "nav_msgs/Path";
+        const auto spline = isSpline(entry.type);
+        if (role == "camera") {
+            if (entry.type == "sensor_msgs/CameraInfo")
+                return topic.contains("color") ? 0 : 1;
+        } else if (role == "corridor") {
+            if (marker && ending(topic, "visualization/exp_sfc")) return 0;
+            if (marker && containsAny(topic, {"corridor", "sfc", "polytope"})) return 1;
+        } else if (role == "goal") {
+            if (!(marker || supportsTopic("position", entry.type))) return 100;
+            if (ending(topic, "visualization/goal")) return 0;
+            if (ending(topic, "goal_point") || ending(topic, "goal") || ending(topic, "goal_pose")) return 1;
+        } else if (marker || path || spline) {
+            if (ending(topic, "visualization/exp_traj")) return 0;
+            if (ending(topic, "visualization/committed_traj")) return 1;
+            if (spline && ending(topic, "planning/bspline")) return 2;
+            if (spline && !topic.contains("broadcast")) return 3;
+            if (ending(topic, "optimal_list")) return 4;
+            if (!containsAny(topic, {"actual", "odom", "history", "slam", "corridor", "sfc", "polytope"}) &&
+                containsAny(topic, {"traj", "plan", "path"})) return 5;
+        }
+        return 100;
+    };
+
+    QString result;
+    int best = 100;
+    for (const auto &[id, entry] : connections) {
+        const int rank = score(entry);
+        if (rank < best || (rank == best && best < 100 && entry.topic < result)) {
+            best = rank;
+            result = entry.topic;
+        }
+    }
+    return result;
 }
 
 struct RecordedTransform {
@@ -451,7 +712,18 @@ const TopicOverlay::Sample *TopicOverlay::sampleAt(qint64 stamp) const
 {
     const auto next = std::upper_bound(samples.begin(), samples.end(), stamp,
         [](qint64 time, const Sample &sample) { return time < sample.range.stamp; });
-    return next == samples.begin() ? nullptr : &*std::prev(next);
+    if (next == samples.begin())
+        return nullptr;
+    const auto &sample = *std::prev(next);
+    if (sample.expires > 0 && stamp >= sample.expires)
+        return nullptr;
+    if (clears) {
+        const auto clear = std::upper_bound(clears->begin(), clears->end(),
+                                           std::pair(stamp, std::numeric_limits<quint64>::max()));
+        if (clear != clears->begin() && *std::prev(clear) > std::pair(sample.range.stamp, sample.order))
+            return nullptr;
+    }
+    return &sample;
 }
 
 qint64 Recording::stampAt(double seconds) const
@@ -557,7 +829,32 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
     record->replace = options.mapMode ? *options.mapMode == MapMode::Replace : plannerMap(record->cloudTopic);
 
     QHash<QString, std::vector<size_t>> overlayIndices;
-    for (const auto &display : options.topicLayout.displays) {
+    auto displays = options.topicLayout.displays;
+    const auto addPlannerDisplay = [&](const QString &role, const QString &selected, const QString &name, const QColor &color) {
+        const auto topic = selectPlannerTopic(connections, role, selected);
+        const auto connection = std::find_if(connections.begin(), connections.end(), [&](const auto &entry) {
+            return entry.second.topic == topic;
+        });
+        if (connection == connections.end())
+            return;
+        const auto &type = connection->second.type;
+        const QString kind = isMarker(type) ? QStringLiteral("marker") :
+            role == "goal" ? QStringLiteral("position") : role == "camera" ? QStringLiteral("camera-info") : QStringLiteral("path");
+        displays.push_back({role, topic, kind, name, color, true, false, role});
+    };
+    if (options.showPlan)
+        addPlannerDisplay("plan", options.planTopic, QStringLiteral("规划轨迹"), QColor("#64e3a7"));
+    if (options.showCorridor)
+        addPlannerDisplay("corridor", options.corridorTopic, QStringLiteral("安全走廊"), QColor("#9abdff"));
+    if (options.showGoal)
+        addPlannerDisplay("goal", options.goalTopic, QStringLiteral("目标点"), QColor("#ffa664"));
+    if (options.showCamera)
+        addPlannerDisplay("camera", options.cameraTopic, QStringLiteral("相机视场"), QColor("#f395e7"));
+
+    QHash<size_t, QHash<QPair<QString, quint32>, size_t>> markerLayers;
+    QHash<size_t, std::shared_ptr<std::vector<std::pair<qint64, quint64>>>> markerClears;
+    quint64 markerOrder = 0;
+    for (const auto &display : displays) {
         if (!display.enabled)
             continue;
 
@@ -636,6 +933,71 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
                     fail("附加图层的点数超过 1600 万，请减少导入的图层。");
                 continue;
             }
+            if (layers != overlayIndices.cend() && isMarker(connection.type)) {
+                try {
+                    const auto recorded = Bytes(header.value("time")).time();
+                    Bytes message(data);
+                    const auto count = connection.type == "visualization_msgs/MarkerArray" ? message.u32() : 1u;
+                    if (count > 20'000)
+                        fail("MarkerArray 包含过多标记。");
+                    std::vector<MarkerMessage> markers;
+                    markers.reserve(count);
+                    for (quint32 i = 0; i < count; ++i) {
+                        checkCancel(cancel);
+                        markers.push_back(readMarker(message));
+                    }
+                    const bool superGoal = std::any_of(markers.begin(), markers.end(), [](const auto &item) {
+                        return item.nameSpace == "goal_line";
+                    });
+                    for (const auto &item : markers) {
+                        const auto stamp = item.header.stamp ? item.header.stamp : recorded;
+                        ++markerOrder;
+                        for (const auto index : *layers) {
+                            const auto display = record->topicOverlays[index].display;
+                            if (display.kind != "marker")
+                                continue;
+                            auto &clears = markerClears[index];
+                            if (!clears)
+                                clears = std::make_shared<std::vector<std::pair<qint64, quint64>>>();
+                            if (item.action == 3) {
+                                clears->emplace_back(stamp, markerOrder);
+                                continue;
+                            }
+                            if (item.action != 0 && item.action != 2)
+                                continue;
+                            if (superGoal && display.plannerRole == "goal" && item.action == 0 &&
+                                (item.nameSpace != "goal" || item.type != 2))
+                                continue;
+                            auto &byMarker = markerLayers[index];
+                            const auto key = qMakePair(item.nameSpace, item.id);
+                            auto slot = byMarker.find(key);
+                            if (slot == byMarker.end()) {
+                                const auto layer = byMarker.isEmpty() ? index : record->topicOverlays.size();
+                                slot = byMarker.insert(key, layer);
+                                if (layer != index)
+                                    record->topicOverlays.push_back({display});
+                                record->topicOverlays[layer].clears = clears;
+                            }
+                            auto &overlay = record->topicOverlays[slot.value()];
+                            const auto before = overlay.points.size();
+                            appendMarker(overlay, item, stamp, markerOrder);
+                            overlayPoints += overlay.points.size() - before;
+                            if (overlay.points.size() > before && (display.plannerRole == "plan" || display.plannerRole == "goal"))
+                                record->planningEvents.emplace_back(stamp, display.name);
+                            if (overlayPoints > MaxPoints)
+                                break;
+                        }
+                        if (overlayPoints > MaxPoints)
+                            break;
+                    }
+                } catch (const std::runtime_error &) {
+                    checkCancel(cancel);
+                    unreadableTopics.insert(connection.topic);
+                }
+                if (overlayPoints > MaxPoints)
+                    fail("附加图层的点数超过 1600 万，请减少导入的图层。");
+                continue;
+            }
             if (layers != overlayIndices.cend()) {
                 for (const auto index : *layers) {
                     auto &overlay = record->topicOverlays[index];
@@ -643,7 +1005,16 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
                         continue;
                     const auto before = overlay.points.size();
                     try {
-                        readOverlay(overlay, connection.type, data, Bytes(header.value("time")).time(), cancel);
+                        const auto recorded = Bytes(header.value("time")).time();
+                        if (isSpline(connection.type))
+                            readSpline(overlay, data, recorded, options.planFrame);
+                        else if (overlay.display.kind == "camera-info")
+                            readCamera(overlay, data, recorded);
+                        else
+                            readOverlay(overlay, connection.type, data, recorded, cancel);
+                        if (overlay.points.size() > before &&
+                            (overlay.display.plannerRole == "plan" || overlay.display.plannerRole == "goal"))
+                            record->planningEvents.emplace_back(overlay.samples.back().range.stamp, overlay.display.name);
                     } catch (const std::runtime_error &) {
                         checkCancel(cancel);
                         overlay.points.resize(before);
@@ -688,16 +1059,25 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
         record->frameId = odometry.front().parent;
     }
 
+    for (auto &overlay : record->topicOverlays) {
+        if (overlay.display.kind == "path") {
+            for (auto &sample : overlay.samples)
+                if (sample.frameId.isEmpty())
+                    sample.frameId = record->frameId;
+        }
+    }
     transforms.prepare();
     if (!options.topicLayout.fixedFrame.isEmpty() && options.topicLayout.fixedFrame != record->frameId)
         setFixedFrame(*record, options.topicLayout.fixedFrame, transforms, cancel);
 
+    for (auto &events : markerClears)
+        std::sort(events->begin(), events->end());
     bool importedCloud = false;
     for (auto &overlay : record->topicOverlays) {
         checkCancel(cancel);
         const auto unavailable = std::erase_if(overlay.samples, [&](const auto &sample) {
             checkCancel(cancel);
-            if (sample.frameId == record->frameId)
+            if (sample.range.first == sample.range.end || sample.frameLocked || sample.frameId == record->frameId)
                 return false;
             const auto transform = transforms.lookup(record->frameId, sample.frameId, sample.range.stamp);
             if (!transform)
@@ -717,6 +1097,10 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
     record->topicWarnings.append(unreadableTopics.values());
     record->topicWarnings.removeDuplicates();
     record->topicWarnings.sort();
+    record->transforms = std::make_shared<TransformTree>(std::move(transforms));
+    std::sort(record->planningEvents.begin(), record->planningEvents.end());
+    record->planningEvents.erase(std::unique(record->planningEvents.begin(), record->planningEvents.end()),
+                                 record->planningEvents.end());
 
     bounds(*record, cancel);
     if (progress)

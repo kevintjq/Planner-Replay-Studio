@@ -12,6 +12,8 @@
 #include <vector>
 
 namespace replay {
+
+class TransformTree;
 struct Point {
     float x, y, z;
 };
@@ -32,13 +34,22 @@ struct Pose {
 enum class MapMode { Accumulate, Replace };
 
 struct TopicOverlay {
+    enum class Primitive { Default, Points, Lines, LineStrip, Triangles };
+
     struct Sample {
         Frame range;
         QString frameId;
+        Primitive primitive = Primitive::Default;
+        QColor color;
+        qint64 expires = 0;
+        quint64 order = 0;
+        bool frameLocked = false;
+        float size = 0.f;
     };
     TopicDisplay display;
     std::vector<Point> points;
     std::vector<Sample> samples;
+    std::shared_ptr<const std::vector<std::pair<qint64, quint64>>> clears;
     const Sample *sampleAt(qint64 stamp) const;
 };
 
@@ -54,6 +65,8 @@ struct Recording {
     std::vector<Pose> poses;
     std::vector<TopicOverlay> topicOverlays;
     QStringList topicWarnings;
+    std::shared_ptr<const TransformTree> transforms;
+    std::vector<std::pair<qint64, QString>> planningEvents;
     bool showMainCloud = true;
     QVector3D center;
     float radius = 1.f;
@@ -70,6 +83,8 @@ struct LoadOptions {
     QString odometryTopic;
     std::optional<MapMode> mapMode;
     RvizLayout topicLayout;
+    QString planTopic, corridorTopic, goalTopic, cameraTopic, planFrame;
+    bool showPlan = true, showCorridor = true, showGoal = true, showCamera = true;
     bool showMainCloud = true;
 };
 

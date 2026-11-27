@@ -94,6 +94,8 @@ void ReplayController::install(std::shared_ptr<const replay::Recording> record, 
         emit editHistoryChanged();
     }
     refreshSceneLayers();
+    refreshCloudViews();
+    refreshMotions();
     refreshVideoLayers();
     refreshLayoutCues();
     emit transparentCanvasChanged();
@@ -836,6 +838,136 @@ void ReplayController::changeMarker(double time, const std::optional<QString> &l
     emit stateChanged();
 }
 
+QVariantMap ReplayController::mainView() const
+{
+    return project_ ? project_->mainView() : QVariantMap{{"width", 1.}, {"zoom", 1.}, {"x", .5}, {"y", .5}};
+}
+
+void ReplayController::refreshMotions()
+{
+    motions_ = project_ ? project_->layerMotions() : QJsonArray();
+    emit motionsChanged();
+}
+
+QVariantList ReplayController::layerMotions() const
+{
+    return motions_.toVariantList();
+}
+
+QRectF ReplayController::animatedLayer(const QString &kind, const QString &id, double time,
+                                      const QRectF &base, const QSizeF &canvas) const
+{
+    if (!base.isValid() || !canvas.isValid())
+        return base;
+    for (const auto &value : motions_) {
+        const auto motion = value.toObject();
+        const double start = motion.value("start").toDouble();
+        const double cue = motion.value("time").toDouble();
+        const double duration = motion.value("duration").toDouble(.4);
+        if (motion.value("kind").toString() != kind || motion.value("layer_id").toString() != id ||
+            time < start || time >= cue + duration || duration <= 0.)
+            continue;
+        const double scale = std::min(canvas.width() * motion.value("large_width").toDouble(1.) / base.width(),
+                                      canvas.height() / base.height());
+        if (scale <= 1.)
+            break;
+        const double fraction = std::clamp((time - cue) / duration, 0., 1.);
+        const double ease = fraction * fraction * (3. - 2. * fraction);
+        const auto position = motion.value("large_position").toArray();
+        const double largeWidth = base.width() * scale, largeHeight = base.height() * scale;
+        const double x = (canvas.width() - largeWidth) * (position.size() == 2 ? position[0].toDouble(.5) : .5);
+        const double y = (canvas.height() - largeHeight) * (position.size() == 2 ? position[1].toDouble(.5) : .5);
+        return {std::lerp(x, base.x(), ease), std::lerp(y, base.y(), ease),
+                std::lerp(largeWidth, base.width(), ease), std::lerp(largeHeight, base.height(), ease)};
+    }
+    return base;
+}
+
+void ReplayController::addLayerMotion(const QString &kind, const QString &id, double begin, double duration,
+                                      double width, double x, double y, double normalWidth)
+{
+    if (loading_)
+        return;
+    try {
+        auto document = projectSnapshot();
+        document.addLayerMotion(kind, id, begin, position_, duration, width, x, y);
+        if (kind == "main")
+            document.setMainViewWidth(normalWidth);
+        project_ = std::move(document);
+        refreshMotions();
+        emit recordingChanged();
+        status_ = tr("已添加缩窗动画。");
+    } catch (const std::exception &error) {
+        status_ = QString::fromUtf8(error.what());
+    }
+    emit stateChanged();
+}
+
+void ReplayController::removeLayerMotion(int index)
+{
+    if (loading_ || !project_)
+        return;
+    project_->removeLayerMotion(index);
+    refreshMotions();
+}
+
+void ReplayController::refreshCloudViews()
+{
+    cloudViews_.clear();
+    if (project_) {
+        for (const auto &view : project_->cloudViews()) {
+            auto info = view.toMap();
+            const auto kind = info.value("kind").toString();
+            const auto camera = std::find_if(replay::CameraPresets.begin(), replay::CameraPresets.end(),
+                [&](const auto &preset) { return QString::fromLatin1(preset.id) == kind; });
+            if (camera == replay::CameraPresets.end())
+                continue;
+            info.insert("camera", int(camera - replay::CameraPresets.begin()));
+            info.insert("label", QString::fromUtf8(camera->label));
+            cloudViews_.append(std::move(info));
+        }
+    }
+    emit cloudViewsChanged();
+}
+
+void ReplayController::addCloudView(int camera)
+{
+    if (loading_ || camera <= 0 || size_t(camera) >= replay::CameraPresets.size())
+        return;
+    try {
+        auto document = projectSnapshot();
+        document.addCloudView(QString::fromLatin1(replay::CameraPresets[size_t(camera)].id));
+        project_ = std::move(document);
+        refreshCloudViews();
+        status_ = tr("已添加点云机位。");
+    } catch (const std::exception &error) {
+        status_ = QString::fromUtf8(error.what());
+    }
+    emit stateChanged();
+}
+
+void ReplayController::setCloudView(const QString &id, const QVariantMap &settings)
+{
+    if (loading_ || !project_)
+        return;
+    try {
+        project_->setCloudView(id, settings);
+        refreshCloudViews();
+    } catch (const std::exception &error) {
+        status_ = QString::fromUtf8(error.what());
+        emit stateChanged();
+    }
+}
+
+void ReplayController::removeCloudView(const QString &id)
+{
+    if (loading_ || !project_)
+        return;
+    project_->removeCloudView(id);
+    refreshCloudViews();
+    refreshMotions();
+}
+
 void ReplayController::refreshSceneLayers()
 {
     sceneLayers_ = project_ ? project_->sceneLayers() : QVariantList();
@@ -894,6 +1026,7 @@ void ReplayController::removeSceneLayer(const QString &id)
         return;
     project_->removeSceneLayer(id);
     refreshSceneLayers();
+    refreshMotions();
     setPosition(position_);
     emit recordingChanged();
     status_ = tr("已移除合成图层。");

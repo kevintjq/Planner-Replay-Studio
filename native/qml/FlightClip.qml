@@ -44,10 +44,20 @@ Item {
     function between(a, b) { return a + (b - a) * blend }
 
     z: backdrop || (inset && blend === 0) ? 0 : 2
-    x: full ? 0 : backdrop ? largeX : between(largeX, insetX)
-    y: full ? 0 : backdrop ? largeY : between(largeY, insetY)
-    width: full ? parent.width : backdrop ? largeWidth : between(largeWidth, insetWidth)
-    height: full ? parent.height : backdrop ? largeHeight : between(largeHeight, insetHeight)
+    readonly property rect geometry: {
+        if (full)
+            return Qt.rect(0, 0, parent.width, parent.height)
+        const base = backdrop ? Qt.rect(largeX, largeY, largeWidth, largeHeight)
+            : Qt.rect(between(largeX, insetX), between(largeY, insetY),
+                      between(largeWidth, insetWidth), between(largeHeight, insetHeight))
+        return controller.layerMotions.length
+            ? controller.animatedLayer("video", footage.id, controller.position, base, Qt.size(parent.width, parent.height))
+            : base
+    }
+    x: geometry.x
+    y: geometry.y
+    width: geometry.width
+    height: geometry.height
     visible: !cloudOnly && (!videoOnly || targetVideo) &&
              (exporting ? (exportFrame && exportFrame.width > 0) :
                       targetSeconds >= 0 && player.hasVideo && (player.duration <= 0 || targetSeconds * 1000 < player.duration))

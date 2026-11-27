@@ -394,6 +394,172 @@ void ProjectDocument::replaceTimelineMarker(double time, const std::optional<QSt
     fail(QStringLiteral("找不到所选标记。"));
 }
 
+QVariantMap ProjectDocument::mainView() const
+{
+    const auto view = root_.value("composition").toObject().value("main_view").toObject();
+    const auto position = view.value("position").toArray();
+    return {{"width", view.value("width").toDouble(1.)},
+            {"x", position.size() == 2 ? position[0].toDouble(.5) : .5},
+            {"y", position.size() == 2 ? position[1].toDouble(.5) : .5},
+            {"zoom", view.value("zoom").toDouble(1.)}};
+}
+
+void ProjectDocument::setMainViewWidth(double width)
+{
+    if (!std::isfinite(width) || width < .12 || width > 1.)
+        fail(QStringLiteral("请检查主点云常态宽度。"));
+    auto scene = root_.value("composition").toObject();
+    auto view = scene.value("main_view").toObject();
+    view.insert("width", width);
+    if (!view.contains("kind"))
+        view.insert("kind", QStringLiteral("rear"));
+    scene.insert("main_view", view);
+    root_.insert("composition", scene);
+}
+
+QJsonArray ProjectDocument::layerMotions() const
+{
+    return root_.value("composition").toObject().value("motions").toArray();
+}
+
+void ProjectDocument::addLayerMotion(const QString &kind, const QString &id, double begin, double time, double duration,
+                                    double width, double x, double y)
+{
+    if (!std::isfinite(begin) || !std::isfinite(time) || !std::isfinite(duration) || !std::isfinite(width) ||
+        !std::isfinite(x) || !std::isfinite(y) || begin < 0. || time < begin || duration < .1 || duration > 5. ||
+        width < .05 || width > 1. || x < 0. || x > 1. || y < 0. || y > 1.)
+        fail(QStringLiteral("请检查缩窗时间、位置与尺寸。"));
+
+    const bool independent = kind == "main" || kind == "speed";
+    auto scene = root_.value("composition").toObject();
+    if (!independent) {
+        const QString listName = kind == "video" ? QStringLiteral("videos") : kind == "view" ? QStringLiteral("views")
+            : kind == "image" ? QStringLiteral("images") : kind == "text" ? QStringLiteral("texts") : QString();
+        const auto layers = scene.value(listName).toArray();
+        if (id.isEmpty() || std::none_of(layers.begin(), layers.end(), [&](const auto &entry) {
+                return entry.toObject().value("id").toString() == id;
+            }))
+            fail(QStringLiteral("找不到缩窗动画指定的图层。"));
+    }
+    auto motions = layerMotions();
+    for (const auto &entry : motions) {
+        const auto old = entry.toObject();
+        if (old.value("kind").toString() != kind || old.value("layer_id").toString() != id)
+            continue;
+        if (old.value("start").toDouble() < time + duration - 1e-8 &&
+            begin < old.value("time").toDouble() + old.value("duration").toDouble(.4) - 1e-8)
+            fail(QStringLiteral("同一图层的缩窗动画不能重叠。"));
+    }
+    motions.append(QJsonObject{{"kind", kind}, {"layer_id", independent ? QJsonValue(QJsonValue::Null) : QJsonValue(id)},
+        {"start", begin}, {"time", time}, {"duration", duration}, {"large_width", width}, {"large_position", QJsonArray{x,y}}});
+    scene.insert("motions", motions);
+    root_.insert("composition", scene);
+}
+
+void ProjectDocument::removeLayerMotion(qsizetype index)
+{
+    auto motions = layerMotions();
+    if (index < 0 || index >= motions.size())
+        return;
+    motions.removeAt(index);
+    auto scene = root_.value("composition").toObject();
+    scene.insert("motions", motions);
+    root_.insert("composition", scene);
+}
+
+QVariantList ProjectDocument::cloudViews() const
+{
+    const auto views = root_.value("composition").toObject().value("views").toArray();
+    QVariantList result;
+    for (const auto &entry : views) {
+        const auto view = entry.toObject();
+        const auto position = view.value("position").toArray();
+        auto fields = view.toVariantMap();
+        fields.insert("x", position.size() == 2 ? position[0].toDouble(.97) : .97);
+        fields.insert("y", position.size() == 2 ? position[1].toDouble(.05) : .05);
+        fields.insert("zoom", view.value("zoom").toDouble(1.));
+        fields.insert("width", view.value("width").toDouble(.32));
+        fields.insert("transparent", view.value("transparent").toBool(true));
+        if (!view.value("overlays").isArray()) {
+            const auto kind = view.value("kind").toString();
+            fields.insert("overlays", kind == "fpv" || kind == "fpv_raw" ? QStringList{"scan"}
+                         : QStringList{"actual", "plan", "goal", "corridor", "scan", "camera"});
+        }
+        result.append(fields);
+    }
+    return result;
+}
+
+void ProjectDocument::addCloudView(const QString &kind)
+{
+    auto scene = root_.value("composition").toObject();
+    auto views = scene.value("views").toArray();
+    if (std::any_of(views.begin(), views.end(), [&](const auto &item) {
+            return item.toObject().value("kind").toString() == kind;
+        }))
+        fail(QStringLiteral("该附加机位已经存在。"));
+    const auto row = views.size();
+    views.append(QJsonObject{{"id", QUuid::createUuid().toString(QUuid::WithoutBraces)}, {"kind", kind},
+                             {"width", .32}, {"zoom", 1.}, {"transparent", true},
+                             {"position", QJsonArray{row % 2 ? .03 : .97, row % 3 == 0 ? .05 : row % 3 == 1 ? .94 : .52}}});
+    scene.insert("views", views);
+    root_.insert("composition", scene);
+}
+
+void ProjectDocument::setCloudView(const QString &id, const QVariantMap &settings)
+{
+    auto scene = root_.value("composition").toObject();
+    auto views = scene.value("views").toArray();
+    for (qsizetype i = 0; i < views.size(); ++i) {
+        auto view = views[i].toObject();
+        if (view.value("id").toString() != id)
+            continue;
+        const auto oldPosition = view.value("position").toArray();
+        const auto number = [&](const char *name, double fallback, double low, double high) {
+            bool ok = true;
+            const double value = settings.value(QLatin1StringView(name), fallback).toDouble(&ok);
+            if (!ok || !std::isfinite(value) || value < low || value > high)
+                fail(QStringLiteral("机位位置、宽度或相机缩放超出可用范围。"));
+            return value;
+        };
+        const double x = number("x", oldPosition.size() == 2 ? oldPosition[0].toDouble(.97) : .97, 0., 1.);
+        const double y = number("y", oldPosition.size() == 2 ? oldPosition[1].toDouble(.05) : .05, 0., 1.);
+        view.insert("position", QJsonArray{x,y});
+        view.insert("width", number("width", view.value("width").toDouble(.32), .12, 1.5));
+        view.insert("zoom", number("zoom", view.value("zoom").toDouble(1.), .5, 4.));
+        if (settings.contains("transparent"))
+            view.insert("transparent", settings.value("transparent").toBool());
+        if (settings.contains("overlays"))
+            view.insert("overlays", QJsonArray::fromStringList(settings.value("overlays").toStringList()));
+        views.replace(i, view);
+        scene.insert("views", views);
+        root_.insert("composition", scene);
+        return;
+    }
+}
+
+void ProjectDocument::removeCloudView(const QString &id)
+{
+    auto scene = root_.value("composition").toObject();
+    auto views = scene.value("views").toArray();
+    for (qsizetype i = 0; i < views.size(); ++i) {
+        if (views[i].toObject().value("id").toString() != id)
+            continue;
+        views.removeAt(i);
+        scene.insert("views", views);
+        const auto motions = scene.value("motions").toArray();
+        QJsonArray retained;
+        for (const auto &motion : motions) {
+            const auto item = motion.toObject();
+            if (item.value("kind").toString() != "view" || item.value("layer_id").toString() != id)
+                retained.append(motion);
+        }
+        scene.insert("motions", retained);
+        root_.insert("composition", scene);
+        return;
+    }
+}
+
 QVariantList ProjectDocument::sceneLayers() const
 {
     const auto composition = root_.value("composition").toObject();
@@ -477,6 +643,14 @@ void ProjectDocument::removeSceneLayer(const QString &id)
             if (layers.at(index).toObject().value("id").toString() == id) {
                 layers.removeAt(index);
                 composition.insert(kind, layers);
+                const QString target = kind == "images" ? QStringLiteral("image") : QStringLiteral("text");
+                QJsonArray retained;
+                for (const auto &motion : composition.value("motions").toArray()) {
+                    const auto item = motion.toObject();
+                    if (item.value("kind").toString() != target || item.value("layer_id").toString() != id)
+                        retained.append(motion);
+                }
+                composition.insert("motions", retained);
                 root_.insert("composition", composition);
                 return;
             }

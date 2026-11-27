@@ -9,6 +9,9 @@ class CloudView : public QQuickFramebufferObject {
     Q_OBJECT
     Q_PROPERTY(ReplayController *controller READ controller WRITE setController NOTIFY controllerChanged)
     Q_PROPERTY(int camera READ camera WRITE setCamera NOTIFY cameraChanged)
+    Q_PROPERTY(float cameraZoom READ cameraZoom WRITE setCameraZoom NOTIFY cameraZoomChanged)
+    Q_PROPERTY(bool auxiliary READ auxiliary WRITE setAuxiliary NOTIFY auxiliaryChanged)
+    Q_PROPERTY(QStringList overlays READ overlays WRITE setOverlays NOTIFY overlaysChanged)
     Q_PROPERTY(float pointSize READ pointSize WRITE setPointSize NOTIFY pointSizeChanged)
     Q_PROPERTY(bool transparent READ transparent WRITE setTransparent NOTIFY transparentChanged)
     Q_PROPERTY(bool showPath READ showPath WRITE setShowPath NOTIFY showPathChanged)
@@ -20,6 +23,12 @@ public:
     void setController(ReplayController *controller);
     int camera() const { return camera_; }
     void setCamera(int camera);
+    float cameraZoom() const { return cameraZoom_; }
+    void setCameraZoom(float zoom);
+    bool auxiliary() const { return auxiliary_; }
+    void setAuxiliary(bool auxiliary);
+    QStringList overlays() const { return overlays_; }
+    void setOverlays(const QStringList &overlays);
     float pointSize() const { return pointSize_; }
     void setPointSize(float size);
     bool transparent() const { return transparent_; }
@@ -34,6 +43,9 @@ public:
 signals:
     void controllerChanged();
     void cameraChanged();
+    void cameraZoomChanged();
+    void auxiliaryChanged();
+    void overlaysChanged();
     void pointSizeChanged();
     void showPathChanged();
     void transparentChanged();
@@ -45,5 +57,7 @@ private:
     float yaw_ = 0, pitch_ = 0, scale_ = 1, pointSize_ = 1.5f;
     float panX_ = 0, panY_ = 0;
     int camera_ = 0;
-    bool showPath_ = true, transparent_ = false;
+    bool showPath_ = true, transparent_ = false, auxiliary_ = false;
+    float cameraZoom_ = 1.f;
+    QStringList overlays_;
 };

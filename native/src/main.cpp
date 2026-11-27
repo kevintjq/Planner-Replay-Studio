@@ -258,10 +258,26 @@ int main(int argc, char **argv)
                 replay.seek(1.5);
                 replay.addMarker();
                 replay.removeMarker(1.5);
+                replay.addCloudView(2);
+                if (replay.cloudViews().size() != 1) {
+                    qWarning("Could not add a cloud view");
+                    app.exit(1);
+                    return;
+                }
+                const auto cloudId = replay.cloudViews().first().toMap().value("id").toString();
+                replay.setCloudView(cloudId, {{"x", .25}, {"width", .5}});
+                replay.addLayerMotion(QStringLiteral("view"), cloudId, 0., .4, 1., .5, .5, 1.);
                 const auto sceneUrl = QUrl::fromLocalFile(scratch.filePath(QStringLiteral("scene.slamfpv")));
                 replay.saveProjectAs(sceneUrl);
                 replay.openProject(sceneUrl);
-                if (replay.sceneLayers().size() != 2 || replay.cameraIndex() != 4 ||
+                const auto view = replay.cloudViews().value(0).toMap();
+                const auto base = QRectF(10., 10., 50., 30.);
+                const auto atMiddle = replay.animatedLayer(QStringLiteral("view"), cloudId, 1.7, base, QSizeF(100., 100.));
+                if (view.value("id").toString() != cloudId || view.value("camera").toInt() != 2 ||
+                    view.value("x").toDouble() != .25 || view.value("width").toDouble() != .5 ||
+                    replay.layerMotions().size() != 1 || std::abs(atMiddle.width() - 75.) > .01 ||
+                    replay.animatedLayer(QStringLiteral("view"), cloudId, 2., base, QSizeF(100., 100.)) != base ||
+                    replay.sceneLayers().size() != 2 || replay.cameraIndex() != 4 ||
                     replay.sceneLayers().at(0).toMap().value("url").toUrl() != logoUrl ||
                     replay.sceneLayers().at(1).toMap().value("horizontal").toDouble() != .3 ||
                     replay.markers().size() != 1 ||

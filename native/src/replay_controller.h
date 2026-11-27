@@ -57,6 +57,9 @@ class ReplayController : public QObject {
     Q_PROPERTY(QVariantList layoutCues READ layoutCues NOTIFY layoutsChanged)
     Q_PROPERTY(QVariantMap activeLayout READ activeLayout NOTIFY activeLayoutChanged)
     Q_PROPERTY(QVariantList sceneLayers READ sceneLayers NOTIFY sceneLayersChanged)
+    Q_PROPERTY(QVariantMap mainView READ mainView NOTIFY recordingChanged)
+    Q_PROPERTY(QVariantList layerMotions READ layerMotions NOTIFY motionsChanged)
+    Q_PROPERTY(QVariantList cloudViews READ cloudViews NOTIFY cloudViewsChanged)
     Q_PROPERTY(QVariantList videoLayers READ videoLayers NOTIFY videoLayersChanged)
 public:
     explicit ReplayController(QObject *parent = nullptr);
@@ -116,6 +119,17 @@ public:
     Q_INVOKABLE void addMarker();
     Q_INVOKABLE void renameMarker(double time, const QString &label);
     Q_INVOKABLE void removeMarker(double time);
+    QVariantMap mainView() const;
+    QVariantList layerMotions() const;
+    Q_INVOKABLE QRectF animatedLayer(const QString &kind, const QString &id, double time,
+                                    const QRectF &base, const QSizeF &canvas) const;
+    Q_INVOKABLE void addLayerMotion(const QString &kind, const QString &id, double begin, double duration,
+                                    double width, double x, double y, double normalWidth);
+    Q_INVOKABLE void removeLayerMotion(int index);
+    const QVariantList &cloudViews() const { return cloudViews_; }
+    Q_INVOKABLE void addCloudView(int camera);
+    Q_INVOKABLE void setCloudView(const QString &id, const QVariantMap &settings);
+    Q_INVOKABLE void removeCloudView(const QString &id);
     const QVariantList &sceneLayers() const { return sceneLayers_; }
     Q_INVOKABLE void addSceneImage(const QUrl &file);
     Q_INVOKABLE void addSceneText(const QString &text);
@@ -160,6 +174,8 @@ signals:
     void recordingChanged();
     void videoLayersChanged();
     void sceneLayersChanged();
+    void cloudViewsChanged();
+    void motionsChanged();
     void markersChanged();
     void layoutsChanged();
     void transparentCanvasChanged();
@@ -186,6 +202,8 @@ private:
     void setPosition(double seconds);
     void refreshVideoLayers();
     void refreshSceneLayers();
+    void refreshCloudViews();
+    void refreshMotions();
     void grabFrame(QQuickItem *canvas, const QString &path, int matte = 0, const QImage &black = {});
     void finishFrame(const QString &path, const QImage &image);
     void refreshLayoutCues();
@@ -208,8 +226,8 @@ private:
     QFutureWatcher<QString> folderWatcher_;
     std::optional<replay::ProjectDocument> project_;
     std::vector<replay::VideoClip> clips_;
-    QVariantList videoLayers_, sceneLayers_;
-    QJsonArray layouts_;
+    QVariantList videoLayers_, sceneLayers_, cloudViews_;
+    QJsonArray layouts_, motions_;
     QSharedPointer<QQuickItemGrabResult> frameGrab_;
     QTimer timer_;
     QElapsedTimer clock_;

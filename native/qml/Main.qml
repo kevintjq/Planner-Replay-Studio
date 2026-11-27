@@ -451,6 +451,16 @@ ApplicationWindow {
                             pngDialog.open()
                         }
                     }
+                    PanelTitle { text: "附加点云机位" }
+                    CloudInsetEditor {
+                        id: insetEditor
+                        Layout.fillWidth: true
+                        controller: replay
+                    }
+                    LayerMotionEditor {
+                        Layout.fillWidth: true
+                        controller: replay
+                    }
                     CheckBox {
                         text: "显示合成速度表"
                         checked: replay.speedGauge.visible
@@ -590,9 +600,24 @@ ApplicationWindow {
                         visible: !window.videoOnly
                         transparent: replay.transparentCanvas || (!window.cloudOnly
                                      && (window.activeLayout.backdropId.length > 0 || window.activeLayout.progress === 0))
-                        anchors.fill: parent
+                        readonly property rect geometry: {
+                            if (window.cloudOnly)
+                                return Qt.rect(0, 0, canvas.width, canvas.height)
+                            const settings = replay.mainView
+                            const w = canvas.width * settings.width
+                            const h = canvas.height * settings.width
+                            const base = Qt.rect((canvas.width - w) * settings.x, (canvas.height - h) * settings.y, w, h)
+                            return replay.layerMotions.length
+                                ? replay.animatedLayer("main", "", replay.position, base, Qt.size(canvas.width, canvas.height))
+                                : base
+                        }
+                        x: geometry.x
+                        y: geometry.y
+                        width: geometry.width
+                        height: geometry.height
                         controller: replay
                         camera: replay.cameraIndex
+                        cameraZoom: replay.mainView.zoom
                         MouseArea {
                             anchors.fill: parent
                             acceptedButtons: Qt.LeftButton | Qt.RightButton
@@ -614,6 +639,14 @@ ApplicationWindow {
                         }
                     }
 
+                    CloudInsets {
+                        z: 2
+                        anchors.fill: parent
+                        controller: replay
+                        pointSize: cloud.pointSize
+                        allowed: !window.videoOnly && !window.cloudOnly
+                        onSelected: id => insetEditor.selectedId = id
+                    }
                     Repeater {
                         model: replay.videoLayers.length
                         delegate: FlightClip {

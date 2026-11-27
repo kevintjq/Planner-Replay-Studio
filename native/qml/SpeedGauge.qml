@@ -12,8 +12,16 @@ Item {
     property real previewY: settings.y
     width: Math.min(parent.width, parent.height) * .23 * (settings.scale ?? 1)
     height: width * .75
-    x: horizontal * previewX
-    y: vertical * previewY
+    readonly property rect geometry: {
+        const base = Qt.rect(horizontal * previewX, vertical * previewY, width, height)
+        return controller.layerMotions.length
+            ? controller.animatedLayer("speed", "", controller.position, base, Qt.size(parent.width, parent.height))
+            : base
+    }
+    x: geometry.x
+    y: geometry.y
+    transformOrigin: Item.TopLeft
+    scale: width > 0 ? geometry.width / width : 1
     visible: allowed && settings.visible && controller.position >= settings.start
              && (settings.end < 0 || controller.position < settings.end)
 
@@ -68,11 +76,19 @@ Item {
         anchors.fill: parent
         cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
         property point origin
-        onPressed: mouse => { origin = Qt.point(mouse.x, mouse.y) }
+        property real initialX
+        property real initialY
+        onPressed: mouse => {
+            origin = mapToItem(gauge.parent, mouse.x, mouse.y)
+            initialX = gauge.previewX
+            initialY = gauge.previewY
+            gauge.controller.pause()
+        }
         onPositionChanged: mouse => {
             if (pressed) {
-                gauge.previewX = Math.max(0, Math.min(1, (gauge.x + mouse.x - origin.x) / Math.max(1, gauge.horizontal)))
-                gauge.previewY = Math.max(0, Math.min(1, (gauge.y + mouse.y - origin.y) / Math.max(1, gauge.vertical)))
+                const current = mapToItem(gauge.parent, mouse.x, mouse.y)
+                gauge.previewX = Math.max(0, Math.min(1, initialX + (current.x - origin.x) / Math.max(1, gauge.horizontal)))
+                gauge.previewY = Math.max(0, Math.min(1, initialY + (current.y - origin.y) / Math.max(1, gauge.vertical)))
             }
         }
         onReleased: gauge.controller.setSpeedGauge({x: gauge.previewX, y: gauge.previewY})

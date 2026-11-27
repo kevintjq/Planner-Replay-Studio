@@ -44,6 +44,16 @@ public:
     QJsonArray timelineMarkers() const;
     void addTimelineMarker(double time);
     void replaceTimelineMarker(double time, const std::optional<QString> &label);
+    QVariantMap mainView() const;
+    void setMainViewWidth(double width);
+    QJsonArray layerMotions() const;
+    void addLayerMotion(const QString &kind, const QString &id, double begin, double time, double duration,
+                        double width, double x, double y);
+    void removeLayerMotion(qsizetype index);
+    QVariantList cloudViews() const;
+    void addCloudView(const QString &kind);
+    void setCloudView(const QString &id, const QVariantMap &settings);
+    void removeCloudView(const QString &id);
     QVariantList sceneLayers() const;
     void addSceneLayer(const QString &kind, const QString &content, double start, double end);
     void editSceneLayer(const QString &id, const QJsonObject &changes);

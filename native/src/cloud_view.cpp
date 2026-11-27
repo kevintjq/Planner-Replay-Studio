@@ -53,6 +53,16 @@ uniform float opacity;
 void main() { pixel = vec4(ink * opacity, opacity); }
 )glsl";
 
+struct SharedCloudVertices {
+    QOpenGLBuffer buffer;
+    const replay::Recording *recording = nullptr;
+    QPointer<QOpenGLContext> context;
+    int uploaded = 0;
+};
+
+// All QQuickFramebufferObject renderers in the window use the same render thread.
+thread_local std::weak_ptr<SharedCloudVertices> sharedVertices;
+
 using replay::Point;
 }
 
@@ -76,12 +86,20 @@ public:
         }
         yaw_ = view->yaw_;
         pitch_ = view->pitch_;
-        scale_ = view->scale_;
+        scale_ = view->scale_ / view->cameraZoom_;
+        auxiliary_ = view->auxiliary_;
+        scan_ = !auxiliary_ || view->overlays_.contains("scan");
+        if (auxiliary_) {
+            plan_ = plan_ && view->overlays_.contains("plan");
+            corridor_ = corridor_ && view->overlays_.contains("corridor");
+            goal_ = goal_ && view->overlays_.contains("goal");
+            cameraFrustum_ = cameraFrustum_ && view->overlays_.contains("camera");
+        }
         pointSize_ = view->pointSize_;
         panX_ = view->panX_;
         panY_ = view->panY_;
         camera_ = view->camera_;
-        showPath_ = view->showPath_;
+        showPath_ = view->showPath_ && (!auxiliary_ || view->overlays_.contains("actual"));
         transparent_ = view->transparent_;
     }
 
@@ -125,9 +143,9 @@ public:
         program_.setUniformValue("solid", false);
         program_.setUniformValue("tfAxes", false);
 
-        if (recording_->showMainCloud) {
+        if (recording_->showMainCloud && cloud_ && cloud_->buffer.isCreated()) {
             upload(frame.end);
-            bind(cloud_);
+            bind(cloud_->buffer);
             const int from = recording_->replace ? frame.first : 0;
             gl->glDrawArrays(GL_POINTS, from, frame.end - from);
         }
@@ -164,7 +182,7 @@ private:
             initialized_ = true;
             ready_ = program_.addShaderFromSourceCode(QOpenGLShader::Vertex, Vertex)
                 && program_.addShaderFromSourceCode(QOpenGLShader::Fragment, Fragment)
-                && program_.link() && vao_.create() && cloud_.create() && path_.create() && marker_.create();
+                && program_.link() && vao_.create() && path_.create() && marker_.create();
             if (!ready_)
                 qWarning() << "OpenGL 3.3 required:" << program_.log();
         }
@@ -188,6 +206,8 @@ private:
         for (size_t i = 0; i < recording_->topicOverlays.size(); ++i) {
             const auto &overlay = recording_->topicOverlays[i];
             const auto &role = overlay.display.plannerRole;
+            if ((auxiliary_ && overlay.display.mainOnly) || (overlay.display.kind == "laser" && !scan_))
+                continue;
             if ((role == "plan" && !plan_) || (role == "corridor" && !corridor_) || (role == "goal" && !goal_) ||
                 (role == "camera" && !cameraFrustum_))
                 continue;
@@ -270,10 +290,19 @@ private:
         overlays_.resize(recording_->topicOverlays.size());
         comparisons_.clear();
         comparisons_.resize(recording_->topicOverlays.size());
-        cloud_.bind();
-        cloud_.setUsagePattern(QOpenGLBuffer::DynamicDraw);
-        cloud_.allocate(recording_->showMainCloud ? int(recording_->points.size() * sizeof(Point)) : 0);
-        uploaded_ = 0;
+        const auto *context = QOpenGLContext::currentContext();
+        cloud_ = sharedVertices.lock();
+        if (!cloud_ || cloud_->recording != recording_.get() || cloud_->context != context) {
+            cloud_ = std::make_shared<SharedCloudVertices>();
+            cloud_->recording = recording_.get();
+            cloud_->context = QOpenGLContext::currentContext();
+            if (cloud_->buffer.create()) {
+                cloud_->buffer.bind();
+                cloud_->buffer.setUsagePattern(QOpenGLBuffer::DynamicDraw);
+                cloud_->buffer.allocate(recording_->showMainCloud ? int(recording_->points.size() * sizeof(Point)) : 0);
+                sharedVertices = cloud_;
+            }
+        }
 
         std::vector<Point> path;
         path.reserve(recording_->poses.size());
@@ -288,12 +317,12 @@ private:
 
     void upload(int through)
     {
-        if (through <= uploaded_)
+        if (through <= cloud_->uploaded)
             return;
-        cloud_.bind();
-        cloud_.write(uploaded_ * int(sizeof(Point)), recording_->points.data() + uploaded_,
-                     (through - uploaded_) * int(sizeof(Point)));
-        uploaded_ = through;
+        cloud_->buffer.bind();
+        cloud_->buffer.write(cloud_->uploaded * int(sizeof(Point)), recording_->points.data() + cloud_->uploaded,
+                             (through - cloud_->uploaded) * int(sizeof(Point)));
+        cloud_->uploaded = through;
     }
 
     QMatrix4x4 cameraMatrix(const QSize &size, const std::optional<replay::Pose> &pose) const
@@ -360,10 +389,12 @@ private:
     std::shared_ptr<const replay::Recording> recording_;
     QOpenGLShaderProgram program_;
     QOpenGLVertexArrayObject vao_;
-    QOpenGLBuffer cloud_, path_, marker_;
+    std::shared_ptr<SharedCloudVertices> cloud_;
+    QOpenGLBuffer path_, marker_;
     std::vector<OverlayBuffer> overlays_, comparisons_;
     bool initialized_ = false, ready_ = false, needsStorage_ = false, showPath_ = true, transparent_ = false;
-    int uploaded_ = 0, camera_ = 0;
+    int camera_ = 0;
+    bool auxiliary_ = false, scan_ = true;
     bool plan_ = true, corridor_ = true, goal_ = true, cameraFrustum_ = true, comparePlans_ = false;
     qint64 stamp_ = 0;
     float yaw_ = 0, pitch_ = 0, scale_ = 1, pointSize_ = 2, panX_ = 0, panY_ = 0;
@@ -405,6 +436,34 @@ void CloudView::setCamera(int camera)
         camera_ = camera;
         resetCamera();
         emit cameraChanged();
+    }
+}
+
+void CloudView::setCameraZoom(float zoom)
+{
+    zoom = std::clamp(zoom, .5f, 4.f);
+    if (cameraZoom_ != zoom) {
+        cameraZoom_ = zoom;
+        emit cameraZoomChanged();
+        update();
+    }
+}
+
+void CloudView::setAuxiliary(bool auxiliary)
+{
+    if (auxiliary_ != auxiliary) {
+        auxiliary_ = auxiliary;
+        emit auxiliaryChanged();
+        update();
+    }
+}
+
+void CloudView::setOverlays(const QStringList &overlays)
+{
+    if (overlays_ != overlays) {
+        overlays_ = overlays;
+        emit overlaysChanged();
+        update();
     }
 }
 

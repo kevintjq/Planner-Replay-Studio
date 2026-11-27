@@ -17,8 +17,19 @@ Item {
             readonly property real yRange: Math.max(0, scene.height - height)
             property real dragX: 0
             property real dragY: 0
-            x: Math.max(0, Math.min(xRange, xRange * modelData.horizontal + dragX))
-            y: Math.max(0, Math.min(yRange, yRange * modelData.vertical + dragY))
+            readonly property real baseX: Math.max(0, Math.min(xRange, xRange * modelData.horizontal + dragX))
+            readonly property real baseY: Math.max(0, Math.min(yRange, yRange * modelData.vertical + dragY))
+            readonly property rect geometry: {
+                const base = Qt.rect(baseX, baseY, width, height)
+                return scene.controller.layerMotions.length
+                    ? scene.controller.animatedLayer(picture ? "image" : "text", modelData.id,
+                                                     scene.controller.position, base, Qt.size(scene.width, scene.height))
+                    : base
+            }
+            x: geometry.x
+            y: geometry.y
+            transformOrigin: Item.TopLeft
+            scale: width > 0 ? geometry.width / width : 1
             width: picture ? image.width : Math.min(scene.width, caption.implicitWidth)
             height: picture ? image.height : caption.implicitHeight
             visible: scene.controller.position >= modelData.start
@@ -83,8 +94,8 @@ Item {
                         layer.dragY = 0
                         return
                     }
-                    const position = [layer.xRange ? layer.x / layer.xRange : layer.modelData.horizontal,
-                                      layer.yRange ? layer.y / layer.yRange : layer.modelData.vertical]
+                    const position = [layer.xRange ? layer.baseX / layer.xRange : layer.modelData.horizontal,
+                                      layer.yRange ? layer.baseY / layer.yRange : layer.modelData.vertical]
                     layer.dragX = 0
                     layer.dragY = 0
                     scene.controller.editSceneLayer(layer.modelData.id, {position: position})

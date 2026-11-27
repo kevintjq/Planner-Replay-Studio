@@ -58,14 +58,19 @@ struct Recording {
     QString name;
     QString cloudTopic;
     QString odometryTopic;
+    QString speedTopic, bodyFrame;
     QString frameId;
     QStringList cloudTopics;
     QStringList odometryTopics;
+    QStringList speedTopics;
     QStringList topics;
     qint64 recordedOrigin = 0;
     std::vector<Point> points;
     std::vector<Frame> frames;
     std::vector<Pose> poses;
+    std::vector<std::pair<qint64, float>> speeds;
+    qint64 maximumGap = 500'000'000;
+    bool tfPose = false;
     std::vector<TopicOverlay> topicOverlays;
     QStringList topicWarnings;
     std::shared_ptr<const TransformTree> transforms;
@@ -79,6 +84,7 @@ struct Recording {
     double duration() const;
     const Frame &frameAt(qint64 stamp) const;
     std::optional<Pose> poseAt(qint64 stamp) const;
+    std::optional<float> speedAt(qint64 stamp) const;
 };
 
 struct LoadOptions {
@@ -89,6 +95,9 @@ struct LoadOptions {
     QString planTopic, corridorTopic, goalTopic, cameraTopic, planFrame;
     bool showPlan = true, showCorridor = true, showGoal = true, showCamera = true;
     bool showMainCloud = true;
+    QString speedTopic, world, body, extrinsics;
+    bool tfPose = false;
+    double maximumGap = .5;
 };
 
 using Cancel = std::function<bool()>;

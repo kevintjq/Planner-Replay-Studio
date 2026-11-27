@@ -308,6 +308,31 @@ void ReplayController::setOdometryTopic(const QString &topic)
     }
 }
 
+QString ReplayController::speedSelection() const
+{
+    return project_ ? project_->values().value("speed_topic").toString() : QString();
+}
+
+void ReplayController::setSpeedTopic(const QString &topic)
+{
+    if (loading_ || path_.isEmpty())
+        return;
+    auto document = projectSnapshot();
+    document.setValue("speed_topic", topic);
+    load(path_, {cloudTopic(), odometryTopic(), mapMode_}, std::move(document), true);
+}
+
+void ReplayController::setPoseSource(bool tf, const QString &world, const QString &body)
+{
+    if (loading_ || path_.isEmpty())
+        return;
+    auto document = projectSnapshot();
+    document.setValue("pose_source", tf ? QStringLiteral("TF") : QStringLiteral("Odometry"));
+    document.setValue("world", world);
+    document.setValue("body", body);
+    load(path_, {cloudTopic(), odometryTopic(), mapMode_}, std::move(document), true);
+}
+
 void ReplayController::setReplacing(bool replace)
 {
     if (!path_.isEmpty() && replace != replacing()) {
@@ -339,6 +364,15 @@ void ReplayController::load(const QString &path, const replay::LoadOptions &opti
         settings.corridorTopic = values.value("corridor_topic").toString();
         settings.goalTopic = values.value("goal_topic").toString();
         settings.cameraTopic = values.value("camera_topic").toString();
+        settings.speedTopic = values.value("speed_topic").toString();
+        settings.tfPose = values.value("pose_source").toString().compare("TF", Qt::CaseInsensitive) == 0;
+        settings.world = values.value("world").toString();
+        settings.body = values.value("body").toString();
+        settings.extrinsics = project->extrinsics();
+        bool validGap = false;
+        const double gap = values.value("max_gap").toString().toDouble(&validGap);
+        if (validGap)
+            settings.maximumGap = gap;
         settings.planFrame = values.value("plan_frame").toString().trimmed();
         while (settings.planFrame.startsWith('/'))
             settings.planFrame.remove(0, 1);
@@ -419,8 +453,51 @@ void ReplayController::pause()
 
 QString ReplayController::speed() const
 {
-    const auto pose = record_->poseAt(record_->stampAt(position_));
-    return pose && pose->speed ? QString::number(*pose->speed, 'f', 1) : QStringLiteral("—");
+    const auto value = record_->speedAt(record_->stampAt(position_));
+    return value ? QString::number(*value, 'f', 1) : QStringLiteral("—");
+}
+
+QVariantMap ReplayController::speedGauge() const
+{
+    return project_ ? project_->speedGauge() : QVariantMap{{"visible", false}, {"limit", 10.},
+        {"scale", 1.}, {"x", .05}, {"y", .32}, {"start", 0.}, {"end", -1.}, {"transparent", true}};
+}
+
+void ReplayController::setSpeedGauge(const QVariantMap &settings)
+{
+    if (loading_)
+        return;
+    try {
+        auto project = projectSnapshot();
+        project.setSpeedGauge(settings);
+        project_ = std::move(project);
+        emit recordingChanged();
+    } catch (const std::exception &error) {
+        status_ = QString::fromUtf8(error.what());
+        emit stateChanged();
+    }
+}
+
+QVariantMap ReplayController::moviePreferences() const
+{
+    auto prefs = project_ ? project_->moviePreferences() : QVariantMap{{"speed", 1.}, {"audio", QString()}};
+    const auto id = prefs.value("audio").toString();
+    const auto layer = std::find_if(clips_.begin(), clips_.end(), [&](const auto &clip) {
+        return !id.isEmpty() && clip.id == id;
+    });
+    prefs.insert("audioIndex", layer == clips_.end() ? -1 : int(layer - clips_.begin()));
+    return prefs;
+}
+
+void ReplayController::setMoviePreferences(double speed, int audioIndex)
+{
+    if (loading_ || (speed != 1. && speed != .5 && speed != .25) ||
+        audioIndex < -1 || (audioIndex >= 0 && size_t(audioIndex) >= clips_.size()))
+        return;
+    auto project = projectSnapshot();
+    project.setMoviePreferences(speed, audioIndex < 0 ? QString() : clips_[size_t(audioIndex)].id);
+    project_ = std::move(project);
+    emit recordingChanged();
 }
 
 int ReplayController::pointCount() const

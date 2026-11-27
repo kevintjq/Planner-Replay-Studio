@@ -33,7 +33,7 @@ qt_add_executable(PlannerReplayNative WIN32 src/main.cpp src/cloud_view.cpp src/
     src/replay_controller.cpp src/replay_controller.h
     src/trajectory_controller.cpp src/trajectory_controller.h src/movie_exporter.cpp src/movie_exporter.h src/topic_inspector.cpp src/topic_inspector.h)
 qt_add_resources(PlannerReplayNative "interface" PREFIX "/" FILES qml/Main.qml qml/FlightClip.qml qml/VideoTimeline.qml
-    qml/SceneOverlays.qml qml/SceneLayerEditor.qml qml/MarkerTimeline.qml qml/LayoutEditor.qml qml/TrajectoryPane.qml qml/TopicInspector.qml)
+    qml/SceneOverlays.qml qml/SceneLayerEditor.qml qml/MarkerTimeline.qml qml/LayoutEditor.qml qml/TrajectoryPane.qml qml/TopicInspector.qml qml/SpeedGauge.qml)
 target_link_libraries(PlannerReplayNative PRIVATE replay_data trajectory_image ${OpenCV_LIBS} Qt6::Quick Qt6::QuickControls2 Qt6::OpenGL Qt6::Concurrent Qt6::Multimedia)
 if(MSVC)
     target_compile_options(replay_data PRIVATE /utf-8)

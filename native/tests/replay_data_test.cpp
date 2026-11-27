@@ -87,6 +87,11 @@ QByteArray spline(quint32 seconds)
     return data + u32(0) + number64(0.);
 }
 
+QByteArray velocity(quint32 seconds, double speed)
+{
+    return u32(0) + stamp(seconds) + blob("map") + number64(speed) + QByteArray(5*8, 0);
+}
+
 QByteArray cameraInfo(quint32 seconds)
 {
     QByteArray result = u32(0) + stamp(seconds) + blob("optical") + u32(480) + u32(640) + blob("plumb_bob") + u32(0);
@@ -239,11 +244,14 @@ int main(int argc, char **argv)
         const auto goalConnection = field("conn", u32(3));
         const auto cameraConnection = field("conn", u32(4));
         const auto plannerTf = field("conn", u32(5));
+        const auto speedConnection = field("conn", u32(6));
         const auto plannerMessages =
               record(2, connection + field("time", stamp(1)), cloud(1, 0.f))
             + record(2, splineConnection + field("time", stamp(1)), spline(1))
             + record(2, cameraConnection + field("time", stamp(1)), cameraInfo(1))
             + record(2, plannerTf + field("time", stamp(1)), u32(1) + transform("optical", 2.))
+            + record(2, speedConnection + field("time", stamp(1)), velocity(1, 3.))
+            + record(2, speedConnection + field("time", stamp(3)), velocity(3, 7.))
             + record(2, corridorConnection + field("time", stamp(1)), u32(2) + marker(1, 5, 1, 0) + marker(1, 6, 1, 0))
             + record(2, goalConnection + field("time", stamp(1)), marker(1, 1, 2, 0, 1))
             + record(2, corridorConnection + field("time", stamp(2)), u32(1) + marker(2, 0, 1, 3))
@@ -255,7 +263,8 @@ int main(int argc, char **argv)
             + record(7, corridorConnection + field("topic", "/drone/visualization/exp_sfc"), field("type", "visualization_msgs/MarkerArray"))
             + record(7, goalConnection + field("topic", "/drone/visualization/goal"), field("type", "visualization_msgs/Marker"))
             + record(7, cameraConnection + field("topic", "/camera/color/camera_info"), field("type", "sensor_msgs/CameraInfo"))
-            + record(7, plannerTf + field("topic", "/tf_static"), field("type", "tf2_msgs/TFMessage"));
+            + record(7, plannerTf + field("topic", "/tf_static"), field("type", "tf2_msgs/TFMessage"))
+            + record(7, speedConnection + field("topic", "/drone/velocity"), field("type", "geometry_msgs/TwistStamped"));
         require(plannerFile.write(plannerFixture) == plannerFixture.size(), "Could not write the planner fixture.");
         plannerFile.close();
         const auto planner = replay::loadBag(plannerFile.fileName());
@@ -280,6 +289,18 @@ int main(int argc, char **argv)
         require(camera.display.plannerRole == "camera" && camera.points.size() == 16 &&
                 camera.samples.front().frameLocked && std::abs(camera.points[1].z - .85f) < .001f &&
                 cameraPose && cameraPose->translation.x() == 2.f, "CameraInfo frustum or TF frame-lock is incorrect.");
+
+        replay::LoadOptions tfPose;
+        tfPose.tfPose = true;
+        tfPose.world = "map";
+        tfPose.body = "optical";
+        tfPose.speedTopic = "/drone/velocity";
+        tfPose.maximumGap = 3.;
+        const auto fromTf = replay::loadBag(plannerFile.fileName(), tfPose);
+        const auto tfSample = fromTf->poseAt(2'000'000'000);
+        const auto independentSpeed = fromTf->speedAt(2'000'000'000);
+        require(fromTf->tfPose && fromTf->bodyFrame == "optical" && tfSample && tfSample->position.x() == 2.f &&
+                independentSpeed && *independentSpeed == 5.f, "TF pose or independent velocity playback is incorrect.");
 
         for (const auto &path : app.arguments().mid(1)) {
             const auto real = replay::loadBag(path);

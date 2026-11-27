@@ -3,6 +3,7 @@
 #include <QHash>
 #include <QQuaternion>
 #include <QString>
+#include <QStringList>
 #include <QVector3D>
 #include <optional>
 #include <vector>
@@ -19,9 +20,13 @@ struct RigidTransform {
 
 class TransformTree {
 public:
+    explicit TransformTree(qint64 maximumGap = 500'000'000) : maximumGap_(maximumGap) {}
     void add(const QString &parent, const QString &child, qint64 stamp,
              const RigidTransform &transform, bool isStatic);
     void prepare();
+    QString rootOf(const QString &frame) const;
+    QStringList frames() const;
+    std::vector<qint64> sampleTimes(const QString &frame) const;
     std::optional<RigidTransform> lookup(const QString &target, const QString &source, qint64 stamp) const;
 
 private:
@@ -33,8 +38,9 @@ private:
         QString parent;
         std::optional<RigidTransform> fixed;
         std::vector<Sample> samples;
-        std::optional<RigidTransform> at(qint64 stamp) const;
+        std::optional<RigidTransform> at(qint64 stamp, qint64 maximumGap) const;
     };
     QHash<QString, Edge> edges_;
+    qint64 maximumGap_;
 };
 }

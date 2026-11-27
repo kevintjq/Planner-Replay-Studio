@@ -225,6 +225,51 @@ ApplicationWindow {
                         enabled: !replay.loading && !replay.demo && count > 0
                         onActivated: replay.setOdometryTopic(currentText)
                     }
+                    Caption { text: "位姿来源" }
+                    ComboBox {
+                        id: poseSource
+                        Layout.fillWidth: true
+                        model: ["Odometry", "TF"]
+                        currentIndex: replay.tfPose ? 1 : 0
+                        enabled: !replay.loading && !replay.demo
+                        onActivated: index => {
+                            if (index === 0)
+                                replay.setPoseSource(false, "", "")
+                        }
+                    }
+                    GridLayout {
+                        Layout.fillWidth: true
+                        visible: poseSource.currentIndex === 1
+                        columns: 2
+                        Label { text: "世界坐标系" }
+                        TextField {
+                            id: poseWorld
+                            Layout.fillWidth: true
+                            text: replay.worldFrame
+                            placeholderText: "自动"
+                        }
+                        Label { text: "机体坐标系" }
+                        TextField {
+                            id: poseBody
+                            Layout.fillWidth: true
+                            text: replay.bodyFrame
+                            placeholderText: "自动"
+                        }
+                        Button {
+                            Layout.columnSpan: 2
+                            text: "应用 TF 位姿"
+                            enabled: !replay.loading && !replay.demo
+                            onClicked: replay.setPoseSource(true, poseWorld.text, poseBody.text)
+                        }
+                    }
+                    Caption { text: "速度话题" }
+                    ComboBox {
+                        Layout.fillWidth: true
+                        model: ["自动识别"].concat(replay.speedTopics)
+                        currentIndex: Math.max(0, model.indexOf(replay.speedSelection))
+                        enabled: !replay.loading && !replay.demo
+                        onActivated: index => replay.setSpeedTopic(index > 0 ? currentText : "")
+                    }
                     CheckBox {
                         text: "整图替换"
                         checked: replay.replacing
@@ -406,6 +451,39 @@ ApplicationWindow {
                             pngDialog.open()
                         }
                     }
+                    CheckBox {
+                        text: "显示合成速度表"
+                        checked: replay.speedGauge.visible
+                        onClicked: replay.setSpeedGauge({visible: checked})
+                    }
+                    GridLayout {
+                        visible: replay.speedGauge.visible
+                        columns: 2
+                        Layout.fillWidth: true
+                        Label { text: "量程（m/s）" }
+                        TextField { id: gaugeLimit; Layout.fillWidth: true; text: replay.speedGauge.limit }
+                        Label { text: "缩放" }
+                        TextField { id: gaugeScale; Layout.fillWidth: true; text: replay.speedGauge.scale }
+                        Label { text: "开始（秒）" }
+                        TextField { id: gaugeStart; Layout.fillWidth: true; text: replay.speedGauge.start }
+                        Label { text: "结束（秒）" }
+                        TextField {
+                            id: gaugeEnd
+                            Layout.fillWidth: true
+                            text: replay.speedGauge.end < 0 ? "" : replay.speedGauge.end
+                        }
+                        CheckBox {
+                            id: gaugeClear
+                            text: "透明"
+                            checked: replay.speedGauge.transparent
+                        }
+                        Button {
+                            text: "应用速度表"
+                            onClicked: replay.setSpeedGauge({limit: Number(gaugeLimit.text), scale: Number(gaugeScale.text),
+                                start: Number(gaugeStart.text), end: gaugeEnd.text.trim() === "" ? -1 : Number(gaugeEnd.text),
+                                transparent: gaugeClear.checked})
+                        }
+                    }
                     PanelTitle { text: "导出视频" }
                     GridLayout {
                         columns: 2
@@ -429,12 +507,16 @@ ApplicationWindow {
                             id: movieSpeed
                             Layout.fillWidth: true
                             model: ["1×", "0.5×", "0.25×"]
+                            currentIndex: Math.max(0, [1., .5, .25].indexOf(replay.moviePreferences.speed))
+                            onActivated: replay.setMoviePreferences([1., .5, .25][currentIndex], movieAudio.currentIndex - 1)
                         }
                         Label { text: "音轨" }
                         ComboBox {
                             id: movieAudio
                             Layout.fillWidth: true
                             model: ["无音轨"].concat(replay.videoLayers.map(layer => layer.label))
+                            currentIndex: Math.max(0, Math.min(count - 1, replay.moviePreferences.audioIndex + 1))
+                            onActivated: replay.setMoviePreferences([1., .5, .25][movieSpeed.currentIndex], currentIndex - 1)
                         }
                     }
                     Button {
@@ -553,6 +635,11 @@ ApplicationWindow {
                         anchors.fill: parent
                         controller: replay
                         onSelected: (id) => sceneLayerEditor.selectedId = id
+                    }
+                    SpeedGauge {
+                        z: 4
+                        controller: replay
+                        allowed: !window.videoOnly && !window.cloudOnly
                     }
 
                 }

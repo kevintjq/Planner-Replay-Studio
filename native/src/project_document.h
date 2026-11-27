@@ -21,11 +21,16 @@ public:
     QStringList media() const;
     bool isPortable() const;
     const QString &path() const { return path_; }
+    QString extrinsics() const;
     const QJsonObject &json() const { return root_; }
     QJsonObject values() const;
     void setValue(const QString &key, const QString &value);
     bool isLayerEnabled(const QString &layer) const;
     void setLayerEnabled(const QString &layer, bool isEnabled);
+    QVariantMap speedGauge() const;
+    void setSpeedGauge(const QVariantMap &values);
+    QVariantMap moviePreferences() const;
+    void setMoviePreferences(double rate, const QString &audioId);
     bool comparePlans() const;
     void setComparePlans(bool compare);
     std::vector<VideoClip> videos() const;

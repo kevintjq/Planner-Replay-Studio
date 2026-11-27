@@ -26,10 +26,18 @@ class ReplayController : public QObject {
     Q_PROPERTY(QString status READ status NOTIFY stateChanged)
     Q_PROPERTY(QString name READ name NOTIFY recordingChanged)
     Q_PROPERTY(QString speed READ speed NOTIFY positionChanged)
+    Q_PROPERTY(QVariantMap speedGauge READ speedGauge NOTIFY recordingChanged)
+    Q_PROPERTY(QVariantMap moviePreferences READ moviePreferences NOTIFY recordingChanged)
     Q_PROPERTY(QString cloudTopic READ cloudTopic NOTIFY recordingChanged)
     Q_PROPERTY(QString odometryTopic READ odometryTopic NOTIFY recordingChanged)
     Q_PROPERTY(QStringList cloudTopics READ cloudTopics NOTIFY recordingChanged)
     Q_PROPERTY(QStringList odometryTopics READ odometryTopics NOTIFY recordingChanged)
+    Q_PROPERTY(QStringList speedTopics READ speedTopics NOTIFY recordingChanged)
+    Q_PROPERTY(QString speedTopic READ speedTopic NOTIFY recordingChanged)
+    Q_PROPERTY(QString speedSelection READ speedSelection NOTIFY recordingChanged)
+    Q_PROPERTY(bool tfPose READ tfPose NOTIFY recordingChanged)
+    Q_PROPERTY(QString worldFrame READ worldFrame NOTIFY recordingChanged)
+    Q_PROPERTY(QString bodyFrame READ bodyFrame NOTIFY recordingChanged)
     Q_PROPERTY(int pointCount READ pointCount NOTIFY positionChanged)
     Q_PROPERTY(bool replacing READ replacing NOTIFY recordingChanged)
     Q_PROPERTY(bool demo READ demo NOTIFY recordingChanged)
@@ -62,10 +70,20 @@ public:
     QString status() const { return status_; }
     QString name() const { return record_->name; }
     QString speed() const;
+    QVariantMap speedGauge() const;
+    QVariantMap moviePreferences() const;
+    Q_INVOKABLE void setSpeedGauge(const QVariantMap &settings);
+    Q_INVOKABLE void setMoviePreferences(double speed, int audioIndex);
     QString cloudTopic() const { return record_->cloudTopic; }
     QString odometryTopic() const { return record_->odometryTopic; }
     QStringList cloudTopics() const { return record_->cloudTopics; }
     QStringList odometryTopics() const { return record_->odometryTopics; }
+    QStringList speedTopics() const { return record_->speedTopics; }
+    QString speedTopic() const { return record_->speedTopic; }
+    QString speedSelection() const;
+    bool tfPose() const { return record_->tfPose; }
+    QString worldFrame() const { return record_->frameId; }
+    QString bodyFrame() const { return record_->bodyFrame; }
     int pointCount() const;
     bool replacing() const { return record_->replace; }
     bool demo() const { return path_.isEmpty() && (!project_ || project_->source() == "demo"); }
@@ -127,6 +145,8 @@ public:
     Q_INVOKABLE void exportProjectFolder(const QUrl &parent);
     Q_INVOKABLE void setCloudTopic(const QString &topic);
     Q_INVOKABLE void setOdometryTopic(const QString &topic);
+    Q_INVOKABLE void setSpeedTopic(const QString &topic);
+    Q_INVOKABLE void setPoseSource(bool tf, const QString &world, const QString &body);
     Q_INVOKABLE void setReplacing(bool replace);
     Q_INVOKABLE void togglePlayback();
     Q_INVOKABLE void pause();

@@ -133,6 +133,11 @@ QString ProjectDocument::bag() const { return absoluteMedia(root_.value("bag").t
 bool ProjectDocument::isPortable() const { return root_.value("portable").toBool(); }
 QJsonObject ProjectDocument::values() const { return root_.value("values").toObject(); }
 
+QString ProjectDocument::extrinsics() const
+{
+    return absoluteMedia(root_.value("extrinsics").toString());
+}
+
 bool ProjectDocument::isLayerEnabled(const QString &layer) const
 {
     return root_.value("enabled").toObject().value(layer).toBool(true);
@@ -143,6 +148,63 @@ void ProjectDocument::setLayerEnabled(const QString &layer, bool isEnabled)
     auto enabled = root_.value("enabled").toObject();
     enabled.insert(layer, isEnabled);
     root_.insert("enabled", enabled);
+}
+
+QVariantMap ProjectDocument::speedGauge() const
+{
+    const auto scene = root_.value("composition").toObject();
+    const auto placement = scene.value("speed_position").toArray();
+    const double end = scene.value("speed_end").toDouble(-1.);
+    return {{"visible", scene.value("show_speed").toBool(false)},
+            {"start", scene.value("speed_start").toDouble(0.)}, {"end", end},
+            {"limit", scene.value("speed_limit").toDouble(10.)},
+            {"scale", scene.value("speed_scale").toDouble(1.)},
+            {"x", placement.size() == 2 ? placement[0].toDouble(.05) : .05},
+            {"y", placement.size() == 2 ? placement[1].toDouble(.32) : .32},
+            {"transparent", scene.value("speed_transparent").toBool(true)}};
+}
+
+void ProjectDocument::setSpeedGauge(const QVariantMap &changed)
+{
+    auto setup = speedGauge();
+    for (auto entry = changed.cbegin(); entry != changed.cend(); ++entry)
+        setup.insert(entry.key(), entry.value());
+    const auto validNumber = [&](const char *name) {
+        bool ok = false;
+        const double value = setup.value(QLatin1StringView(name)).toDouble(&ok);
+        if (!ok || !std::isfinite(value))
+            fail(QStringLiteral("速度表参数无效。"));
+        return value;
+    };
+    const double begin = validNumber("start"), end = validNumber("end");
+    const double limit = validNumber("limit"), scale = validNumber("scale");
+    const double x = validNumber("x"), y = validNumber("y");
+    if (begin < 0. || (end >= 0. && end <= begin) || limit <= 0. || scale < .35 || scale > 2.5 ||
+        x < 0. || x > 1. || y < 0. || y > 1.)
+        fail(QStringLiteral("请检查速度表时间区间、量程和缩放。"));
+    auto scene = root_.value("composition").toObject();
+    scene.insert("show_speed", setup.value("visible").toBool());
+    scene.insert("speed_start", begin);
+    scene.insert("speed_end", end < 0. ? QJsonValue(QJsonValue::Null) : QJsonValue(end));
+    scene.insert("speed_limit", limit);
+    scene.insert("speed_scale", scale);
+    scene.insert("speed_position", QJsonArray{x,y});
+    scene.insert("speed_transparent", setup.value("transparent").toBool());
+    root_.insert("composition", scene);
+}
+
+QVariantMap ProjectDocument::moviePreferences() const
+{
+    const auto scene = root_.value("composition").toObject();
+    return {{"speed", scene.value("play_rate").toDouble(1.)}, {"audio", scene.value("audio_id").toString()}};
+}
+
+void ProjectDocument::setMoviePreferences(double rate, const QString &audioId)
+{
+    auto scene = root_.value("composition").toObject();
+    scene.insert("play_rate", rate);
+    scene.insert("audio_id", audioId.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(audioId));
+    root_.insert("composition", scene);
 }
 
 bool ProjectDocument::comparePlans() const

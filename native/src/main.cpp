@@ -96,7 +96,7 @@ int smokeMovie(QGuiApplication &app)
     const auto ffprobe = QStandardPaths::findExecutable("ffprobe");
     if (ffmpeg.isEmpty() || ffprobe.isEmpty() ||
         QProcess::execute(ffmpeg, {"-v", "error", "-y", "-f", "lavfi", "-i",
-            "testsrc2=size=160x90:rate=24:duration=1", "-f", "lavfi", "-i",
+            "color=c=blue:size=160x90:rate=24:duration=1", "-f", "lavfi", "-i",
             "sine=frequency=440:sample_rate=48000:duration=1", "-c:v", "libx264", "-c:a", "aac", input}) != 0)
         return 1;
 
@@ -154,9 +154,19 @@ Rectangle {
                         stream.value("nb_frames").toString() == "12";
             }
         }
-        if (!audio || !video || replay.position() != .5)
-            qWarning() << movie.message() << "Expected 12 1080p/60 fps frames, AAC, and restored playhead";
-        app.exit(audio && video && replay.position() == .5 ? 0 : 1);
+        bool blue = false;
+        if (video) {
+            QProcess pixels;
+            pixels.start(ffmpeg, {"-v", "error", "-i", output, "-vf", "crop=2:2:960:540", "-frames:v", "1",
+                                  "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"});
+            if (pixels.waitForFinished(4000)) {
+                const auto rgb = pixels.readAllStandardOutput();
+                blue = rgb.size() == 12 && uchar(rgb[0]) < 60 && uchar(rgb[1]) < 60 && uchar(rgb[2]) > 180;
+            }
+        }
+        if (!audio || !video || !blue || replay.position() != .5)
+            qWarning() << movie.message() << "Expected 12 1080p/60 fps frames, decoded source pixels, AAC, and restored playhead";
+        app.exit(audio && video && blue && replay.position() == .5 ? 0 : 1);
     });
     window.show();
     QTimer::singleShot(100, &app, [&] { movie.start(QUrl::fromLocalFile(output), canvas, .1, .2, .5, 0); });

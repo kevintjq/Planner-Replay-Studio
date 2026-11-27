@@ -4,6 +4,8 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
+#include <QJsonArray>
+#include <QJsonDocument>
 #include <QSet>
 #include <QtEndian>
 #include <bzlib.h>
@@ -694,6 +696,106 @@ Odometry readOdometry(QByteArrayView data)
             header.frame, std::move(child)};
 }
 
+bool isVelocity(const QByteArray &type)
+{
+    return type == "geometry_msgs/Twist" || type == "geometry_msgs/TwistStamped" || type == "nav_msgs/Odometry";
+}
+
+std::pair<qint64, float> readVelocity(const QByteArray &type, QByteArrayView data, qint64 recorded)
+{
+    if (type == "nav_msgs/Odometry") {
+        const auto result = readOdometry(data).pose;
+        return {result.stamp ? result.stamp : recorded, result.speed.value_or(-1.f)};
+    }
+    Bytes input(data);
+    const auto stamp = type == "geometry_msgs/TwistStamped" ? messageHeader(input).stamp : recorded;
+    const auto point = readPosition(input);
+    const float length = std::hypot(point.x, point.y, point.z);
+    return {stamp ? stamp : recorded, std::isfinite(length) ? length : -1.f};
+}
+
+QString normalizedFrame(QString frame)
+{
+    frame = frame.trimmed();
+    while (frame.startsWith('/'))
+        frame.remove(0, 1);
+    return frame;
+}
+
+void importExtrinsics(TransformTree &tree, const QString &path)
+{
+    if (path.isEmpty())
+        return;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly) || file.size() > 1024*1024)
+        fail("无法读取项目外参文件。");
+    const auto json = QJsonDocument::fromJson(file.readAll());
+    if (!json.isArray())
+        fail("外参文件应包含 JSON 数组。");
+    for (const auto &entry : json.array()) {
+        const auto item = entry.toObject();
+        const auto parent = normalizedFrame(item.value("parent").toString());
+        const auto child = normalizedFrame(item.value("child").toString());
+        const auto translation = item.value("translation").toArray();
+        const auto rotation = item.value("quaternion_xyzw").toArray();
+        if (parent.isEmpty() || child.isEmpty() || parent == child || translation.size() != 3 || rotation.size() != 4 ||
+            std::any_of(translation.begin(), translation.end(), [](const auto &n) { return !n.isDouble(); }) ||
+            std::any_of(rotation.begin(), rotation.end(), [](const auto &n) { return !n.isDouble(); }))
+            fail("项目外参含无效的坐标或旋转。");
+        const QVector3D position(float(translation[0].toDouble()), float(translation[1].toDouble()), float(translation[2].toDouble()));
+        const QQuaternion orientation(float(rotation[3].toDouble()), float(rotation[0].toDouble()),
+                                      float(rotation[1].toDouble()), float(rotation[2].toDouble()));
+        if (!std::isfinite(position.lengthSquared()) || !std::isfinite(orientation.lengthSquared()) || orientation.isNull())
+            fail("项目外参含无效的坐标或旋转。");
+        tree.add(parent, child, 0, {position, orientation.normalized()}, true);
+    }
+}
+
+void setTfPoses(Recording &record, const LoadOptions &options, const TransformTree &tree,
+                const std::vector<Odometry> &odometry, const Cancel &cancel)
+{
+    auto body = normalizedFrame(options.body);
+    if (body.isEmpty() && !odometry.empty())
+        body = odometry.front().child;
+    if (body.isEmpty()) {
+        const auto frames = tree.frames();
+        for (const auto &name : {QStringLiteral("base_link"), QStringLiteral("body"), QStringLiteral("drone"), QStringLiteral("imu")}) {
+            const auto found = std::find_if(frames.begin(), frames.end(), [&](const auto &frame) {
+                return frame == name || frame.endsWith('/' + name);
+            });
+            if (found != frames.end()) {
+                body = *found;
+                break;
+            }
+        }
+    }
+    if (body.isEmpty())
+        fail("TF 位姿需要机体坐标系。");
+
+    auto world = normalizedFrame(options.world);
+    if (world.isEmpty())
+        world = tree.rootOf(body);
+    if (world == body)
+        fail("TF 世界与机体坐标系不能相同。");
+    if (record.frameId != world && !setFixedFrame(record, world, tree, cancel))
+        fail("录包点云缺少到指定世界坐标系的 TF。");
+
+    auto times = tree.sampleTimes(body);
+    if (times.empty()) {
+        for (const auto &frame : record.frames)
+            times.push_back(frame.stamp);
+    }
+    for (const auto time : times) {
+        checkCancel(cancel);
+        if (const auto transform = tree.lookup(world, body, time))
+            record.poses.push_back({time, transform->translation, transform->rotation, {}});
+    }
+    if (record.poses.empty())
+        fail("没有找到所选世界与机体之间的 TF 位姿。");
+    record.bodyFrame = body;
+    record.tfPose = true;
+}
+
 void bounds(Recording &record, const Cancel &cancel = {})
 {
     if (record.points.empty())
@@ -799,6 +901,10 @@ const Frame &Recording::frameAt(qint64 stamp) const
 
 std::optional<Pose> Recording::poseAt(qint64 stamp) const
 {
+    if (tfPose && transforms) {
+        const auto pose = transforms->lookup(frameId, bodyFrame, stamp);
+        return pose ? std::optional(Pose{stamp, pose->translation, pose->rotation, {}}) : std::nullopt;
+    }
     const auto next = std::lower_bound(poses.begin(), poses.end(), stamp,
                                       [](const Pose &pose, qint64 t) { return pose.stamp < t; });
     if (next != poses.end() && next->stamp == stamp)
@@ -806,7 +912,7 @@ std::optional<Pose> Recording::poseAt(qint64 stamp) const
     if (next == poses.begin() || next == poses.end())
         return std::nullopt;
     const auto &before = *std::prev(next);
-    if (next->stamp - before.stamp > Second / 2)
+    if (next->stamp - before.stamp > maximumGap)
         return std::nullopt;
     const auto weight = float(stamp - before.stamp) / float(next->stamp - before.stamp);
     std::optional<float> speed;
@@ -814,6 +920,36 @@ std::optional<Pose> Recording::poseAt(qint64 stamp) const
         speed = std::lerp(*before.speed, *next->speed, weight);
     return Pose{stamp, before.position * (1-weight) + next->position * weight,
                 QQuaternion::slerp(before.rotation, next->rotation, weight), speed};
+}
+
+std::optional<float> Recording::speedAt(qint64 stamp) const
+{
+    if (!speeds.empty()) {
+        const auto next = std::lower_bound(speeds.begin(), speeds.end(), stamp,
+            [](const auto &sample, qint64 time) { return sample.first < time; });
+        if (next != speeds.end() && next->first == stamp && next->second >= 0.f)
+            return next->second;
+        if (next != speeds.begin() && next != speeds.end()) {
+            const auto before = std::prev(next);
+            if (next->first - before->first <= maximumGap && before->second >= 0.f && next->second >= 0.f) {
+                const float portion = float(stamp - before->first) / float(next->first - before->first);
+                return std::lerp(before->second, next->second, portion);
+            }
+        }
+    }
+    const auto center = poseAt(stamp);
+    if (!center)
+        return {};
+    if (speedTopic.isEmpty() && center->speed)
+        return center->speed;
+    constexpr qint64 offset = 120'000'000;
+    const auto left = poseAt(stamp - offset);
+    const auto right = poseAt(stamp + offset);
+    const auto begin = left ? *left : *center;
+    const auto end = right ? *right : *center;
+    if (begin.stamp >= end.stamp)
+        return {};
+    return (end.position - begin.position).length() / float(double(end.stamp - begin.stamp) / Second);
 }
 
 std::optional<TopicMessage> inspectBagTopic(const QString &path, const QString &topic, qint64 stamp,
@@ -869,9 +1005,13 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
     auto [chunks, connections] = readBagDirectory(file, cancel);
     auto record = std::make_shared<Recording>();
     record->name = QFileInfo(file).fileName();
+    if (std::isfinite(options.maximumGap) && options.maximumGap > 0. && options.maximumGap <= 60.)
+        record->maximumGap = qint64(options.maximumGap * Second);
 
     for (const auto &[id, connection] : connections) {
         record->topics.append(connection.topic);
+        if (isVelocity(connection.type))
+            record->speedTopics.append(connection.topic);
         if (connection.type == "sensor_msgs/PointCloud2")
             record->cloudTopics.append(connection.topic);
         if (connection.type == "nav_msgs/Odometry")
@@ -879,6 +1019,8 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
     }
     record->topics.removeDuplicates();
     record->topics.sort();
+    record->speedTopics.removeDuplicates();
+    record->speedTopics.sort();
     record->cloudTopics.removeDuplicates();
     record->odometryTopics.removeDuplicates();
     record->cloudTopics.sort();
@@ -899,6 +1041,22 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
     }
     if (!record->odometryTopic.isEmpty() && !record->odometryTopics.contains(record->odometryTopic))
         fail("所选里程计话题不存在。");
+    record->speedTopic = options.speedTopic;
+    if (record->speedTopic.isEmpty() || record->speedTopic == QStringLiteral("自动识别")) {
+        record->speedTopic = options.tfPose ? QString() : record->odometryTopic;
+        if (record->speedTopic.isEmpty()) {
+            for (const auto &suffix : {"/local_position/velocity_local", "/local_position/velocity_body", "/velocity"}) {
+                const auto found = std::find_if(record->speedTopics.begin(), record->speedTopics.end(),
+                    [&](const auto &topic) { return topic.endsWith(QLatin1StringView(suffix)); });
+                if (found != record->speedTopics.end()) {
+                    record->speedTopic = *found;
+                    break;
+                }
+            }
+        }
+    }
+    if (!record->speedTopic.isEmpty() && !record->speedTopics.contains(record->speedTopic))
+        fail("所选速度话题不存在或消息类型不受支持。");
     record->replace = options.mapMode ? *options.mapMode == MapMode::Replace : plannerMap(record->cloudTopic);
 
     QHash<QString, std::vector<size_t>> overlayIndices;
@@ -942,9 +1100,11 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
         record->topicOverlays.push_back({display});
     }
     QSet<QString> unreadableTopics;
-    TransformTree transforms;
+    TransformTree transforms(record->maximumGap);
+    importExtrinsics(transforms, options.extrinsics);
     QHash<size_t, QHash<QString, size_t>> transformLayers;
-    const bool importTransforms = !options.topicLayout.fixedFrame.isEmpty() || !overlayIndices.isEmpty();
+    const bool importTransforms = options.tfPose || !options.world.isEmpty() ||
+        !options.topicLayout.fixedFrame.isEmpty() || !overlayIndices.isEmpty();
     size_t overlayPoints = 0, transformCount = 0;
     std::vector<Odometry> odometry;
     for (size_t i = 0; i < chunks.size(); ++i) {
@@ -971,6 +1131,13 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
                 readCloud(*record, data, recorded, cancel);
             } else if (connection.topic == record->odometryTopic && connection.type == "nav_msgs/Odometry")
                 odometry.push_back(readOdometry(data));
+            if (!record->speedTopic.isEmpty() && connection.topic == record->speedTopic && isVelocity(connection.type)) {
+                try {
+                    record->speeds.push_back(readVelocity(connection.type, data, Bytes(header.value("time")).time()));
+                } catch (const std::runtime_error &) {
+                    unreadableTopics.insert(connection.topic);
+                }
+            }
             const auto layers = overlayIndices.constFind(connection.topic);
             if (importTransforms && (connection.type == "tf2_msgs/TFMessage" || connection.type == "tf/tfMessage") &&
                 (connection.topic == "/tf" || connection.topic == "/tf_static" || layers != overlayIndices.cend())) {
@@ -1108,31 +1275,44 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
 
     if (record->frames.empty())
         fail("未找到所选话题的点云帧。");
-    bool local = !odometry.empty() && record->frameId == odometry.front().child;
-    for (const auto &sample : odometry) {
-        checkCancel(cancel);
-        if (sample.pose.stamp > 0 && !sample.pose.rotation.isNull()
-            && std::isfinite(sample.pose.position.lengthSquared())
-            && (local ? sample.child == record->frameId && sample.parent == odometry.front().parent
-                      : sample.parent == record->frameId))
-            record->poses.push_back(sample.pose);
-    }
-    std::stable_sort(record->poses.begin(), record->poses.end(), [](const Pose &a, const Pose &b) {
-        return a.stamp < b.stamp;
+    std::stable_sort(record->speeds.begin(), record->speeds.end(), [](const auto &a, const auto &b) {
+        return a.first < b.first;
     });
-    if (local) {
-        for (const auto &scan : record->frames) {
+    record->speeds.erase(std::unique(record->speeds.begin(), record->speeds.end(),
+        [](const auto &a, const auto &b) { return a.first == b.first; }), record->speeds.end());
+    transforms.prepare();
+    if (options.tfPose) {
+        setTfPoses(*record, options, transforms, odometry, cancel);
+    } else {
+        bool local = !odometry.empty() && record->frameId == odometry.front().child;
+        for (const auto &sample : odometry) {
             checkCancel(cancel);
-            const auto pose = record->poseAt(scan.stamp);
-            if (!pose && scan.first != scan.end)
-                fail("机体点云的部分帧缺少同步里程计，请选择配准点云或录制对应位姿。");
-            for (int i = scan.first; pose && i < scan.end; ++i) {
-                const auto p = record->points[size_t(i)];
-                const auto world = pose->rotation.rotatedVector({p.x, p.y, p.z}) + pose->position;
-                record->points[size_t(i)] = {world.x(), world.y(), world.z()};
-            }
+            if (sample.pose.stamp > 0 && !sample.pose.rotation.isNull()
+                && std::isfinite(sample.pose.position.lengthSquared())
+                && (local ? sample.child == record->frameId && sample.parent == odometry.front().parent
+                          : sample.parent == record->frameId))
+                record->poses.push_back(sample.pose);
         }
-        record->frameId = odometry.front().parent;
+        std::stable_sort(record->poses.begin(), record->poses.end(), [](const Pose &a, const Pose &b) {
+            return a.stamp < b.stamp;
+        });
+        if (local) {
+            for (const auto &scan : record->frames) {
+                checkCancel(cancel);
+                const auto pose = record->poseAt(scan.stamp);
+                if (!pose && scan.first != scan.end)
+                    fail("机体点云的部分帧缺少同步里程计，请选择配准点云或录制对应位姿。");
+                for (int i = scan.first; pose && i < scan.end; ++i) {
+                    const auto p = record->points[size_t(i)];
+                    const auto world = pose->rotation.rotatedVector({p.x, p.y, p.z}) + pose->position;
+                    record->points[size_t(i)] = {world.x(), world.y(), world.z()};
+                }
+            }
+            record->frameId = odometry.front().parent;
+        }
+
+        if (!odometry.empty())
+            record->bodyFrame = odometry.front().child;
     }
 
     for (auto &overlay : record->topicOverlays) {
@@ -1142,7 +1322,6 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
                     sample.frameId = record->frameId;
         }
     }
-    transforms.prepare();
     if (!options.topicLayout.fixedFrame.isEmpty() && options.topicLayout.fixedFrame != record->frameId)
         setFixedFrame(*record, options.topicLayout.fixedFrame, transforms, cancel);
 

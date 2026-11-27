@@ -53,11 +53,10 @@ void TransformTree::prepare()
     }
 }
 
-std::optional<RigidTransform> TransformTree::Edge::at(qint64 stamp) const
+std::optional<RigidTransform> TransformTree::Edge::at(qint64 stamp, qint64 maximumGap) const
 {
     if (fixed)
         return fixed;
-    constexpr qint64 MaxGap = 500'000'000;
     const auto next = std::upper_bound(samples.begin(), samples.end(), stamp,
         [](qint64 time, const Sample &sample) { return time < sample.stamp; });
     if (next == samples.begin())
@@ -65,11 +64,47 @@ std::optional<RigidTransform> TransformTree::Edge::at(qint64 stamp) const
     const auto &before = *std::prev(next);
     if (before.stamp == stamp)
         return before.transform;
-    if (next == samples.end() || next->stamp - before.stamp > MaxGap)
+    if (next == samples.end() || next->stamp - before.stamp > maximumGap)
         return {};
     const float fraction = float(double(stamp - before.stamp) / double(next->stamp - before.stamp));
     return RigidTransform{before.transform.translation * (1.f - fraction) + next->transform.translation * fraction,
                           QQuaternion::slerp(before.transform.rotation, next->transform.rotation, fraction)};
+}
+
+QString TransformTree::rootOf(const QString &frame) const
+{
+    auto current = frame;
+    auto edge = edges_.constFind(current);
+    while (edge != edges_.cend()) {
+        current = edge->parent;
+        edge = edges_.constFind(current);
+    }
+    return current;
+}
+
+QStringList TransformTree::frames() const
+{
+    QStringList result;
+    for (auto edge = edges_.cbegin(); edge != edges_.cend(); ++edge) {
+        result << edge.key() << edge->parent;
+    }
+    result.removeDuplicates();
+    result.sort();
+    return result;
+}
+
+std::vector<qint64> TransformTree::sampleTimes(const QString &frame) const
+{
+    std::vector<qint64> result;
+    auto edge = edges_.constFind(frame);
+    while (edge != edges_.cend()) {
+        for (const auto &sample : edge->samples)
+            result.push_back(sample.stamp);
+        edge = edges_.constFind(edge->parent);
+    }
+    std::sort(result.begin(), result.end());
+    result.erase(std::unique(result.begin(), result.end()), result.end());
+    return result;
 }
 
 std::optional<RigidTransform> TransformTree::lookup(const QString &target, const QString &source, qint64 stamp) const
@@ -83,7 +118,7 @@ std::optional<RigidTransform> TransformTree::lookup(const QString &target, const
     while (!sourceChain.contains(frame)) {
         sourceChain.insert(frame, worldFromSource);
         const auto edge = edges_.constFind(frame);
-        const auto transform = edge == edges_.cend() ? std::nullopt : edge->at(stamp);
+        const auto transform = edge == edges_.cend() ? std::nullopt : edge->at(stamp, maximumGap_);
         if (!transform)
             break;
         worldFromSource = *transform * worldFromSource;
@@ -99,7 +134,7 @@ std::optional<RigidTransform> TransformTree::lookup(const QString &target, const
             return worldFromTarget.inverted() * item.value();
         seen.insert(frame);
         const auto edge = edges_.constFind(frame);
-        const auto transform = edge == edges_.cend() ? std::nullopt : edge->at(stamp);
+        const auto transform = edge == edges_.cend() ? std::nullopt : edge->at(stamp, maximumGap_);
         if (!transform)
             break;
         worldFromTarget = *transform * worldFromTarget;

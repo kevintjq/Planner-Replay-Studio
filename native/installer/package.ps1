@@ -18,7 +18,7 @@ if (!$opencvDlls -or !($opencvDlls | Where-Object Name -Like 'opencv_videoio_ffm
 }
 $opencvDlls | Copy-Item -Destination $AppDirectory
 
-windeployqt --release --no-compiler-runtime --qmldir "$root/native/qml" $appExe
+windeployqt --release --no-compiler-runtime --qmldir "$root/native/qml" $appExe (Join-Path $AppDirectory "PlannerReplayCli.exe")
 if ($LASTEXITCODE -ne 0) { throw "windeployqt failed with exit code $LASTEXITCODE." }
 
 # Use Visual Studio's designated x64 redistributable CRT files for app-local deployment.

@@ -158,3 +158,29 @@ jobs:
           name: PlannerReplayNative-Windows-x64
           path: dist/PlannerReplayNative-Setup.exe
           if-no-files-found: error
+
+  prerelease:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: native-windows-prerelease
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: PlannerReplayNative-Windows-x64
+          path: installer
+      - name: Publish the verified C++ Windows preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="native-v0.1.1-preview"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            exit 0
+          fi
+          gh release create "$tag" installer/PlannerReplayNative-Setup.exe \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "Planner Replay Studio C++ Preview (${GITHUB_SHA:0:7})" \
+            --notes "Windows x64 C++ preview. The installer has passed the Windows install, launch, export and uninstall checks. MP4 export requires FFmpeg. Legacy feature parity is still in progress."

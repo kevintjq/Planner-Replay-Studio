@@ -118,13 +118,13 @@ ProjectDocument ProjectDocument::load(const QString &manifest)
     return ProjectDocument(path, document.object());
 }
 
-ProjectDocument ProjectDocument::create(const QString &source, const QString &bag)
+ProjectDocument ProjectDocument::create(const QString &source, const QString &bag, const QString &extrinsics)
 {
     QJsonObject scene{{"main_view", QJsonObject{{"kind", "rear"}, {"width", 1.}, {"position", QJsonArray{.5, .5}}}},
                       {"views", QJsonArray{}}, {"videos", QJsonArray{}}, {"texts", QJsonArray{}}};
     return ProjectDocument({}, QJsonObject{{"version", 1}, {"source", source},
         {"bag", bag.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(absolutePath(bag))},
-        {"extrinsics", QJsonValue(QJsonValue::Null)}, {"values", QJsonObject{}},
+        {"extrinsics", extrinsics.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(absolutePath(extrinsics))}, {"values", QJsonObject{}},
         {"enabled", QJsonObject{}}, {"composition", scene}});
 }
 

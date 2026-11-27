@@ -1,10 +1,13 @@
 #include "replay_data.h"
+#include "live_capture.h"
+#include "project_document.h"
 
 #include <QCommandLineParser>
 #include <QCoreApplication>
 #include <QJsonDocument>
 #include <QFileInfo>
 #include <QProcess>
+#include <QTemporaryDir>
 #include <cmath>
 #include <QTextStream>
 #include <exception>
@@ -22,17 +25,27 @@ int main(int argc, char **argv)
     const QCommandLineOption output("output", "Save a PNG or MP4 to this path.", "file");
     const QCommandLineOption start("start", "Start at this playback time in seconds.", "seconds", "0");
     const QCommandLineOption duration("seconds", "Export this many seconds, or 0 for the entire remaining interval.", "seconds", "0");
-    parser.addOptions({output, start, duration});
+    const QCommandLineOption port("port", "Loopback port for the ROS relay.", "port", "8765");
+    const QCommandLineOption delay("delay", "Additional ROS seconds for TF and odometry lookahead.", "seconds", "0.3");
+    const QCommandLineOption cloud("cloud-topic", "ROS PointCloud2 topic.", "topic");
+    const QCommandLineOption odometry("odom-topic", "ROS Odometry topic.", "topic");
+    const QCommandLineOption world("world", "World frame for replay.", "frame");
+    const QCommandLineOption body("body", "Body frame for replay.", "frame");
+    const QCommandLineOption pose("pose-source", "Pose source: odom or tf.", "source", "odom");
+    const QCommandLineOption gap("max-gap", "Maximum interpolation gap in seconds.", "seconds", "0.5");
+    const QCommandLineOption extrinsics("extrinsics", "JSON file with static transforms.", "file");
+    parser.addOptions({output, start, duration, port, delay, cloud, odometry, world, body, pose, gap, extrinsics});
     parser.addHelpOption();
-    parser.addPositionalArgument("command", "inspect, export, bag, or demo.");
+    parser.addPositionalArgument("command", "inspect, export, bag, demo, or listen.");
     parser.addPositionalArgument("source", "ROS1 bag or .slamfpv project.", "[source]");
     parser.process(app);
 
     const auto args = parser.positionalArguments();
     const auto command = args.value(0);
-    if (command == "export" || command == "bag" || command == "demo") {
+    if (command == "export" || command == "bag" || command == "demo" || command == "listen") {
         const bool demo = command == "demo";
-        if (args.size() != (demo ? 1 : 2) || !parser.isSet(output))
+        const bool live = command == "listen";
+        if (args.size() != (demo || live ? 1 : 2) || !parser.isSet(output))
             parser.showHelp(2);
         bool startOk = false, durationOk = false;
         const double begin = parser.value(start).toDouble(&startOk);
@@ -44,7 +57,52 @@ int main(int argc, char **argv)
             QTextStream(stderr) << "Expected a valid PNG or MP4 destination and nonnegative times." << Qt::endl;
             return 2;
         }
-        const auto source = demo ? QStringLiteral(":demo:") : QFileInfo(args[1]).absoluteFilePath();
+        QString source = demo ? QStringLiteral(":demo:") : QFileInfo(args.value(1)).absoluteFilePath();
+        std::unique_ptr<QTemporaryDir> capture;
+        double exportSeconds = seconds;
+        if (live || command == "bag") {
+            try {
+                const auto poseSource = parser.value(pose);
+                bool gapOk = false;
+                const double maximumGap = parser.value(gap).toDouble(&gapOk);
+                if ((poseSource != "odom" && poseSource != "tf") || !gapOk ||
+                    !std::isfinite(maximumGap) || maximumGap <= 0. || maximumGap > 60.)
+                    throw std::runtime_error("Invalid pose source or interpolation gap.");
+
+                const auto cloudTopic = parser.isSet(cloud) ? parser.value(cloud) : live ? QStringLiteral("/cloud_registered") : QString();
+                const auto odomTopic = parser.isSet(odometry) ? parser.value(odometry) : live ? QStringLiteral("/Odometry") : QString();
+                capture = std::make_unique<QTemporaryDir>();
+                if (!capture->isValid())
+                    throw std::runtime_error("Cannot create the temporary replay project.");
+                if (live) {
+                    bool portOk = false, delayOk = false;
+                    const int portNumber = parser.value(port).toInt(&portOk);
+                    const double lookahead = parser.value(delay).toDouble(&delayOk);
+                    exportSeconds = seconds > 0. ? seconds : 6.;
+                    if (!portOk || portNumber < 1 || portNumber > 65535 || !delayOk || !std::isfinite(lookahead) ||
+                        lookahead < 0. || lookahead > 60. || !cloudTopic.startsWith('/') || !odomTopic.startsWith('/') ||
+                        exportSeconds > 86'400. || begin > 86'400.)
+                        throw std::runtime_error("Invalid relay port, lookahead, topics or recording duration.");
+                    if (suffix == "mp4" && !parser.isSet(duration))
+                        exportSeconds = 6.;
+                    const double captureSeconds = begin + (suffix == "png" ? 0. : exportSeconds);
+                    source = capture->filePath("relay.bag");
+                    replay::captureLiveBag(source, {quint16(portNumber), cloudTopic, odomTopic, captureSeconds, lookahead});
+                }
+                const auto calibration = parser.isSet(extrinsics) ? QFileInfo(parser.value(extrinsics)).absoluteFilePath() : QString();
+                auto doc = replay::ProjectDocument::create("bag", source, calibration);
+                doc.setValue("cloud_topic", cloudTopic);
+                doc.setValue("odom_topic", poseSource == "tf" && !parser.isSet(odometry) ? QString() : odomTopic);
+                doc.setValue("pose_source", poseSource == "tf" ? QStringLiteral("TF") : QStringLiteral("Odometry"));
+                doc.setValue("max_gap", parser.value(gap));
+                doc.setValue("world", parser.value(world));
+                doc.setValue("body", parser.value(body));
+                source = doc.saveAs(capture->filePath("export.slamfpv")).path();
+            } catch (const std::exception &error) {
+                QTextStream(stderr) << QString::fromUtf8(error.what()) << Qt::endl;
+                return 1;
+            }
+        }
         auto program = QCoreApplication::applicationDirPath() + QStringLiteral("/PlannerReplayNative");
 #ifdef Q_OS_WIN
         program += QStringLiteral(".exe");
@@ -52,7 +110,7 @@ int main(int argc, char **argv)
         QProcess window;
         window.setProcessChannelMode(QProcess::ForwardedChannels);
         window.start(program, {"--batch", source, destination.absoluteFilePath(),
-                               QString::number(begin, 'g', 17), QString::number(seconds, 'g', 17)});
+                               QString::number(begin, 'g', 17), QString::number(exportSeconds, 'g', 17)});
         if (!window.waitForStarted() || !window.waitForFinished(-1) || window.exitStatus() != QProcess::NormalExit) {
             QTextStream(stderr) << "Could not run the native export window: " << window.errorString() << Qt::endl;
             return 1;

@@ -14,7 +14,7 @@ namespace replay {
 class ProjectDocument {
 public:
     static ProjectDocument load(const QString &manifest);
-    static ProjectDocument create(const QString &source, const QString &bag = {});
+    static ProjectDocument create(const QString &source, const QString &bag = {}, const QString &extrinsics = {});
 
     QString source() const;
     QString bag() const;

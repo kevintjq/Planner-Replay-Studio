@@ -72,3 +72,16 @@ PlannerReplayCli demo --start 0.5 --output demo.png
 ```
 
 MP4 的播放速度和音轨使用项目设置，时间参数以回放秒数为单位。省略 `--seconds` 时导出到录制结束。
+
+在已安装 ROS1 Noetic 的 Linux 端，可编译 C++ 点云发送端。先启动接收端，再启动发送端。
+
+```sh
+source /opt/ros/noetic/setup.bash
+cmake -S examples/ros1-native -B build-ros-relay
+cmake --build build-ros-relay --parallel
+PlannerReplayCli listen --seconds 6 --output flight.mp4
+# 在另一个终端
+./build-ros-relay/planner_replay_bridge
+```
+
+发送端需要 ROS1 的 roscpp、topic_tools 和 Qt 5 开发包。两端默认使用本机 8765 端口。接收完成后由原生工作台导出。

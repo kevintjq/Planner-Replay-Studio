@@ -24,7 +24,9 @@ public:
     void setValue(const QString &key, const QString &value);
     std::vector<VideoClip> videos() const;
     void addVideo(const QString &file);
+    QJsonObject videoTiming(qsizetype index) const;
     void setVideoTiming(qsizetype index, const QJsonObject &changes);
+    void replaceVideoTiming(qsizetype index, const QJsonObject &edit);
 
     ProjectDocument saveAs(const QString &manifest) const;
     QString exportFolder(const QString &folder, const std::function<bool()> &cancel = {}) const;

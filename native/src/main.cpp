@@ -72,7 +72,40 @@ int main(int argc, char **argv)
                     app.exit(0);
                     return;
                 }
-                replay.addVideo(QUrl::fromLocalFile(QFileInfo(app.arguments().at(fixtureIndex)).absoluteFilePath()));
+                const auto fixture = QUrl::fromLocalFile(QFileInfo(app.arguments().at(fixtureIndex)).absoluteFilePath());
+                replay.addVideo(fixture);
+                replay.addVideo(fixture);
+                replay.setVideoAnchor(0, 0, QStringLiteral("0.2"));
+                replay.seek(1.);
+                replay.setVideoAnchor(0, 1, QStringLiteral("1.4"));
+                replay.trimVideoSegment(0, 0, .1, 2.);
+                replay.splitVideo(0, .8);
+                replay.deleteVideoSegment(0, 1.2);
+                const auto preview = [&replay](int layer, double seconds) {
+                    replay.seek(seconds);
+                    return replay.videoSeconds(layer);
+                };
+                if (preview(0, .05) >= 0. || preview(0, .5) < 0. || preview(0, 1.2) >= 0. ||
+                    preview(1, 1.2) < 0. || !replay.canUndo()) {
+                    qWarning("Video trim, split or deletion was not applied to the selected track");
+                    app.exit(1);
+                    return;
+                }
+                replay.undo();
+                if (preview(0, 1.2) < 0. || !replay.canRedo()) {
+                    qWarning("Video deletion could not be undone");
+                    app.exit(1);
+                    return;
+                }
+                replay.redo();
+                const auto editedUrl = QUrl::fromLocalFile(scratch.filePath(QStringLiteral("edited.slamfpv")));
+                replay.saveProjectAs(editedUrl);
+                replay.openProject(editedUrl);
+                if (preview(0, 1.2) >= 0. || preview(0, .5) < 0. || replay.canUndo()) {
+                    qWarning("The saved video edits did not survive reopening");
+                    app.exit(1);
+                    return;
+                }
                 auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
                 auto *output = window ? videoOutput(window->contentItem()) : nullptr;
                 auto *sink = output ? output->property("videoSink").value<QVideoSink *>() : nullptr;

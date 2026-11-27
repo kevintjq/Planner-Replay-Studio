@@ -56,14 +56,19 @@ Item {
         function onPositionChanged() { frame.synchronize(false) }
         function onPlayingChanged() { frame.synchronize(false) }
     }
+    onFootageChanged: synchronize(true)
+
     MediaPlayer {
         id: player
         source: frame.footage.url
         playbackRate: frame.footage.rate
         videoOutput: output
-        onSeekableChanged: if (seekable) frame.synchronize(true)
-        onDurationChanged: frame.synchronize(false)
-        onMediaStatusChanged: if (mediaStatus === MediaPlayer.LoadedMedia) frame.synchronize(true)
+        onSeekableChanged: if (player.seekable) frame.synchronize(true)
+        onDurationChanged: {
+            frame.controller.setVideoDuration(frame.clipIndex, frame.footage.url, player.duration / 1000)
+            frame.synchronize(false)
+        }
+        onMediaStatusChanged: if (player.mediaStatus === MediaPlayer.LoadedMedia) frame.synchronize(true)
         Component.onCompleted: frame.synchronize(true)
     }
     VideoOutput {

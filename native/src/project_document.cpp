@@ -181,17 +181,30 @@ void ProjectDocument::addVideo(const QString &file)
     root_.insert("composition", scene);
 }
 
+QJsonObject ProjectDocument::videoTiming(qsizetype index) const
+{
+    const auto layers = root_.value("composition").toObject().value("videos").toArray();
+    if (index < 0 || index >= layers.size())
+        fail(QStringLiteral("视频图层已失效。"));
+    return layers[index].toObject().value("edit").toObject();
+}
+
 void ProjectDocument::setVideoTiming(qsizetype index, const QJsonObject &changes)
+{
+    auto edit = videoTiming(index);
+    for (auto it = changes.begin(); it != changes.end(); ++it)
+        edit.insert(it.key(), it.value());
+    replaceVideoTiming(index, edit);
+}
+
+void ProjectDocument::replaceVideoTiming(qsizetype index, const QJsonObject &edit)
 {
     auto scene = root_.value("composition").toObject();
     auto layers = scene.value("videos").toArray();
     if (index < 0 || index >= layers.size())
         fail(QStringLiteral("视频图层已失效。"));
-    auto layer = layers[index].toObject();
-    auto edit = layer.value("edit").toObject();
-    for (auto it = changes.begin(); it != changes.end(); ++it)
-        edit.insert(it.key(), it.value());
     VideoTiming::fromJson(edit);
+    auto layer = layers[index].toObject();
     layer.insert("edit", edit);
     layers.replace(index, layer);
     scene.insert("videos", layers);

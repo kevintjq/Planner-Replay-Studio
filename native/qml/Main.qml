@@ -15,6 +15,8 @@ ApplicationWindow {
     title: "Planner Replay Studio"
     color: "#0d1420"
 
+    property int selectedVideo: 0
+
     readonly property color panel: "#151f30"
     readonly property color thin: "#2c3b51"
     readonly property color ink: "#e8f1fc"
@@ -58,7 +60,10 @@ ApplicationWindow {
         title: "添加实拍视频"
         fileMode: FileDialog.OpenFiles
         nameFilters: ["视频 (*.mp4 *.mov *.mkv *.avi *.webm)", "所有文件 (*)"]
-        onAccepted: for (const file of selectedFiles) replay.addVideo(file)
+        onAccepted: {
+            for (const file of selectedFiles)
+                replay.addVideo(file)
+        }
     }
     FolderDialog {
         id: packageDialog
@@ -67,6 +72,8 @@ ApplicationWindow {
     }
     Shortcut { sequence: StandardKey.Open; enabled: !replay.loading; onActivated: projectDialog.open() }
     Shortcut { sequence: StandardKey.SaveAs; enabled: !replay.loading; onActivated: saveDialog.open() }
+    Shortcut { sequences: [StandardKey.Undo]; enabled: !replay.loading && replay.canUndo; onActivated: replay.undo() }
+    Shortcut { sequences: [StandardKey.Redo]; enabled: !replay.loading && replay.canRedo; onActivated: replay.redo() }
     Shortcut { sequence: "Space"; onActivated: replay.togglePlayback() }
     Shortcut { sequence: "Left"; onActivated: { replay.pause(); replay.seek(replay.position - 1 / 60) } }
     Shortcut { sequence: "Right"; onActivated: { replay.pause(); replay.seek(replay.position + 1 / 60) } }
@@ -181,6 +188,8 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         model: replay.videoLayers
                         textRole: "label"
+                        currentIndex: count > 0 ? Math.min(window.selectedVideo, count - 1) : -1
+                        onActivated: (index) => window.selectedVideo = index
                         visible: count > 0
                     }
                     ColumnLayout {
@@ -309,13 +318,12 @@ ApplicationWindow {
                 }
 
                 Repeater {
-                    model: replay.videoLayers
+                    model: replay.videoLayers.length
                     delegate: FlightClip {
                         required property int index
-                        required property var modelData
                         controller: replay
                         clipIndex: index
-                        footage: modelData
+                        footage: replay.videoLayers[index]
                     }
                 }
 
@@ -351,39 +359,69 @@ ApplicationWindow {
             }
             Rectangle {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 90
+                Layout.preferredHeight: timelineContents.implicitHeight + 24
                 radius: 8
                 border.color: window.thin
                 color: window.panel
-                RowLayout {
+                ColumnLayout {
+                    id: timelineContents
                     anchors.fill: parent
-                    anchors.margins: 14
-                    spacing: 15
-                    Button {
-                        text: replay.playing ? "暂停" : "播放"
-                        highlighted: true
-                        enabled: !replay.loading && replay.duration > 0
-                        onClicked: replay.togglePlayback()
-                    }
-                    ColumnLayout {
-                        spacing: 3
+                    anchors.margins: 12
+                    spacing: 5
+
+                    VideoTimeline {
                         Layout.fillWidth: true
-                        Slider {
-                            id: timeline
-                            Layout.fillWidth: true
-                            from: 0
-                            to: replay.duration
-                            live: true
+                        visible: replay.videoLayers.length > 0
+                        controller: replay
+                        selectedIndex: videoPicker.currentIndex
+                        ink: window.ink
+                        accent: window.accent
+                        onSelected: (index) => window.selectedVideo = index
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Button {
+                            text: replay.playing ? "暂停" : "播放"
+                            highlighted: true
                             enabled: !replay.loading && replay.duration > 0
-                            value: replay.position
-                            onPressedChanged: if (pressed) replay.pause()
-                            onMoved: replay.seek(value)
+                            onClicked: replay.togglePlayback()
                         }
-                        RowLayout {
+                        Button {
+                            text: "分割"
+                            visible: replay.videoLayers.length > 0
+                            enabled: !replay.loading && videoPicker.currentIndex >= 0
+                            onClicked: replay.splitVideo(videoPicker.currentIndex, replay.position)
+                        }
+                        Button {
+                            text: "删除片段"
+                            visible: replay.videoLayers.length > 0
+                            enabled: !replay.loading && videoPicker.currentIndex >= 0
+                            onClicked: replay.deleteVideoSegment(videoPicker.currentIndex, replay.position)
+                        }
+                        Button { text: "撤销"; visible: replay.videoLayers.length > 0; enabled: !replay.loading && replay.canUndo; onClicked: replay.undo() }
+                        Button { text: "重做"; visible: replay.videoLayers.length > 0; enabled: !replay.loading && replay.canRedo; onClicked: replay.redo() }
+                        ColumnLayout {
+                            spacing: 3
                             Layout.fillWidth: true
-                            Caption { text: window.clock(replay.position) }
-                            Item { Layout.fillWidth: true }
-                            Caption { text: window.clock(replay.duration) }
+                            Slider {
+                                id: timeline
+                                Layout.fillWidth: true
+                                from: 0
+                                to: replay.duration
+                                live: true
+                                enabled: !replay.loading && replay.duration > 0
+                                value: replay.position
+                                onPressedChanged: if (pressed) replay.pause()
+                                onMoved: replay.seek(value)
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Caption { text: window.clock(replay.position) }
+                                Item { Layout.fillWidth: true }
+                                Caption { text: window.clock(replay.duration) }
+                            }
                         }
                     }
                 }

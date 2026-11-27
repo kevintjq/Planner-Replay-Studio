@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QString>
 #include <array>
@@ -20,7 +21,10 @@ struct VideoTiming {
     static VideoTiming fromJson(const QJsonObject &edit);
     double rate() const;
     double sourceSeconds(double replaySeconds) const;
+    double replaySeconds(double sourceSeconds) const;
     bool includes(double sourceSeconds) const;
+    std::vector<Range> spans() const;
+    static QJsonArray encodeSpans(const std::vector<Range> &ranges);
 };
 
 struct VideoClip {

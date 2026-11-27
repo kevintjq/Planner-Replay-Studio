@@ -56,7 +56,11 @@ void ReplayController::install(std::shared_ptr<const replay::Recording> record)
     pause();
     record_ = std::move(record);
     position_ = 0.;
+    undo_.clear();
+    redo_.clear();
+    videoDurations_.clear();
     refreshVideoLayers();
+    emit editHistoryChanged();
     emit recordingChanged();
     emit positionChanged();
 }
@@ -307,7 +311,22 @@ void ReplayController::refreshVideoLayers()
     QVariantList layers;
     for (const auto &clip : clips_) {
         const auto &timing = clip.timing;
-        QVariantList anchors, crop;
+        QVariantList anchors, crop, segments;
+        const double mediaDuration = videoDurations_.value(clip.path);
+        int part = 0;
+        for (const auto &[first, last] : timing.spans()) {
+            double end = last ? timing.replaySeconds(*last) : duration();
+            if (mediaDuration > 0.)
+                end = std::min(end, timing.replaySeconds(mediaDuration));
+            const double start = timing.replaySeconds(first);
+            const double visibleStart = std::max(0., start);
+            const double visibleEnd = std::min(duration(), end);
+            if (visibleEnd > visibleStart) {
+                segments.append(QVariantMap{{"part", part}, {"first", visibleStart}, {"last", visibleEnd},
+                    {"leftEdge", start >= 0.}, {"rightEdge", end <= duration()}});
+            }
+            ++part;
+        }
         for (const auto &[replaySeconds, sourceSeconds] : timing.anchors)
             anchors.append(QVariant::fromValue(QVariantList{replaySeconds, sourceSeconds}));
         for (double value : timing.crop)
@@ -319,7 +338,8 @@ void ReplayController::refreshVideoLayers()
             {"offset", QString::number(timing.offset, 'g', 16)},
             {"trimIn", QString::number(timing.trimIn, 'g', 16)},
             {"trimOut", timing.trimOut ? QString::number(*timing.trimOut, 'g', 16) : QString()},
-            {"rate", timing.rate()}, {"anchors", anchors}, {"crop", crop}
+            {"rate", timing.rate()}, {"anchors", anchors}, {"crop", crop},
+            {"segments", segments}
         });
     }
     videoLayers_ = std::move(layers);
@@ -356,8 +376,15 @@ void ReplayController::editVideo(int index, const QJsonObject &changes)
     if (loading_ || !project_)
         return;
     try {
+        const auto before = project_->videoTiming(index);
         project_->setVideoTiming(index, changes);
+        const auto after = project_->videoTiming(index);
+        if (before == after)
+            return;
+        undo_.push_back({index, before, after});
+        redo_.clear();
         refreshVideoLayers();
+        emit editHistoryChanged();
         status_ = tr("视频设置已更新。");
     } catch (const std::exception &error) {
         status_ = QString::fromUtf8(error.what());
@@ -409,4 +436,132 @@ void ReplayController::setVideoAnchor(int index, int slot, const QString &second
 void ReplayController::clearVideoAnchors(int index)
 {
     editVideo(index, {{"anchors", QJsonArray{}}});
+}
+
+void ReplayController::setVideoDuration(int index, const QUrl &url, double seconds)
+{
+    if (index < 0 || size_t(index) >= clips_.size() || !std::isfinite(seconds) || seconds <= 0.)
+        return;
+    const auto path = url.toLocalFile();
+    if (clips_[size_t(index)].path != path || videoDurations_.value(path) == seconds)
+        return;
+    videoDurations_.insert(path, seconds);
+    // Media metadata may arrive while QML is creating the delegates.
+    QMetaObject::invokeMethod(this, [this] { refreshVideoLayers(); }, Qt::QueuedConnection);
+}
+
+void ReplayController::storeVideoSpans(int index, const std::vector<replay::VideoTiming::Range> &ranges)
+{
+    editVideo(index, {{"trim_in", 0.}, {"trim_out", QJsonValue::Null},
+                      {"segments", replay::VideoTiming::encodeSpans(ranges)}});
+}
+
+void ReplayController::splitVideo(int index, double at)
+{
+    changeVideoSegment(index, at, false);
+}
+
+void ReplayController::deleteVideoSegment(int index, double at)
+{
+    changeVideoSegment(index, at, true);
+}
+
+void ReplayController::changeVideoSegment(int index, double at, bool remove)
+{
+    if (loading_ || index < 0 || size_t(index) >= clips_.size() || !std::isfinite(at))
+        return;
+
+    constexpr double epsilon = 1e-8;
+    const auto &clip = clips_[size_t(index)];
+    const auto &timing = clip.timing;
+    const double stamp = timing.sourceSeconds(at);
+    const double mediaDuration = videoDurations_.value(clip.path);
+    auto spans = timing.spans();
+    if (mediaDuration <= 0. || stamp < mediaDuration - epsilon) {
+        for (auto part = spans.begin(); part != spans.end(); ++part) {
+            const auto [first, last] = *part;
+            if (stamp < first - epsilon || (last && stamp >= *last - epsilon))
+                continue;
+            if (remove) {
+                spans.erase(part);
+            } else {
+                if (stamp <= first + epsilon)
+                    break;
+                part->second = stamp;
+                spans.insert(part + 1, {stamp, last});
+            }
+            storeVideoSpans(index, spans);
+            return;
+        }
+    }
+    status_ = tr("请把播放头移到所选视频片段内。");
+    emit stateChanged();
+}
+
+void ReplayController::trimVideoSegment(int index, int segment, double first, double last)
+{
+    if (loading_ || index < 0 || size_t(index) >= clips_.size() ||
+        segment < 0 || !std::isfinite(first) || !std::isfinite(last) || last <= first)
+        return;
+    const auto &clip = clips_[size_t(index)];
+    const auto &timing = clip.timing;
+    auto spans = timing.spans();
+    const size_t part = size_t(segment);
+    if (part >= spans.size())
+        return;
+
+    const auto [oldFirst, oldLast] = spans[part];
+    const double start = timing.sourceSeconds(first);
+    const double end = timing.sourceSeconds(last);
+    const double mediaDuration = videoDurations_.value(clip.path);
+    const double lower = part > 0 ? spans[part - 1].second.value() : 0.;
+    std::optional<double> upper;
+    if (part + 1 < spans.size())
+        upper = spans[part + 1].first;
+    if (mediaDuration > 0. && (!upper || mediaDuration < *upper))
+        upper = mediaDuration;
+
+    constexpr double epsilon = 1e-8;
+    const double visibleFirst = std::max(0., timing.replaySeconds(oldFirst));
+    double visibleLast = oldLast ? std::min(duration(), timing.replaySeconds(*oldLast)) : duration();
+    if (mediaDuration > 0.)
+        visibleLast = std::min(visibleLast, timing.replaySeconds(mediaDuration));
+    // Keep the original endpoint when the view clips it or the source ends implicitly.
+    const double nextFirst = std::abs(first - visibleFirst) < epsilon ? oldFirst : std::max(lower, start);
+    const auto nextLast = std::abs(last - visibleLast) < epsilon ? oldLast
+        : std::optional<double>(upper ? std::min(end, *upper) : end);
+    if ((nextLast && *nextLast <= nextFirst + epsilon) ||
+        (mediaDuration > 0. && nextFirst >= mediaDuration - epsilon))
+        return;
+    if (spans[part] != replay::VideoTiming::Range{nextFirst, nextLast}) {
+        spans[part] = {nextFirst, nextLast};
+        storeVideoSpans(index, spans);
+    }
+}
+
+void ReplayController::undo()
+{
+    restoreVideoEdit(false);
+}
+
+void ReplayController::redo()
+{
+    restoreVideoEdit(true);
+}
+
+void ReplayController::restoreVideoEdit(bool redo)
+{
+    auto &history = redo ? redo_ : undo_;
+    auto &destination = redo ? undo_ : redo_;
+    if (loading_ || !project_ || history.empty())
+        return;
+
+    const auto edit = history.back();
+    project_->replaceVideoTiming(edit.index, redo ? edit.after : edit.before);
+    destination.push_back(edit);
+    history.pop_back();
+    refreshVideoLayers();
+    status_ = redo ? tr("已重做视频编辑。") : tr("已撤销视频编辑。");
+    emit editHistoryChanged();
+    emit stateChanged();
 }

@@ -5,6 +5,7 @@
 
 #include <QElapsedTimer>
 #include <QFutureWatcher>
+#include <QHash>
 #include <QObject>
 #include <QTimer>
 #include <QUrl>
@@ -29,6 +30,8 @@ class ReplayController : public QObject {
     Q_PROPERTY(bool replacing READ replacing NOTIFY recordingChanged)
     Q_PROPERTY(bool demo READ demo NOTIFY recordingChanged)
     Q_PROPERTY(QString projectPath READ projectPath NOTIFY recordingChanged)
+    Q_PROPERTY(bool canUndo READ canUndo NOTIFY editHistoryChanged)
+    Q_PROPERTY(bool canRedo READ canRedo NOTIFY editHistoryChanged)
     Q_PROPERTY(QVariantList videoLayers READ videoLayers NOTIFY videoLayersChanged)
 public:
     explicit ReplayController(QObject *parent = nullptr);
@@ -58,6 +61,14 @@ public:
     Q_INVOKABLE void setVideoTrim(int index, const QString &trimIn, const QString &trimOut, const QString &offset);
     Q_INVOKABLE void setVideoAnchor(int index, int slot, const QString &seconds);
     Q_INVOKABLE void clearVideoAnchors(int index);
+    Q_INVOKABLE void splitVideo(int index, double at);
+    Q_INVOKABLE void deleteVideoSegment(int index, double at);
+    Q_INVOKABLE void trimVideoSegment(int index, int segment, double first, double last);
+    Q_INVOKABLE void setVideoDuration(int index, const QUrl &url, double seconds);
+    Q_INVOKABLE void undo();
+    Q_INVOKABLE void redo();
+    bool canUndo() const { return !undo_.empty(); }
+    bool canRedo() const { return !redo_.empty(); }
 
     Q_INVOKABLE void openBag(const QUrl &url);
     Q_INVOKABLE void openDemo();
@@ -78,6 +89,7 @@ signals:
     void positionChanged();
     void recordingChanged();
     void videoLayersChanged();
+    void editHistoryChanged();
 
 private:
     struct Result {
@@ -94,6 +106,16 @@ private:
     void setPosition(double seconds);
     void refreshVideoLayers();
     void editVideo(int index, const QJsonObject &changes);
+    void changeVideoSegment(int index, double at, bool remove);
+    void storeVideoSpans(int index, const std::vector<replay::VideoTiming::Range> &ranges);
+    struct VideoEdit {
+        int index;
+        QJsonObject before, after;
+    };
+    void restoreVideoEdit(bool redo);
+
+    QHash<QString, double> videoDurations_;
+    std::vector<VideoEdit> undo_, redo_;
 
     std::shared_ptr<const replay::Recording> record_;
     QFutureWatcher<Result> watcher_;

@@ -104,6 +104,37 @@ double VideoTiming::sourceSeconds(double replaySeconds) const
                            : anchors.front().second + (replaySeconds - anchors.front().first) * rate();
 }
 
+double VideoTiming::replaySeconds(double seconds) const
+{
+    return anchors.empty() ? seconds + offset
+                           : anchors.front().first + (seconds - anchors.front().second) / rate();
+}
+
+std::vector<VideoTiming::Range> VideoTiming::spans() const
+{
+    if (!segments)
+        return {{trimIn, trimOut}};
+
+    std::vector<Range> result;
+    for (const auto &[first, last] : *segments) {
+        const double start = std::max(first, trimIn);
+        auto end = last;
+        if (trimOut && (!end || *trimOut < *end))
+            end = trimOut;
+        if (!end || start < *end)
+            result.emplace_back(start, end);
+    }
+    return result;
+}
+
+QJsonArray VideoTiming::encodeSpans(const std::vector<Range> &ranges)
+{
+    QJsonArray output;
+    for (const auto &[first, last] : ranges)
+        output.append(QJsonArray{first, last ? QJsonValue(*last) : QJsonValue(QJsonValue::Null)});
+    return output;
+}
+
 bool VideoTiming::includes(double seconds) const
 {
     constexpr double epsilon = 1e-9;

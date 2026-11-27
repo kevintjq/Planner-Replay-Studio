@@ -28,6 +28,12 @@
 2. In **Data**, open a ROS1 `.bag` or choose **Use simulated data**. Confirm the cloud and pose topics, select views, and generate a preview.
 3. Add footage, images, or text under **Layers**. Drag to place and resize layers in the preview. Set visibility intervals and transitions on the timeline.
 
+## C++ preview
+
+The native Windows build runs without Python. It opens existing `.slamfpv` projects, imports RViz displays, replays EGO and SUPER layers, and exports PNG and 1080p / 60 fps MP4. MP4 export requires FFmpeg. The original packaged release remains available while compatibility work continues.
+
+[Windows development builds](https://github.com/kevintjq/Planner-Replay-Studio/actions/workflows/native-windows.yml) · [Native build and CLI guide](native/README.md) · [Compatibility checklist](docs/NATIVE_PARITY.md)
+
 ## Inputs and overlays
 
 | Data | Support |

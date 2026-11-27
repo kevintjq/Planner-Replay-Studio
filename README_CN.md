@@ -28,6 +28,12 @@
 2. 在「数据」打开 ROS1 `.bag`，或点「使用模拟数据」。确认点云和位姿话题，选择视角后点「生成预览」。
 3. 在「图层」添加实拍、图片或文字。拖动画面调整位置和大小，在时间轴上调整显示时段或添加缩窗过渡。
 
+## C++ 预览版
+
+原生 Windows 工作台无需 Python，可打开现有 `.slamfpv` 项目、导入 RViz 显示、回放 EGO 和 SUPER 图层，并导出 PNG 和 1080p / 60 fps MP4。MP4 导出需要 FFmpeg。功能对齐期间仍可下载现有正式版。
+
+[Windows 开发版安装包](https://github.com/kevintjq/Planner-Replay-Studio/actions/workflows/native-windows.yml) · [原生构建与命令行说明](native/README.md) · [功能对齐清单](docs/NATIVE_PARITY.md)
+
 ## 输入与叠加
 
 | 数据 | 支持内容 |

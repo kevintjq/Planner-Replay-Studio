@@ -6,11 +6,15 @@
 #include <QElapsedTimer>
 #include <QFutureWatcher>
 #include <QHash>
+#include <QImage>
 #include <QObject>
 #include <QTimer>
+#include <QQuickItem>
 #include <QUrl>
 #include <QVariantList>
 #include <atomic>
+
+class QQuickItemGrabResult;
 
 class ReplayController : public QObject {
     Q_OBJECT
@@ -34,6 +38,11 @@ class ReplayController : public QObject {
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY editHistoryChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY editHistoryChanged)
     Q_PROPERTY(QVariantList markers READ markers NOTIFY markersChanged)
+    Q_PROPERTY(bool transparentCanvas READ transparentCanvas NOTIFY transparentCanvasChanged)
+    Q_PROPERTY(bool capturing READ capturing NOTIFY stateChanged)
+    Q_PROPERTY(int captureMatte READ captureMatte NOTIFY stateChanged)
+    Q_PROPERTY(QVariantList layoutCues READ layoutCues NOTIFY layoutsChanged)
+    Q_PROPERTY(QVariantMap activeLayout READ activeLayout NOTIFY activeLayoutChanged)
     Q_PROPERTY(QVariantList sceneLayers READ sceneLayers NOTIFY sceneLayersChanged)
     Q_PROPERTY(QVariantList videoLayers READ videoLayers NOTIFY videoLayersChanged)
 public:
@@ -60,6 +69,15 @@ public:
 
     const QVariantList &videoLayers() const { return videoLayers_; }
     QVariantList markers() const;
+    QVariantList layoutCues() const { return layouts_.toVariantList(); }
+    QVariantMap activeLayout() const;
+    bool transparentCanvas() const { return project_ && project_->transparentCanvas(); }
+    bool capturing() const { return capturing_; }
+    int captureMatte() const { return captureMatte_; }
+    Q_INVOKABLE void setTransparentCanvas(bool transparent);
+    Q_INVOKABLE void exportFrame(const QUrl &url, QQuickItem *canvas);
+    Q_INVOKABLE void setLayoutCue(const QString &mode, int videoIndex, double transition);
+    Q_INVOKABLE void removeLayoutCue(double time);
     Q_INVOKABLE void addMarker();
     Q_INVOKABLE void renameMarker(double time, const QString &label);
     Q_INVOKABLE void removeMarker(double time);
@@ -106,6 +124,9 @@ signals:
     void videoLayersChanged();
     void sceneLayersChanged();
     void markersChanged();
+    void layoutsChanged();
+    void transparentCanvasChanged();
+    void activeLayoutChanged();
     void editHistoryChanged();
 
 private:
@@ -127,6 +148,9 @@ private:
     void setPosition(double seconds);
     void refreshVideoLayers();
     void refreshSceneLayers();
+    void grabFrame(QQuickItem *canvas, const QString &path, int matte = 0, const QImage &black = {});
+    void finishFrame(const QString &path, const QImage &image);
+    void refreshLayoutCues();
     void addSceneLayer(const QString &kind, const QString &content);
     void changeMarker(double time, const std::optional<QString> &label);
     void editVideo(int index, const QJsonObject &changes);
@@ -147,11 +171,14 @@ private:
     std::optional<replay::ProjectDocument> project_;
     std::vector<replay::VideoClip> clips_;
     QVariantList videoLayers_, sceneLayers_;
+    QJsonArray layouts_;
+    QSharedPointer<QQuickItemGrabResult> frameGrab_;
     QTimer timer_;
     QElapsedTimer clock_;
     QString path_, status_;
     std::optional<replay::MapMode> mapMode_;
     std::atomic_bool cancelRequested_ = false;
-    bool loading_ = false;
+    bool loading_ = false, capturing_ = false;
+    int captureMatte_ = 0;
     double position_ = 0., start_ = 0., progress_ = 0.;
 };

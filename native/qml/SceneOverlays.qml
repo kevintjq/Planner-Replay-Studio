@@ -3,6 +3,7 @@ import QtQuick
 Item {
     id: scene
     required property var controller
+    property bool showText: true
     signal selected(string id)
 
     Repeater {
@@ -22,7 +23,7 @@ Item {
             height: picture ? image.height : caption.implicitHeight
             visible: scene.controller.position >= modelData.start
                      && scene.controller.position < modelData.end
-                     && (!picture || image.status === Image.Ready)
+                     && (picture ? image.status === Image.Ready : scene.showText)
 
             Rectangle {
                 anchors.fill: parent

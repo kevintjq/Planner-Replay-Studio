@@ -6,6 +6,7 @@
 #include <QFileInfo>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <QQmlComponent>
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QSurfaceFormat>
@@ -26,6 +27,56 @@ QQuickItem *videoOutput(QQuickItem *item)
     }
     return nullptr;
 }
+int smokePng(QGuiApplication &app)
+{
+    QQuickWindow::setGraphicsApi(QSGRendererInterface::Software);
+    ReplayController replay;
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty("replay", &replay);
+    replay.setTransparentCanvas(true);
+    QQuickWindow window;
+    window.setColor(Qt::transparent);
+    window.resize(80, 60);
+    QQmlComponent component(&engine);
+    component.setData(R"qml(
+import QtQuick
+Rectangle {
+    width: 80
+    height: 60
+    color: replay.captureMatte === 1 ? "black" : replay.captureMatte === 2 ? "white" : "transparent"
+    Rectangle { x: 20; y: 15; width: 40; height: 30; color: "red" }
+    Rectangle { x: 2; y: 2; width: 10; height: 10; color: "#800000ff" }
+}
+)qml", QUrl());
+    std::unique_ptr<QObject> root(component.create());
+    auto *canvas = qobject_cast<QQuickItem *>(root.get());
+    if (!canvas)
+        return 1;
+    canvas->setParentItem(window.contentItem());
+    QTemporaryDir temporary;
+    if (!temporary.isValid())
+        return 1;
+    const auto file = temporary.filePath(QStringLiteral("canvas.png"));
+    QObject::connect(&replay, &ReplayController::stateChanged, &app, [&] {
+        if (replay.capturing())
+            return;
+        const QImage image(file);
+        const bool valid = image.size() == QSize(80, 60) && image.pixelColor(0, 0).alpha() == 0 &&
+                           image.pixelColor(40, 30) == QColor(Qt::red) &&
+                           std::abs(image.pixelColor(4, 4).alpha() - 128) <= 1 &&
+                           image.pixelColor(4, 4).blue() == 255;
+        if (!valid)
+            qWarning() << replay.status() << "Unexpected PNG dimensions or pixels"
+                       << image.size() << image.hasAlphaChannel() << image.pixelColor(0, 0)
+                       << image.pixelColor(40, 30);
+        app.exit(valid ? 0 : 1);
+    });
+    window.show();
+    QTimer::singleShot(100, &app, [&] { replay.exportFrame(QUrl::fromLocalFile(file), canvas); });
+    QTimer::singleShot(8000, &app, [&] { app.exit(1); });
+    return app.exec();
+}
+
 }
 
 int main(int argc, char **argv)
@@ -40,6 +91,9 @@ int main(int argc, char **argv)
     QGuiApplication app(argc, argv);
     app.setApplicationName("Planner Replay Native");
     app.setOrganizationName("Planner Replay");
+    QQuickWindow::setDefaultAlphaBuffer(true);
+    if (app.arguments().contains("--smoke-png"))
+        return smokePng(app);
     QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
     qmlRegisterType<CloudView>("PlannerReplay", 1, 0, "CloudView");
     qmlRegisterUncreatableType<ReplayController>("PlannerReplay", 1, 0, "ReplayController",
@@ -136,10 +190,26 @@ int main(int argc, char **argv)
                     return;
                 }
                 replay.redo();
+
+                replay.seek(.125);
+                replay.setLayoutCue(QStringLiteral("backdrop"), 0, .5);
+                const auto backdrop = replay.activeLayout().value("backdropId").toString();
+                replay.seek(.25);
+                replay.setLayoutCue(QStringLiteral("inset"), 0, .5);
+                replay.seek(.5);
+                if (backdrop.isEmpty() || replay.activeLayout().value("progress").toDouble() != .5) {
+                    qWarning("The backdrop-to-inset layout transition was not evaluated correctly");
+                    app.exit(1);
+                    return;
+                }
+                replay.seek(1.);
+                replay.setLayoutCue(QStringLiteral("cloud"), 0, 0.);
+                replay.removeLayoutCue(1.);
                 const auto editedUrl = QUrl::fromLocalFile(scratch.filePath(QStringLiteral("edited.slamfpv")));
                 replay.saveProjectAs(editedUrl);
                 replay.openProject(editedUrl);
-                if (preview(0, 1.2) >= 0. || preview(0, .5) < 0. || replay.canUndo()) {
+                if (preview(0, 1.2) >= 0. || preview(0, .5) < 0. || replay.canUndo() ||
+                    replay.layoutCues().size() != 2 || replay.activeLayout().value("progress").toDouble() != .5) {
                     qWarning("The saved video edits did not survive reopening");
                     app.exit(1);
                     return;

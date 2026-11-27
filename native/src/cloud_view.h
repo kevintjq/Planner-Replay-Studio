@@ -10,6 +10,7 @@ class CloudView : public QQuickFramebufferObject {
     Q_PROPERTY(ReplayController *controller READ controller WRITE setController NOTIFY controllerChanged)
     Q_PROPERTY(int camera READ camera WRITE setCamera NOTIFY cameraChanged)
     Q_PROPERTY(float pointSize READ pointSize WRITE setPointSize NOTIFY pointSizeChanged)
+    Q_PROPERTY(bool transparent READ transparent WRITE setTransparent NOTIFY transparentChanged)
     Q_PROPERTY(bool showPath READ showPath WRITE setShowPath NOTIFY showPathChanged)
 public:
     explicit CloudView(QQuickItem *parent = nullptr);
@@ -21,6 +22,8 @@ public:
     void setCamera(int camera);
     float pointSize() const { return pointSize_; }
     void setPointSize(float size);
+    bool transparent() const { return transparent_; }
+    void setTransparent(bool transparent);
     bool showPath() const { return showPath_; }
     void setShowPath(bool visible);
     Q_INVOKABLE void orbit(float dx, float dy);
@@ -33,6 +36,7 @@ signals:
     void cameraChanged();
     void pointSizeChanged();
     void showPathChanged();
+    void transparentChanged();
 
 private:
     friend class CloudRenderer;
@@ -40,5 +44,5 @@ private:
     float yaw_ = 0, pitch_ = 32, scale_ = 1, pointSize_ = 1.5f;
     float panX_ = 0, panY_ = 0;
     int camera_ = 0;
-    bool showPath_ = true;
+    bool showPath_ = true, transparent_ = false;
 };

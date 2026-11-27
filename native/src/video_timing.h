@@ -36,5 +36,9 @@ struct VideoClip {
     double opacity = .96;
     double horizontal = .055;
     double vertical = .84;
+    bool backdrop = false;
+    double backdropScale = 1.;
+    double backdropX = .5;
+    double backdropY = .5;
 };
 }

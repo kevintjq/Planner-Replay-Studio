@@ -68,6 +68,7 @@ public:
         panY_ = view->panY_;
         camera_ = view->camera_;
         showPath_ = view->showPath_;
+        transparent_ = view->transparent_;
     }
 
     QOpenGLFramebufferObject *createFramebufferObject(const QSize &size) override
@@ -82,7 +83,10 @@ public:
         auto *gl = QOpenGLContext::currentContext()->extraFunctions();
         const auto size = framebufferObject()->size();
         gl->glViewport(0, 0, size.width(), size.height());
-        gl->glClearColor(.030f, .046f, .071f, 1);
+        if (transparent_)
+            gl->glClearColor(0.f, 0.f, 0.f, 0.f);
+        else
+            gl->glClearColor(.030f, .046f, .071f, 1.f);
         gl->glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         if (!initialize() || !recording_) {
             QQuickOpenGLUtils::resetOpenGLState();
@@ -246,7 +250,7 @@ private:
     QOpenGLVertexArrayObject vao_;
     QOpenGLBuffer cloud_, path_, marker_;
     std::vector<OverlayBuffer> overlays_;
-    bool initialized_ = false, ready_ = false, needsStorage_ = false, showPath_ = true;
+    bool initialized_ = false, ready_ = false, needsStorage_ = false, showPath_ = true, transparent_ = false;
     int uploaded_ = 0, camera_ = 0;
     qint64 stamp_ = 0;
     float yaw_ = 0, pitch_ = 32, scale_ = 1, pointSize_ = 2, panX_ = 0, panY_ = 0;
@@ -287,6 +291,15 @@ void CloudView::setPointSize(float size)
     if (pointSize_ != size) {
         pointSize_ = size;
         emit pointSizeChanged();
+        update();
+    }
+}
+
+void CloudView::setTransparent(bool transparent)
+{
+    if (transparent_ != transparent) {
+        transparent_ = transparent;
+        emit transparentChanged();
         update();
     }
 }

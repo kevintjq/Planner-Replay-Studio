@@ -25,6 +25,11 @@ public:
     QJsonObject values() const;
     void setValue(const QString &key, const QString &value);
     std::vector<VideoClip> videos() const;
+    bool transparentCanvas() const;
+    void setTransparentCanvas(bool transparent);
+    QJsonArray layoutCues() const;
+    void setLayoutCue(double time, const QString &mode, const QString &videoId, double transition);
+    void removeLayoutCue(double time);
     QJsonArray timelineMarkers() const;
     void addTimelineMarker(double time);
     void replaceTimelineMarker(double time, const std::optional<QString> &label);

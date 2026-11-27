@@ -3,7 +3,11 @@
 #include <QtConcurrentRun>
 #include <QDir>
 #include <QFileInfo>
+#include <QImage>
 #include <QJsonArray>
+#include <QPointer>
+#include <QQuickItemGrabResult>
+#include <QSaveFile>
 #include <QVariantMap>
 #include <algorithm>
 #include <cmath>
@@ -12,6 +16,8 @@
 
 ReplayController::ReplayController(QObject *parent) : QObject(parent), record_(replay::makeDemo())
 {
+    connect(this, &ReplayController::positionChanged, this, &ReplayController::activeLayoutChanged);
+    connect(this, &ReplayController::layoutsChanged, this, &ReplayController::activeLayoutChanged);
     timer_.setTimerType(Qt::PreciseTimer);
     timer_.setInterval(16);
     connect(&timer_, &QTimer::timeout, this, [this] {
@@ -82,6 +88,8 @@ void ReplayController::install(std::shared_ptr<const replay::Recording> record, 
     }
     refreshSceneLayers();
     refreshVideoLayers();
+    refreshLayoutCues();
+    emit transparentCanvasChanged();
     emit markersChanged();
     emit recordingChanged();
     emit positionChanged();
@@ -422,6 +430,189 @@ double ReplayController::duration() const
     return end;
 }
 
+void ReplayController::setTransparentCanvas(bool transparent)
+{
+    if (loading_ || transparentCanvas() == transparent)
+        return;
+    auto document = projectSnapshot();
+    document.setTransparentCanvas(transparent);
+    project_ = std::move(document);
+    emit transparentCanvasChanged();
+}
+
+void ReplayController::exportFrame(const QUrl &url, QQuickItem *canvas)
+{
+    if (loading_ || capturing_ || !canvas || !url.isLocalFile())
+        return;
+    const auto path = url.toLocalFile();
+    const auto document = projectSnapshot();
+    const QFileInfo output(path);
+    if (output.suffix().compare(QStringLiteral("png"), Qt::CaseInsensitive) != 0 ||
+        (output.exists() && output.canonicalFilePath() == QFileInfo(document.path()).canonicalFilePath())) {
+        status_ = tr("请选择有效的 PNG 文件路径。");
+        emit stateChanged();
+        return;
+    }
+    if (output.exists()) {
+        const auto media = document.media();
+        if (std::any_of(media.begin(), media.end(), [&](const auto &asset) {
+                return QFileInfo(asset).canonicalFilePath() == output.canonicalFilePath();
+            })) {
+            status_ = tr("PNG 输出不能覆盖项目引用的素材。");
+            emit stateChanged();
+            return;
+        }
+    }
+
+    pause();
+    capturing_ = true;
+    status_ = tr("正在导出当前画面…");
+    grabFrame(canvas, path);
+}
+
+namespace {
+QImage unmatte(const QImage &black, const QImage &white)
+{
+    if (black.size() != white.size() || black.isNull())
+        return {};
+
+    const auto dark = black.convertToFormat(QImage::Format_RGB32);
+    const auto light = white.convertToFormat(QImage::Format_RGB32);
+    QImage result(black.size(), QImage::Format_ARGB32_Premultiplied);
+    if (result.isNull())
+        return {};
+
+    for (int y = 0; y < result.height(); ++y) {
+        const auto *below = reinterpret_cast<const QRgb *>(dark.constScanLine(y));
+        const auto *above = reinterpret_cast<const QRgb *>(light.constScanLine(y));
+        auto *out = reinterpret_cast<QRgb *>(result.scanLine(y));
+        for (int x = 0; x < result.width(); ++x) {
+            const int red = qRed(below[x]), green = qGreen(below[x]), blue = qBlue(below[x]);
+            const int difference = qRed(above[x]) - red + qGreen(above[x]) - green + qBlue(above[x]) - blue;
+            const int alpha = 255 - std::clamp((difference + 1) / 3, 0, 255);
+            out[x] = qRgba(std::min(red, alpha), std::min(green, alpha), std::min(blue, alpha), alpha);
+        }
+    }
+    return result;
+}
+}
+
+void ReplayController::grabFrame(QQuickItem *canvas, const QString &path, int matte, const QImage &black)
+{
+    captureMatte_ = matte;
+    emit stateChanged();
+    frameGrab_ = canvas ? canvas->grabToImage() : nullptr;
+    if (!frameGrab_) {
+        finishFrame(path, {});
+        return;
+    }
+    connect(frameGrab_.data(), &QQuickItemGrabResult::ready, this, [this, path, canvas = QPointer(canvas), matte, black] {
+        const auto grab = std::move(frameGrab_);
+        const auto image = grab->image();
+        if (matte == 0 && transparentCanvas() && !image.isNull() && !image.hasAlphaChannel())
+            grabFrame(canvas, path, 1);
+        else if (matte == 1 && !image.isNull())
+            grabFrame(canvas, path, 2, image);
+        else
+            finishFrame(path, matte == 2 ? unmatte(black, image) : image);
+    }, Qt::SingleShotConnection);
+}
+
+void ReplayController::finishFrame(const QString &path, const QImage &image)
+{
+    QSaveFile output(path);
+    if (!image.isNull() && output.open(QIODevice::WriteOnly) && image.save(&output, "PNG") && output.commit())
+        status_ = tr("已导出 PNG：%1").arg(QDir::toNativeSeparators(path));
+    else
+        status_ = tr("无法导出 PNG：%1").arg(QDir::toNativeSeparators(path));
+    captureMatte_ = 0;
+    capturing_ = false;
+    emit stateChanged();
+}
+
+void ReplayController::refreshLayoutCues()
+{
+    layouts_ = project_ ? project_->layoutCues() : QJsonArray();
+    emit layoutsChanged();
+}
+
+QVariantMap ReplayController::activeLayout() const
+{
+    const auto bound = std::upper_bound(layouts_.constBegin(), layouts_.constEnd(), position_,
+        [](double time, const auto &cue) { return time < cue.toObject().value("time").toDouble(); });
+    const auto current = bound != layouts_.constBegin() ? std::prev(bound)->toObject() : QJsonObject();
+    QVariantMap value = current.toVariantMap();
+    const auto mode = current.value("mode").toString("mix");
+    value.insert("mode", mode);
+    const auto videoId = current.value("video_id").toString();
+    if (mode == "video") {
+        const auto selected = std::find_if(clips_.begin(), clips_.end(), [&](const auto &clip) { return clip.id == videoId; });
+        if (selected != clips_.end()) {
+            const double seconds = videoSeconds(int(std::distance(clips_.begin(), selected)));
+            const double media = videoDurations_.value(selected->path);
+            value.insert("fullHasMedia", seconds >= 0. && (media <= 0. || seconds < media));
+        }
+    }
+    const auto backdropId = [this](const QJsonObject &cue) -> QString {
+        const auto mode = cue.value("mode").toString();
+        if (mode == "backdrop")
+            return cue.value("video_id").toString();
+        const auto excludedId = mode == "inset" ? cue.value("video_id").toString() : QString();
+        for (const auto &clip : clips_) {
+            if (clip.backdrop && clip.id != excludedId)
+                return clip.id;
+        }
+        return {};
+    };
+    value.insert("backdropId", backdropId(current));
+    value.insert("progress", 1.);
+    if (mode != "inset")
+        return value;
+
+    const double transition = current.value("transition").toDouble(.4);
+    const double elapsed = position_ - current.value("time").toDouble();
+    if (transition <= 0. || elapsed >= transition)
+        return value;
+    const auto previous = std::distance(layouts_.constBegin(), bound) < 2
+        ? QJsonObject() : std::prev(bound, 2)->toObject();
+    const auto previousMode = previous.value("mode").toString();
+    if (previousMode == "video" || previousMode == "cloud" || backdropId(previous) != videoId)
+        return value;
+
+    const double progress = std::clamp(elapsed / transition, 0., 1.);
+    value.insert("progress", progress * progress * (3. - 2. * progress));
+    return value;
+}
+
+void ReplayController::setLayoutCue(const QString &mode, int videoIndex, double transition)
+{
+    if (loading_ || duration() <= 0.)
+        return;
+    pause();
+    try {
+        const QString videoId = videoIndex >= 0 && size_t(videoIndex) < clips_.size()
+            ? clips_[size_t(videoIndex)].id : QString();
+        auto document = projectSnapshot();
+        document.setLayoutCue(position_, mode, videoId, transition);
+        project_ = std::move(document);
+        refreshLayoutCues();
+        status_ = tr("布局标记已更新。");
+    } catch (const std::exception &error) {
+        status_ = QString::fromUtf8(error.what());
+    }
+    emit stateChanged();
+}
+
+void ReplayController::removeLayoutCue(double time)
+{
+    if (loading_ || !project_)
+        return;
+    project_->removeLayoutCue(time);
+    refreshLayoutCues();
+    status_ = tr("已删除布局标记。");
+    emit stateChanged();
+}
+
 QVariantList ReplayController::markers() const
 {
     return project_ ? project_->timelineMarkers().toVariantList() : QVariantList();
@@ -560,9 +751,10 @@ void ReplayController::refreshVideoLayers()
         for (double value : timing.crop)
             crop.append(value);
         layers.append(QVariantMap{
-            {"url", QUrl::fromLocalFile(clip.path)}, {"label", clip.label},
+            {"url", QUrl::fromLocalFile(clip.path)}, {"id", clip.id}, {"label", clip.label},
             {"width", clip.width}, {"opacity", clip.opacity},
             {"horizontal", clip.horizontal}, {"vertical", clip.vertical},
+            {"backdropScale", clip.backdropScale}, {"backdropX", clip.backdropX}, {"backdropY", clip.backdropY},
             {"offset", QString::number(timing.offset, 'g', 16)},
             {"trimIn", QString::number(timing.trimIn, 'g', 16)},
             {"trimOut", timing.trimOut ? QString::number(*timing.trimOut, 'g', 16) : QString()},
@@ -572,6 +764,7 @@ void ReplayController::refreshVideoLayers()
     }
     videoLayers_ = std::move(layers);
     emit videoLayersChanged();
+    emit activeLayoutChanged();
 }
 
 double ReplayController::videoSeconds(int index) const

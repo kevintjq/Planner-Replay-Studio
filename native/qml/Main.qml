@@ -16,6 +16,9 @@ ApplicationWindow {
     color: "#0d1420"
 
     property int selectedVideo: 0
+    readonly property var activeLayout: replay.activeLayout
+    readonly property bool videoOnly: activeLayout.mode === "video" && activeLayout.fullHasMedia
+    readonly property bool cloudOnly: activeLayout.mode === "cloud"
 
     readonly property color panel: "#151f30"
     readonly property color thin: "#2c3b51"
@@ -60,6 +63,14 @@ ApplicationWindow {
         defaultSuffix: "slamfpv"
         nameFilters: ["Planner Replay 项目 (*.slamfpv)"]
         onAccepted: replay.saveProjectAs(selectedFile)
+    }
+    FileDialog {
+        id: pngDialog
+        title: "导出当前画面"
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "png"
+        nameFilters: ["PNG 图像 (*.png)"]
+        onAccepted: replay.exportFrame(selectedFile, canvas)
     }
     FileDialog {
         id: videoDialog
@@ -268,6 +279,13 @@ ApplicationWindow {
                         }
                     }
 
+                    PanelTitle { text: "布局切换"; Layout.topMargin: 8 }
+                    LayoutEditor {
+                        Layout.fillWidth: true
+                        controller: replay
+                        videoIndex: videoPicker.currentIndex
+                    }
+
                     PanelTitle { text: "图片与文字"; Layout.topMargin: 8 }
                     SceneLayerEditor {
                         id: sceneLayerEditor
@@ -295,6 +313,21 @@ ApplicationWindow {
                             onValueChanged: cloud.pointSize = value
                         }
                         Caption { text: cloud.pointSize.toFixed(1) + " px" }
+                    }
+                    CheckBox {
+                        text: "透明画布"
+                        checked: replay.transparentCanvas
+                        enabled: !replay.loading && !replay.capturing
+                        onClicked: replay.setTransparentCanvas(checked)
+                    }
+                    Button {
+                        text: "导出当前帧 PNG"
+                        enabled: !replay.loading && !replay.capturing
+                        Layout.fillWidth: true
+                        onClicked: {
+                            replay.pause()
+                            pngDialog.open()
+                        }
                     }
                     Button {
                         text: "重置视角"
@@ -340,49 +373,69 @@ ApplicationWindow {
                 radius: 8
                 clip: true
 
-                CloudView {
-                    id: cloud
+                Rectangle {
+                    id: canvas
                     anchors.fill: parent
                     anchors.margins: 1
-                    controller: replay
-                    MouseArea {
+                    color: replay.captureMatte === 1 ? "black" : replay.captureMatte === 2 ? "white"
+                         : replay.transparentCanvas ? "transparent" : "#08101a"
+                    clip: true
+
+                    CloudView {
+                        id: cloud
+                        z: 1
+                        visible: !window.videoOnly
+                        transparent: replay.transparentCanvas || (!window.cloudOnly
+                                     && (window.activeLayout.backdropId.length > 0 || window.activeLayout.progress === 0))
                         anchors.fill: parent
-                        acceptedButtons: Qt.LeftButton | Qt.RightButton
-                        property real lastX: 0
-                        property real lastY: 0
-                        onPressed: function(mouse) { lastX = mouse.x; lastY = mouse.y }
-                        onPositionChanged: function(mouse) {
-                            if (!pressed) return
-                            if (pressedButtons & Qt.RightButton)
-                                cloud.pan(mouse.x - lastX, mouse.y - lastY)
-                            else
-                                cloud.orbit(mouse.x - lastX, mouse.y - lastY)
-                            lastX = mouse.x; lastY = mouse.y
-                        }
-                        onWheel: function(wheel) {
-                            cloud.zoom(wheel.angleDelta.y / 120)
-                            wheel.accepted = true
-                        }
-                    }
-                }
-
-                Repeater {
-                    model: replay.videoLayers.length
-                    delegate: FlightClip {
-                        required property int index
                         controller: replay
-                        clipIndex: index
-                        footage: replay.videoLayers[index]
+                        MouseArea {
+                            anchors.fill: parent
+                            acceptedButtons: Qt.LeftButton | Qt.RightButton
+                            property real lastX: 0
+                            property real lastY: 0
+                            onPressed: function(mouse) { lastX = mouse.x; lastY = mouse.y }
+                            onPositionChanged: function(mouse) {
+                                if (!pressed) return
+                                if (pressedButtons & Qt.RightButton)
+                                    cloud.pan(mouse.x - lastX, mouse.y - lastY)
+                                else
+                                    cloud.orbit(mouse.x - lastX, mouse.y - lastY)
+                                lastX = mouse.x; lastY = mouse.y
+                            }
+                            onWheel: function(wheel) {
+                                cloud.zoom(wheel.angleDelta.y / 120)
+                                wheel.accepted = true
+                            }
+                        }
                     }
-                }
 
-                SceneOverlays {
-                    anchors.fill: parent
-                    controller: replay
-                    onSelected: (id) => sceneLayerEditor.selectedId = id
+                    Repeater {
+                        model: replay.videoLayers.length
+                        delegate: FlightClip {
+                            required property int index
+                            controller: replay
+                            clipIndex: index
+                            footage: replay.videoLayers[index]
+                            layout: window.activeLayout
+                            videoOnly: window.videoOnly
+                            cloudOnly: window.cloudOnly
+                        }
+                    }
+
+                    SceneOverlays {
+                        z: 3
+                        showText: !window.videoOnly && !window.cloudOnly
+                        anchors.fill: parent
+                        controller: replay
+                        onSelected: (id) => sceneLayerEditor.selectedId = id
+                    }
+
                 }
 
                 Rectangle {
+                    z: 4
+                    visible: !window.videoOnly && !window.cloudOnly
                     anchors.left: parent.left
                     anchors.top: parent.top
                     anchors.margins: 16
@@ -406,6 +459,8 @@ ApplicationWindow {
                     }
                 }
                 Caption {
+                    z: 4
+                    visible: !window.videoOnly
                     anchors.bottom: parent.bottom
                     anchors.right: parent.right
                     anchors.margins: 15

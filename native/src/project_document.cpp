@@ -169,6 +169,68 @@ void validateSceneLayer(const QJsonObject &layer, const QString &kind)
 }
 }
 
+bool ProjectDocument::transparentCanvas() const
+{
+    return root_.value("composition").toObject().value("transparent_canvas").toBool(false);
+}
+
+void ProjectDocument::setTransparentCanvas(bool transparent)
+{
+    auto composition = root_.value("composition").toObject();
+    composition.insert("transparent_canvas", transparent);
+    root_.insert("composition", composition);
+}
+
+QJsonArray ProjectDocument::layoutCues() const
+{
+    return root_.value("composition").toObject().value("layouts").toArray();
+}
+
+void ProjectDocument::setLayoutCue(double time, const QString &mode, const QString &videoId, double transition)
+{
+    const bool videoMode = mode == "video" || mode == "backdrop" || mode == "inset";
+    const bool validMode = videoMode || mode == "mix" || mode == "cloud";
+    if (!std::isfinite(time) || time < 0. || !std::isfinite(transition) ||
+        transition < 0. || transition > 5. || !validMode)
+        fail(QStringLiteral("布局时间或过渡设置无效。"));
+    if (videoMode && videoId.isEmpty())
+        fail(QStringLiteral("请先选择一路视频。"));
+
+    auto layouts = layoutCues();
+    qsizetype index = 0;
+    while (index < layouts.size() && layouts.at(index).toObject().value("time").toDouble() < time - 1e-7)
+        ++index;
+    const auto previous = index < layouts.size() ? layouts.at(index).toObject() : QJsonObject();
+    const bool replace = !previous.isEmpty() && std::abs(previous.value("time").toDouble() - time) < 1e-7;
+    auto cue = replace && previous.value("mode").toString() == mode && previous.value("video_id").toString() == videoId
+        ? previous : QJsonObject();
+    cue.insert("time", time);
+    cue.insert("mode", mode);
+    cue.insert("transition", transition);
+    cue.insert("video_id", videoMode ? QJsonValue(videoId) : QJsonValue(QJsonValue::Null));
+    if (replace)
+        layouts.replace(index, cue);
+    else
+        layouts.insert(index, cue);
+    auto composition = root_.value("composition").toObject();
+    composition.insert("layouts", layouts);
+    root_.insert("composition", composition);
+}
+
+void ProjectDocument::removeLayoutCue(double time)
+{
+    auto layouts = layoutCues();
+    for (qsizetype index = 0; index < layouts.size(); ++index) {
+        if (layouts.at(index).toObject().value("time").toDouble() == time) {
+            layouts.removeAt(index);
+            auto composition = root_.value("composition").toObject();
+            composition.insert("layouts", layouts);
+            root_.insert("composition", composition);
+            return;
+        }
+    }
+}
+
 QJsonArray ProjectDocument::timelineMarkers() const
 {
     return root_.value("composition").toObject().value("markers").toArray();
@@ -358,6 +420,13 @@ std::vector<VideoClip> ProjectDocument::videos() const
         clip.timing = VideoTiming::fromJson(item.value("edit").toObject());
         clip.width = std::clamp(item.value("width").toDouble(clip.width), .05, .90);
         clip.opacity = std::clamp(item.value("opacity").toDouble(clip.opacity), 0., 1.);
+        clip.backdrop = item.value("backdrop").toBool(false);
+        clip.backdropScale = std::clamp(item.value("backdrop_scale").toDouble(1.), .2, 2.);
+        const auto backdropPosition = item.value("backdrop_position").toArray();
+        if (backdropPosition.size() == 2) {
+            clip.backdropX = std::clamp(backdropPosition[0].toDouble(.5), 0., 1.);
+            clip.backdropY = std::clamp(backdropPosition[1].toDouble(.5), 0., 1.);
+        }
         if (position.size() == 2) {
             clip.horizontal = std::clamp(position[0].toDouble(clip.horizontal), 0., 1.);
             clip.vertical = std::clamp(position[1].toDouble(clip.vertical), 0., 1.);

@@ -18,7 +18,7 @@ else()
     find_library(LZ4_LIBRARY NAMES lz4 REQUIRED)
 endif()
 
-add_library(replay_data STATIC src/replay_data.cpp src/project_document.cpp src/video_timing.cpp src/rviz_layout.cpp)
+add_library(replay_data STATIC src/replay_data.cpp src/project_document.cpp src/video_timing.cpp src/rviz_layout.cpp src/transform_tree.cpp)
 target_include_directories(replay_data PUBLIC src)
 if(LZ4_INCLUDE_DIR)
     target_include_directories(replay_data PRIVATE "${LZ4_INCLUDE_DIR}")

@@ -1,4 +1,5 @@
 #include "replay_data.h"
+#include "transform_tree.h"
 
 #include <QFile>
 #include <QFileInfo>
@@ -8,6 +9,7 @@
 #include <bzlib.h>
 #include <lz4frame.h>
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <limits>
@@ -248,6 +250,8 @@ bool supportsTopic(const QString &kind, const QByteArray &type)
         return type == "sensor_msgs/LaserScan";
     if (kind == "path")
         return type == "nav_msgs/Path";
+    if (kind == "tf")
+        return type == "tf2_msgs/TFMessage" || type == "tf/tfMessage";
     if (kind == "position")
         return type == "geometry_msgs/PointStamped" || type == "geometry_msgs/PoseStamped" ||
                type == "geometry_msgs/PoseWithCovarianceStamped" || type == "nav_msgs/Odometry";
@@ -312,6 +316,93 @@ void readOverlay(TopicOverlay &overlay, const QByteArray &type, QByteArrayView d
 
     overlay.samples.push_back({{header.stamp == 0 ? recorded : header.stamp,
                                 start, int(overlay.points.size())}, header.frame});
+}
+
+struct RecordedTransform {
+    QString parent, child;
+    qint64 stamp;
+    RigidTransform transform;
+};
+
+std::vector<RecordedTransform> readTransforms(QByteArrayView bytes, qint64 recorded)
+{
+    Bytes message(bytes);
+    const quint32 count = message.u32();
+    if (count > 4096)
+        fail("TF 消息包含过多变换。");
+    std::vector<RecordedTransform> result;
+    result.reserve(count);
+    for (quint32 i = 0; i < count; ++i) {
+        const auto header = messageHeader(message);
+        auto child = message.string();
+        while (child.startsWith('/'))
+            child.remove(0, 1);
+        const auto xyz = readPosition(message);
+        const float x = float(message.real()), y = float(message.real()), z = float(message.real()), w = float(message.real());
+        const QVector3D translation(xyz.x, xyz.y, xyz.z);
+        const QQuaternion orientation(w, x, y, z);
+        if (!header.frame.isEmpty() && !child.isEmpty() && header.frame != child &&
+            std::isfinite(translation.lengthSquared()) && std::isfinite(orientation.lengthSquared()) &&
+            !orientation.isNull()) {
+            result.push_back({header.frame, child, header.stamp ? header.stamp : recorded,
+                              {translation, orientation.normalized()}});
+        }
+    }
+    return result;
+}
+
+void mapPoints(std::vector<Point> &points, int first, int end, const RigidTransform &transform, const Cancel &cancel)
+{
+    for (int i = first; i < end; ++i) {
+        if ((i & 65535) == 0)
+            checkCancel(cancel);
+        auto &point = points[size_t(i)];
+        const auto shifted = transform.map({point.x, point.y, point.z});
+        point = {shifted.x(), shifted.y(), shifted.z()};
+    }
+}
+
+void appendAxes(TopicOverlay &overlay, const RecordedTransform &sample)
+{
+    const int start = int(overlay.points.size());
+    constexpr std::array axes{QVector3D(.35f, 0, 0), QVector3D(0, .35f, 0), QVector3D(0, 0, .35f)};
+    for (const auto &axis : axes) {
+        const auto end = sample.transform.map(axis);
+        const auto &begin = sample.transform.translation;
+        appendPoint(overlay.points, {begin.x(), begin.y(), begin.z()});
+        appendPoint(overlay.points, {end.x(), end.y(), end.z()});
+    }
+    overlay.samples.push_back({{sample.stamp, start, int(overlay.points.size())}, sample.parent});
+}
+
+bool setFixedFrame(Recording &record, const QString &target, const TransformTree &tree, const Cancel &cancel)
+{
+    std::vector<RigidTransform> cloudTransforms, poseTransforms;
+    for (const auto &frame : record.frames) {
+        checkCancel(cancel);
+        const auto transform = tree.lookup(target, record.frameId, frame.stamp);
+        if (!transform)
+            return false;
+        cloudTransforms.push_back(*transform);
+    }
+    for (const auto &pose : record.poses) {
+        checkCancel(cancel);
+        const auto transform = tree.lookup(target, record.frameId, pose.stamp);
+        if (!transform)
+            return false;
+        poseTransforms.push_back(*transform);
+    }
+    for (size_t i = 0; i < record.frames.size(); ++i) {
+        const auto &frame = record.frames[i];
+        mapPoints(record.points, frame.first, frame.end, cloudTransforms[i], cancel);
+    }
+    for (size_t i = 0; i < record.poses.size(); ++i) {
+        auto &pose = record.poses[i];
+        pose.position = poseTransforms[i].map(pose.position);
+        pose.rotation = (poseTransforms[i].rotation * pose.rotation).normalized();
+    }
+    record.frameId = target;
+    return true;
 }
 
 struct Odometry {
@@ -481,7 +572,10 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
         record->topicOverlays.push_back({display});
     }
     QSet<QString> unreadableTopics;
-    size_t overlayPoints = 0;
+    TransformTree transforms;
+    QHash<size_t, QHash<QString, size_t>> transformLayers;
+    const bool importTransforms = !options.topicLayout.fixedFrame.isEmpty() || !overlayIndices.isEmpty();
+    size_t overlayPoints = 0, transformCount = 0;
     std::vector<Odometry> odometry;
     for (size_t i = 0; i < chunks.size(); ++i) {
         checkCancel(cancel);
@@ -505,6 +599,43 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
             else if (connection.topic == record->odometryTopic && connection.type == "nav_msgs/Odometry")
                 odometry.push_back(readOdometry(data));
             const auto layers = overlayIndices.constFind(connection.topic);
+            if (importTransforms && (connection.type == "tf2_msgs/TFMessage" || connection.type == "tf/tfMessage") &&
+                (connection.topic == "/tf" || connection.topic == "/tf_static" || layers != overlayIndices.cend())) {
+                try {
+                    const auto samples = readTransforms(data, Bytes(header.value("time")).time());
+                    transformCount += samples.size();
+                    for (const auto &sample : samples) {
+                        checkCancel(cancel);
+                        transforms.add(sample.parent, sample.child, sample.stamp, sample.transform, connection.topic == "/tf_static");
+                        if (layers != overlayIndices.cend()) {
+                            for (const auto index : *layers) {
+                                if (record->topicOverlays[index].display.kind != "tf")
+                                    continue;
+                                auto &byChild = transformLayers[index];
+                                auto child = byChild.find(sample.child);
+                                if (child == byChild.end()) {
+                                    const auto slot = byChild.isEmpty() ? index : record->topicOverlays.size();
+                                    child = byChild.insert(sample.child, slot);
+                                    if (slot != index) {
+                                        const auto style = record->topicOverlays[index].display;
+                                        record->topicOverlays.push_back({style});
+                                    }
+                                }
+                                appendAxes(record->topicOverlays[child.value()], sample);
+                                overlayPoints += 6;
+                            }
+                        }
+                    }
+                } catch (const std::runtime_error &) {
+                    checkCancel(cancel);
+                    unreadableTopics.insert(connection.topic);
+                }
+                if (transformCount > 2'000'000)
+                    fail("录包包含超过 200 万条 TF 样本。");
+                if (overlayPoints > MaxPoints)
+                    fail("附加图层的点数超过 1600 万，请减少导入的图层。");
+                continue;
+            }
             if (layers != overlayIndices.cend()) {
                 for (const auto index : *layers) {
                     auto &overlay = record->topicOverlays[index];
@@ -557,16 +688,29 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
         record->frameId = odometry.front().parent;
     }
 
+    transforms.prepare();
+    if (!options.topicLayout.fixedFrame.isEmpty() && options.topicLayout.fixedFrame != record->frameId)
+        setFixedFrame(*record, options.topicLayout.fixedFrame, transforms, cancel);
+
     bool importedCloud = false;
     for (auto &overlay : record->topicOverlays) {
         checkCancel(cancel);
-        std::erase_if(overlay.samples, [&](const auto &sample) { return sample.frameId != record->frameId; });
+        const auto unavailable = std::erase_if(overlay.samples, [&](const auto &sample) {
+            checkCancel(cancel);
+            if (sample.frameId == record->frameId)
+                return false;
+            const auto transform = transforms.lookup(record->frameId, sample.frameId, sample.range.stamp);
+            if (!transform)
+                return true;
+            mapPoints(overlay.points, sample.range.first, sample.range.end, *transform, cancel);
+            return false;
+        });
         std::stable_sort(overlay.samples.begin(), overlay.samples.end(), [](const auto &a, const auto &b) {
             return a.range.stamp < b.range.stamp;
         });
-        if (overlay.samples.empty())
+        if (overlay.samples.empty() || unavailable)
             record->topicWarnings.append(overlay.display.topic);
-        else if (overlay.display.kind == "cloud")
+        if (!overlay.samples.empty() && overlay.display.kind == "cloud")
             importedCloud = true;
     }
     record->showMainCloud = options.showMainCloud || !importedCloud;

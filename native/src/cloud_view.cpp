@@ -24,6 +24,7 @@ uniform float colorRange;
 uniform float pixelSize;
 uniform vec3 fixedColor;
 uniform bool solid;
+uniform bool tfAxes;
 out vec3 ink;
 
 void main() {
@@ -36,7 +37,10 @@ void main() {
     vec3 rangeColor = distanceMix < 0.48
         ? mix(nearColor, middleColor, distanceMix / 0.48)
         : mix(middleColor, farColor, (distanceMix - 0.48) / 0.52);
-    ink = solid ? fixedColor : rangeColor;
+    int axis = (gl_VertexID / 2) % 3;
+    vec3 axisColor = axis == 0 ? vec3(1.0, 0.28, 0.27)
+                   : axis == 1 ? vec3(0.29, 1.0, 0.40) : vec3(0.31, 0.59, 1.0);
+    ink = tfAxes ? axisColor : solid ? fixedColor : rangeColor;
 }
 )glsl";
 
@@ -110,6 +114,7 @@ public:
         program_.setUniformValue("colorRange", std::max(5.f, recording_->radius * .65f));
         program_.setUniformValue("pixelSize", pointSize_);
         program_.setUniformValue("solid", false);
+        program_.setUniformValue("tfAxes", false);
 
         if (recording_->showMainCloud) {
             upload(frame.end);
@@ -118,6 +123,7 @@ public:
             gl->glDrawArrays(GL_POINTS, from, frame.end - from);
         }
         drawTopicOverlays(gl);
+        program_.setUniformValue("tfAxes", false);
 
         if (showPath_ && !recording_->poses.empty()) {
             const auto &poses = recording_->poses;
@@ -188,9 +194,12 @@ private:
             }
             const auto &color = overlay.display.color;
             program_.setUniformValue("solid", true);
+            program_.setUniformValue("tfAxes", overlay.display.kind == "tf");
             program_.setUniformValue("fixedColor", QVector3D(color.redF(), color.greenF(), color.blueF()));
             program_.setUniformValue("pixelSize", overlay.display.kind == "position" ? 8.f : pointSize_);
-            gl->glDrawArrays(overlay.display.kind == "path" ? GL_LINE_STRIP : GL_POINTS, 0, count);
+            const GLenum primitive = overlay.display.kind == "path" ? GL_LINE_STRIP
+                : overlay.display.kind == "tf" ? GL_LINES : GL_POINTS;
+            gl->glDrawArrays(primitive, 0, count);
         }
     }
 

@@ -1,4 +1,5 @@
 #include "replay_data.h"
+#include "transform_tree.h"
 
 #include <QCoreApplication>
 #include <QTemporaryDir>
@@ -48,10 +49,21 @@ QByteArray path(quint32 sec)
 
 QByteArray scan(quint32 sec)
 {
-    QByteArray result = u32(0) + stamp(sec) + blob("map");
+    QByteArray result = u32(0) + stamp(sec) + blob("scanner");
     for (float value : {0.f, 1.5707963f, 1.5707963f, 0.f, 0.f, .2f, 20.f})
         result += u32(std::bit_cast<quint32>(value));
     return result + u32(2) + u32(std::bit_cast<quint32>(2.f)) + u32(std::bit_cast<quint32>(3.f)) + u32(0);
+}
+
+QByteArray transform(const QByteArray &child, double x)
+{
+    QByteArray result = u32(0) + stamp(1) + blob("map") + blob(child);
+    for (const double value : {x, 0., 0., 0., 0., 0., 1.}) {
+        char bytes[8];
+        qToLittleEndian(std::bit_cast<quint64>(value), bytes);
+        result.append(bytes, sizeof(bytes));
+    }
+    return result;
 }
 
 void require(bool good, const char *message)
@@ -72,6 +84,17 @@ int main(int argc, char **argv)
         const auto pose = demo->poseAt(demo->stampAt(1.032));
         require(pose && pose->speed && *pose->speed > 5, "Demo interpolated pose and speed are missing.");
 
+        replay::TransformTree tree;
+        tree.add("map", "odom", 0, {{10, 0, 0}, {}}, true);
+        tree.add("odom", "body", 1'000'000'000, {{0, 1, 0}, {}}, false);
+        tree.add("odom", "body", 1'400'000'000, {{0, 3, 0}, {}}, false);
+        tree.prepare();
+        const auto world = tree.lookup("map", "body", 1'200'000'000);
+        const auto inverse = tree.lookup("body", "map", 1'200'000'000);
+        require(world && inverse && world->translation == QVector3D(10, 2, 0) &&
+                inverse->map(world->translation) == QVector3D(), "TF chain interpolation or inverse is incorrect.");
+        require(!tree.lookup("map", "body", 1'500'000'000), "TF extrapolated outside recorded coverage.");
+
         QTemporaryDir dir;
         QFile file(dir.filePath("synthetic.bag"));
         require(file.open(QIODevice::WriteOnly), "Could not create temporary test file.");
@@ -79,7 +102,10 @@ int main(int argc, char **argv)
         const auto secondary = field("conn", u32(1));
         const auto pathConnection = field("conn", u32(2));
         const auto scanConnection = field("conn", u32(3));
-        const auto payload = record(2, connection + field("time", stamp(1)), cloud(1, 4.f))
+        const auto tfConnection = field("conn", u32(4));
+        const auto payload = record(2, tfConnection + field("time", stamp(1)),
+                                    u32(2) + transform("scanner", 10.) + transform("published", 20.))
+                           + record(2, connection + field("time", stamp(1)), cloud(1, 4.f))
                            + record(2, secondary + field("time", stamp(2)), cloud(2, 42.f))
                            + record(2, pathConnection + field("time", stamp(2)), path(2))
                            + record(2, scanConnection + field("time", stamp(2)), scan(2))
@@ -90,7 +116,8 @@ int main(int argc, char **argv)
             + record(7, connection + field("topic", "/rog_map/occ"), field("type", "sensor_msgs/PointCloud2"))
             + record(7, secondary + field("topic", "/secondary"), field("type", "sensor_msgs/PointCloud2"))
             + record(7, pathConnection + field("topic", "/plan"), field("type", "nav_msgs/Path"))
-            + record(7, scanConnection + field("topic", "/laser"), field("type", "sensor_msgs/LaserScan"));
+            + record(7, scanConnection + field("topic", "/laser"), field("type", "sensor_msgs/LaserScan"))
+            + record(7, tfConnection + field("topic", "/tf_static"), field("type", "tf2_msgs/TFMessage"));
         require(file.write(contents) == contents.size(), "Could not write temporary test file.");
         file.close();
         const auto bag = replay::loadBag(file.fileName());
@@ -105,10 +132,11 @@ int main(int argc, char **argv)
             {"two", "/secondary", "cloud", "Disabled sensor", QColor("#ffffff"), false},
             {"three", "/missing", "path", "Missing path", QColor("#ffffff")},
             {"four", "/plan", "path", "Plan", QColor("#ffff00")},
-            {"five", "/laser", "laser", "Scan", QColor("#0000ff")}
+            {"five", "/laser", "laser", "Scan", QColor("#0000ff")},
+            {"six", "/tf_static", "tf", "Static transforms", QColor("#ff0000")}
         };
         const auto overlayBag = replay::loadBag(file.fileName(), configured);
-        require(!overlayBag->showMainCloud && overlayBag->topicOverlays.size() == 3, "Enabled cloud layer did not replace the default cloud.");
+        require(!overlayBag->showMainCloud && overlayBag->topicOverlays.size() == 5, "Enabled cloud layer did not replace the default cloud.");
         const auto &overlay = overlayBag->topicOverlays.front();
         require(overlay.display.color == QColor("#0a141e") && overlay.samples.size() == 1 &&
                 overlay.points[size_t(overlay.samples.front().range.first)].x == 42.f,
@@ -118,9 +146,18 @@ int main(int argc, char **argv)
         const auto &pathLayer = overlayBag->topicOverlays[1];
         require(pathLayer.points.size() == 1 && pathLayer.points.front().z == 3.f, "Path points were misread.");
         const auto &scanLayer = overlayBag->topicOverlays[2];
-        require(scanLayer.points.size() == 2 && scanLayer.points.front().x == 2.f &&
+        require(scanLayer.points.size() == 2 && scanLayer.points.front().x == 12.f &&
                 std::abs(scanLayer.points.back().y - 3.f) < .001f, "LaserScan polar coordinates were misread.");
+        require(overlayBag->topicOverlays[3].points.front().x == 10.f &&
+                overlayBag->topicOverlays[4].points.front().x == 20.f, "TF layer lost one of the child frames.");
         require(overlayBag->topicWarnings.contains("Missing path"), "Missing topic did not produce a warning.");
+        configured.topicLayout.fixedFrame = "published";
+        const auto fixed = replay::loadBag(file.fileName(), configured);
+        require(fixed->frameId == "published" && fixed->points.front().x == -16.f &&
+                fixed->topicOverlays[2].points.front().x == -8.f, "Imported fixed frame did not map every layer.");
+        configured.topicLayout.fixedFrame = "unavailable";
+        const auto fallback = replay::loadBag(file.fileName(), configured);
+        require(fallback->frameId == "map" && fallback->points.front().x == 4.f, "Missing fixed frame moved the main view.");
         bool cancelled = false;
         try { replay::loadBag(file.fileName(), {}, [] { return true; }); }
         catch (const std::runtime_error &) { cancelled = true; }

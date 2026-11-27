@@ -92,7 +92,7 @@ int main(int argc, char **argv)
                 const auto calibration = parser.isSet(extrinsics) ? QFileInfo(parser.value(extrinsics)).absoluteFilePath() : QString();
                 auto doc = replay::ProjectDocument::create("bag", source, calibration);
                 doc.setValue("cloud_topic", cloudTopic);
-                doc.setValue("odom_topic", poseSource == "tf" && !parser.isSet(odometry) ? QString() : odomTopic);
+                doc.setValue("odom_topic", parser.isSet(odometry) ? odomTopic : QString());
                 doc.setValue("pose_source", poseSource == "tf" ? QStringLiteral("TF") : QStringLiteral("Odometry"));
                 doc.setValue("max_gap", parser.value(gap));
                 doc.setValue("world", parser.value(world));

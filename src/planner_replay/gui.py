@@ -111,7 +111,7 @@ class RendererApp(LayerControls):
         self.form.grid(row=1, column=0, sticky="nsew", padx=(0, 16))
         self.make_form()
 
-        viewer = ttk.Frame(workspace, padding=14, style="Workspace.TFrame")
+        viewer = self.viewer = ttk.Frame(workspace, padding=14, style="Workspace.TFrame")
         viewer.grid(row=1, column=1, sticky="nsew")
         preview_header = ttk.Frame(viewer)
         preview_header.pack(fill="x", pady=(0, 8))
@@ -480,6 +480,29 @@ class RendererApp(LayerControls):
             ("y", "纵向位置 (%)", f"{saved_position[1]*100:g}"),
         ), save)
 
+    def open_settings(self, title):
+        nav = self.nav
+        tab = self.settings_page
+        if nav.select() != str(tab):
+            self.settings_return = nav.select()
+        for widget in tab.winfo_children():
+            widget.destroy()
+        nav.add(tab, text="设置")
+        nav.select(tab)
+        header = ttk.Frame(tab)
+        header.pack(fill="x", pady=(0, 8))
+        ttk.Label(header, text=title, style="PanelTitle.TLabel").pack(side="left")
+        ttk.Button(header, text="收起", command=self.close_settings).pack(side="right")
+        return tab
+
+    def close_settings(self):
+        page = self.settings_page
+        if self.settings_return in self.nav.tabs():
+            self.nav.select(self.settings_return)
+        self.nav.hide(page)
+        for widget in page.winfo_children():
+            widget.destroy()
+
     def make_form(self):
         shortcuts = ttk.Frame(self.form, style="Shell.TFrame")
         shortcuts.pack(fill="x", pady=(0, 8))
@@ -492,6 +515,8 @@ class RendererApp(LayerControls):
         nav = ttk.Notebook(self.form)
         nav.pack(fill="both", expand=True)
         self.nav = nav
+        self.settings_page = ttk.Frame(nav, padding=12)
+        self.settings_return = None
         data = ttk.Frame(nav, padding=(6, 8))
         quality, camera, footage = (ttk.Frame(nav, padding=12) for _ in range(3))
         for panel, name in zip((data, quality, camera, footage), ("数据", "画质", "相机", "图层")):
@@ -1143,7 +1168,7 @@ class RendererApp(LayerControls):
         self.draw_preview()
 
     def open_trajectory_tool(self):
-        if self.busy:
+        if self.busy or self.trajectory_tool is not None:
             return
         self.transport.stop()
         path = filedialog.askopenfilename(parent=self.root, title="选择固定机位视频", filetypes=VIDEO_FILES)
@@ -1352,14 +1377,10 @@ class RendererApp(LayerControls):
                 project = replace(project, audio_id=None)
             self.execute_export(args, source, project, destination)
             return
-        modal = tk.Toplevel(self.root)
-        modal.title("导出设置" if advanced else "检查导出区间")
-        modal.transient(self.root)
-        box = ttk.Frame(modal, padding=18)
-        box.pack(fill="both", expand=True)
-        ttk.Label(box, text="导出设置" if advanced else "检查导出区间",
-                  style="PanelTitle.TLabel").pack(anchor="w")
-        details = tk.Text(box, width=66, height=min(13, max(4, len(checks)+len(blocked)+1)),
+        box = self.open_settings("导出设置" if advanced else "检查导出区间")
+        before = self.workspace_snapshot()
+        issue = tk.StringVar()
+        details = tk.Text(box, width=32, height=min(13, max(4, len(checks)+len(blocked)+1)),
                           font=(self.font, 10), wrap="word", relief="flat", padx=8, pady=8)
         details.pack(fill="both", expand=True, pady=8)
         details.insert("end", "\n".join((*blocked, *checks)))
@@ -1376,10 +1397,10 @@ class RendererApp(LayerControls):
             if video:
                 fields.extend((("帧率", fps, ("24", "30", "60"), 5),
                                ("编码", encoder, tuple(encoders), 14)))
-            for label, variable, choices, width in fields:
-                ttk.Label(output, text=label).pack(side="left", padx=(0, 4))
+            for row, (label, variable, choices, width) in enumerate(fields):
+                ttk.Label(output, text=label).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=2)
                 ttk.Combobox(output, textvariable=variable, values=choices, state="readonly",
-                             width=width).pack(side="left", padx=(0, 12))
+                             width=width).grid(row=row, column=1, sticky="ew", pady=2)
         options = {"静音": None}
         options.update((f"{i}. {layer.path.name}", layer.id) for i, layer in enumerate(project.videos, 1)
                        if layer.id in audio_ids)
@@ -1390,13 +1411,21 @@ class RendererApp(LayerControls):
         if video and advanced:
             row = ttk.Frame(box)
             row.pack(fill="x", pady=(0, 8))
-            ttk.Label(row, text="原声").pack(side="left", padx=(0, 5))
-            ttk.Combobox(row, textvariable=audio, values=tuple(options), state="readonly", width=25).pack(side="left")
-            ttk.Label(row, text="速度").pack(side="left", padx=(12, 5))
-            ttk.Combobox(row, textvariable=pace, values=tuple(rates), state="readonly", width=11).pack(side="left")
+            ttk.Label(row, text="原声").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=2)
+            ttk.Combobox(row, textvariable=audio, values=tuple(options), state="readonly", width=22).grid(
+                row=0, column=1, sticky="w", pady=2)
+            ttk.Label(row, text="速度").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=2)
+            ttk.Combobox(row, textvariable=pace, values=tuple(rates), state="readonly", width=11).grid(
+                row=1, column=1, sticky="w", pady=2)
             ttk.Label(box, text="缺帧统计按打开设置时的帧率和原速计算。", style="Quiet.TLabel").pack(anchor="w")
 
         def proceed():
+            if self.busy:
+                return
+            current = self.workspace_snapshot()
+            if replace(current, values={**current.values, "preview_offset": before.values["preview_offset"]}) != before:
+                issue.set("项目内容已改动，请重新打开导出设置。")
+                return
             prepared = replace(project, audio_id=options[audio.get()], play_rate=rates[pace.get()]) if video else project
             args.width, args.height = map(int, resolution.get().split(" × "))
             args.fps, args.encoder = int(fps.get()), encoders[encoder.get()]
@@ -1404,16 +1433,14 @@ class RendererApp(LayerControls):
             for name, value in (("resolution", resolution), ("fps", fps), ("encoder", encoder)):
                 self.values[name].set(value.get())
             self.update_timeline()
-            modal.destroy()
+            self.close_settings()
             self.execute_export(args, source, prepared, destination)
 
+        ttk.Label(box, textvariable=issue, style="LayerWarning.TLabel", wraplength=290).pack(anchor="w")
         buttons = ttk.Frame(box)
         buttons.pack(fill="x", pady=(8, 0))
-        ttk.Button(buttons, text="返回", command=modal.destroy).pack(side="right")
         ttk.Button(buttons, text="开始导出", command=proceed, style="Primary.TButton",
                    state="disabled" if blocked else "normal").pack(side="right", padx=6)
-        modal.wait_visibility()
-        modal.grab_set()
 
     def export_directory(self):
         return str(self.workspace_folder / "exports") if self.workspace_folder is not None else None
@@ -1472,7 +1499,7 @@ class RendererApp(LayerControls):
         def run():
             try:
                 result = action()
-                if result[0] not in {"saved", "workspace_saved"}:
+                if result[0] not in {"saved", "workspace_saved", "trajectory_saved"}:
                     self.check_cancel()
                 self.events.put(result)
             except Cancelled:
@@ -1543,10 +1570,12 @@ class RendererApp(LayerControls):
                     continue
                 tool = self.trajectory_tool
                 if tool is not None and tool.working:
-                    tool.finish(value if kind == "trajectory" else None)
-                    self.status.set("轨迹已生成。" if kind == "trajectory" else "跟踪已停止。")
-                    if kind == "error":
-                        messagebox.showerror("生成轨迹失败", value, parent=tool.window)
+                    if kind == "trajectory_saved":
+                        tool.finish_save(value)
+                        self.status.set("轨迹图已保存。")
+                    else:
+                        tool.finish(value if kind == "trajectory" else None, error=value if kind == "error" else None)
+                        self.status.set("轨迹图已更新。" if kind == "trajectory" else "轨迹图任务已停止。")
                     continue
                 if kind == "trajectory":
                     continue

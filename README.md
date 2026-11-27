@@ -24,7 +24,7 @@
 
 ## Quick start
 
-1. [Download the Windows x64 installer](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.4.0/PlannerReplayStudio-Setup.exe), run it, and open **Planner Replay Studio Full** from the Start menu. The default folder is `%LOCALAPPDATA%\Programs\Planner Replay Studio Full`. You can change it during setup and opt in to a desktop shortcut.
+1. [Download the Windows x64 installer](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.4.1/PlannerReplayStudio-Setup.exe), run it, and open **Planner Replay Studio Full** from the Start menu. The default folder is `%LOCALAPPDATA%\Programs\Planner Replay Studio Full`. You can change it during setup and opt in to a desktop shortcut.
 2. In **Data**, open a ROS1 `.bag` or choose **Use simulated data**. Confirm the cloud and pose topics, select views, and generate a preview.
 3. Add footage, images, or text under **Layers**. Drag to place and resize layers in the preview. Set visibility intervals and transitions on the timeline.
 
@@ -50,6 +50,6 @@ Under **Data → Topic displays**, import an `.rviz` file or find and add any to
 | --- | --- |
 | Project folder | Choose **Export Project Folder** to copy the project and its media together. Move the entire folder and open `project.slamfpv` to resume editing |
 | MP4 or transparent PNG | Choose **Export 1080p · 60 fps** for video, or **More settings** for custom export. Enable **Transparent canvas** for transparent PNG |
-| Flight-motion still | Open **Fixed-camera trajectory image**, select a starting frame, box the drone, and set the sampling interval before saving a PNG |
+| Flight-motion still | Open **Fixed-camera trajectory image**, track the drone, then remove or restore samples and adjust interval or opacity before saving a full-resolution PNG |
 
 [Workspace guide](docs/studio.md) · [MIT License](LICENSE)

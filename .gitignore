@@ -31,3 +31,5 @@ CMakeUserPresets.json
 # In-place C++ extension builds.
 src/planner_replay/_voxel*.so
 src/planner_replay/_voxel*.pyd
+src/planner_replay/_ghost_mask*.so
+src/planner_replay/_ghost_mask*.pyd

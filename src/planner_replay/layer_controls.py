@@ -453,12 +453,11 @@ class LayerControls:
         ), save, note="结束时间留空时显示至片段结束。")
 
     def layer_dialog(self, title, fields, save, *, note="", switches=None):
-        modal = tk.Toplevel(self.root)
-        modal.title(title)
-        modal.transient(self.root)
-        modal.resizable(False, False)
-        box = ttk.Frame(modal, padding=18)
+        settings = self.open_settings(title)
+        box = ttk.Frame(settings)
         box.pack(fill="both", expand=True)
+        before = self.project
+        issue = tk.StringVar()
         variables = {}
         first = None
         for row, (name, label, default, *options) in enumerate(fields):
@@ -473,7 +472,7 @@ class LayerControls:
                 first = entry
             if name == "color":
                 def choose():
-                    _, chosen = colorchooser.askcolor(variables["color"].get(), parent=modal)
+                    _, chosen = colorchooser.askcolor(variables["color"].get(), parent=self.root)
                     if chosen:
                         variables["color"].set(chosen)
                 ttk.Button(box, text="选色", command=choose).grid(row=row, column=2, padx=(6,0))
@@ -489,22 +488,30 @@ class LayerControls:
             row += 1
 
         def confirm(_event=None):
+            if self.busy:
+                return
+            if self.project != before:
+                issue.set("图层已改动，请重新打开设置。")
+                return
             try:
                 save({**{key: var.get().strip() for key,var in variables.items()},
                       **{key: flag.get() for key, flag in flags.items()}})
             except ValueError as error:
-                messagebox.showerror("检查图层设置", str(error), parent=modal)
+                issue.set(str(error))
                 return
-            modal.destroy()
+            self.close_settings()
         if note:
             ttk.Label(box, text=note, style="Quiet.TLabel").grid(row=row, column=0, columnspan=3, sticky="w", pady=7)
+        ttk.Label(box, textvariable=issue, style="LayerWarning.TLabel", wraplength=280).grid(
+            row=row+1, column=0, columnspan=3, sticky="w")
         ttk.Button(box, text="应用", style="Primary.TButton", command=confirm).grid(
-            row=row+1, column=1, sticky="e", pady=(12,0))
-        modal.bind("<Return>", confirm)
-        modal.bind("<Escape>", lambda _: modal.destroy())
-        modal.wait_visibility()
-        modal.grab_set()
-        first.focus_set()
+            row=row+2, column=1, sticky="e", pady=(12,0))
+        if first is not None:
+            first.focus_set()
+        for child in box.winfo_children():
+            if isinstance(child, ttk.Entry):
+                child.bind("<Return>", confirm)
+            child.bind("<Escape>", lambda _: self.close_settings())
 
     def timeline_range(self):
         try:

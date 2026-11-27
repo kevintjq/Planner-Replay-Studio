@@ -6,7 +6,7 @@
 
 ## 快速开始
 
-[下载完整工作台 Windows EXE](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.4.0/PlannerReplayStudio-Setup.exe)，安装后从开始菜单打开 **Planner Replay Studio Full**。
+[下载完整工作台 Windows EXE](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.4.1/PlannerReplayStudio-Setup.exe)，安装后从开始菜单打开 **Planner Replay Studio Full**。
 
 在「数据」打开 ROS1 `.bag`，或点「使用模拟数据」查看效果。选择机位和图层后点「生成预览」。
 
@@ -68,7 +68,11 @@ SUPER 优先识别 `visualization/exp_traj` 和 `visualization/exp_sfc`。EGO �
 
 ## 固定机位轨迹图
 
-打开「固定机位轨迹图」，选起始帧并框选无人机。可在「采样间隔 (s)」选预设或输入秒数，例如 1.25 秒，也可选「自动」按画面位移取样。点击「生成轨迹」，核对后保存 PNG。结束时间留空则跟踪到片尾。跟踪中断时保留已跟踪部分。
+1. 打开「固定机位轨迹图」，选择起始帧并框住无人机。可填写结束时间，留空则跟踪到片尾。
+2. 点击「生成轨迹」。在右侧采样帧列表选中任一帧，可删除、恢复或按 Delete。调整不透明度滑块，或输入新的采样间隔（回车应用），无需重新跟踪。
+3. 点击「保存轨迹 PNG」导出原视频分辨率。预览使用较小画面。跟踪中断时保留已跟踪部分。
+
+轨迹编辑、图层设置、话题显示设置和导出设置在工作台内展开。
 
 ## 保存与导出
 

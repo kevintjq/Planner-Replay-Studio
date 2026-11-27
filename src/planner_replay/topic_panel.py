@@ -183,11 +183,9 @@ class TopicPanel(ttk.Frame):
         if not self.app.bag_path:
             self.app.status.set("请先打开 ROS1 bag，再按话题添加显示。")
             return
-        modal = tk.Toplevel(self)
-        modal.title("话题显示设置" if previous else "按话题添加显示")
-        modal.transient(self.app.root)
-        box = ttk.Frame(modal, padding=12)
-        box.pack(fill="both", expand=True)
+        box = self.app.open_settings("话题显示设置" if previous else "按话题添加显示")
+        opened_project = self.app.project
+        opened_bag = self.app.bag_path
         query = tk.StringVar()
         ttk.Label(box, text="按话题名或消息类型搜索").pack(anchor="w")
         search = ttk.Entry(box, textvariable=query)
@@ -196,9 +194,9 @@ class TopicPanel(ttk.Frame):
         catalog.heading("#0", text="话题")
         catalog.heading("type", text="消息类型")
         catalog.heading("count", text="消息数")
-        catalog.column("#0", width=240)
-        catalog.column("type", width=220)
-        catalog.column("count", width=85, stretch=False)
+        catalog.column("#0", width=150)
+        catalog.column("type", width=140)
+        catalog.column("count", width=56, stretch=False)
         catalog.pack(fill="both", expand=True, pady=(5, 8))
         rows = {str(i): row for i, row in enumerate(self.app.bag_metadata["topics"])}
         title_row = ttk.Frame(box)
@@ -220,7 +218,7 @@ class TopicPanel(ttk.Frame):
         swatch.pack(side="left")
 
         def pick_color():
-            _, chosen = colorchooser.askcolor(color.get(), parent=modal)
+            _, chosen = colorchooser.askcolor(color.get(), parent=self.app.root)
             if chosen:
                 color.set(chosen)
                 swatch.configure(bg=chosen)
@@ -269,6 +267,11 @@ class TopicPanel(ttk.Frame):
             select()
 
         def confirm():
+            if self.app.busy:
+                return
+            if self.app.bag_path != opened_bag or self.app.project != opened_project:
+                self.app.status.set("录包或项目已改动，请重新打开话题设置。")
+                return
             selection = catalog.selection()
             if not selection or kind.get() not in kinds_by_label:
                 return
@@ -276,7 +279,7 @@ class TopicPanel(ttk.Frame):
                            main_only=main_only.get(), color=color.get(), name=title.get().strip())
             item = replace(previous, **changes) if previous else TopicDisplay(**changes)
             self.apply(previous, item)
-            modal.destroy()
+            self.app.close_settings()
             if item.kind in INSPECTOR_TYPES:
                 self.inspect()
 
@@ -284,10 +287,7 @@ class TopicPanel(ttk.Frame):
         kind.bind("<<ComboboxSelected>>", choice_state)
         catalog.bind("<<TreeviewSelect>>", select)
         add.configure(command=confirm)
-        modal.bind("<Escape>", lambda _: modal.destroy())
         filter_topics()
-        modal.wait_visibility()
-        modal.grab_set()
         search.focus_set()
 
     def inspect(self):

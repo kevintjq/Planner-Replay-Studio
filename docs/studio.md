@@ -6,7 +6,7 @@
 
 ## Quick start
 
-[Download the complete Windows setup EXE](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.4.0/PlannerReplayStudio-Setup.exe) and open **Planner Replay Studio Full** from the Start menu.
+[Download the complete Windows setup EXE](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.4.1/PlannerReplayStudio-Setup.exe) and open **Planner Replay Studio Full** from the Start menu.
 
 Open a ROS1 `.bag` under **Data** or choose **Use simulated data**. Pick views and layers, then generate a preview.
 
@@ -68,7 +68,11 @@ The default palette colors each point from green to purple by its 3D distance fr
 
 ## Fixed-camera trajectory image
 
-Open **Fixed-camera trajectory**, pick a starting frame and draw a box around the drone. Select or enter a sampling interval in video seconds, or use automatic spacing based on screen movement. Generate the silhouettes, then review and save the PNG. Leave the end blank to track to the end of the clip. Tracking stops if the target is lost.
+1. Open the fixed-camera trajectory tool, select a starting frame and box the drone. Leave the end time blank to track to the end of the clip.
+2. Generate the trajectory. In the sample list, delete or restore individual frames. Change the opacity slider or enter a new sampling interval and press Enter to update the preview without tracking again.
+3. Save the full-resolution PNG. The preview uses a smaller image. If tracking is lost, the editor keeps the tracked portion.
+
+Trajectory editing, layer settings, topic display settings, and export settings open in the workspace.
 
 ## Save and export
 

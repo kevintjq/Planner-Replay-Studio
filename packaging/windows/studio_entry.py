@@ -20,6 +20,7 @@ def smoke():
     from rosbags.highlevel import AnyReader
     from rosbags.rosbag1 import Writer
     from rosbags.typesys import Stores, get_typestore
+    from planner_replay._ghost_mask import rgb_difference
     from planner_replay.cloud import first_voxel_indices
     from planner_replay.composition import Composition, ImageLayer, TextLayer, VideoLayer, compose
     from planner_replay.gui import RendererApp
@@ -29,6 +30,7 @@ def smoke():
 
     assert vtk.vtkVersion.GetVTKMajorVersion() >= 9
     assert cv2.TrackerCSRT_create() is not None
+    assert rgb_difference(bytes([10, 40, 30]), bytes([9, 20, 31])) == bytes([20])
     assert first_voxel_indices([[.1, 0., 0.], [.2, 0., 0.], [-.1, 0., 0.]], 1.).tolist() == [2, 0]
     root = tk.Tk()
     try:
@@ -36,6 +38,9 @@ def smoke():
         app = RendererApp(root)
         root.update_idletasks()
         assert app.timeline is not None and app.spatial_topics["plan"] is not None
+        app.edit_speed()
+        assert app.nav.select() == str(app.settings_page)
+        app.close_settings()
     finally:
         root.destroy()
 

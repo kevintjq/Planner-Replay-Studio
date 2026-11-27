@@ -5,6 +5,8 @@ Item {
     required property var controller
     property bool interactive: true
     property bool showText: true
+    property bool includeText: true
+    property var captureLayerIds: null
     signal selected(string id)
 
     Repeater {
@@ -33,14 +35,15 @@ Item {
             scale: width > 0 ? geometry.width / width : 1
             width: picture ? image.width : Math.min(scene.width, caption.implicitWidth)
             height: picture ? image.height : caption.implicitHeight
-            visible: scene.controller.position >= modelData.start
+            visible: (scene.captureLayerIds === null || scene.captureLayerIds.indexOf(modelData.id) >= 0)
+                     && (picture || scene.includeText) && scene.controller.position >= modelData.start
                      && scene.controller.position < modelData.end
                      && (picture ? image.status === Image.Ready : scene.showText)
 
             Rectangle {
                 anchors.fill: parent
                 radius: 5
-                color: "#182337"
+                color: appearance.outputColors().panel
                 visible: !layer.modelData.transparent
             }
 
@@ -67,7 +70,7 @@ Item {
                 font.pixelSize: Math.max(10, layer.modelData.size * scene.height / 900)
                 font.bold: true
                 style: Text.Outline
-                styleColor: "#141c2a"
+                styleColor: appearance.outputColors().textOutline
                 wrapMode: Text.Wrap
                 visible: !layer.picture
             }

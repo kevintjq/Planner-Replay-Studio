@@ -4,6 +4,12 @@
 #include "replay_controller.h"
 #include "topic_inspector.h"
 #include "trajectory_controller.h"
+#include "appearance_manager.h"
+#include "appearance_acceptance.h"
+#include "frame_acceptance.h"
+#include "frame_batch_exporter.h"
+#include <QQuickStyle>
+#include <QIcon>
 
 #include <QGuiApplication>
 #include <QImage>
@@ -189,8 +195,21 @@ int main(int argc, char **argv)
     QSurfaceFormat::setDefaultFormat(format);
 
     QGuiApplication app(argc, argv);
-    app.setApplicationName("Planner Replay Native");
-    app.setOrganizationName("Planner Replay");
+    app.setApplicationName("UAV Studio");
+    app.setOrganizationName("UAV Studio");
+    app.setWindowIcon(QIcon(":/brand/uav-studio.svg"));
+    QQuickStyle::setStyle("Basic");
+    QFont font;
+    font.setFamilies({"Segoe UI", "Microsoft YaHei UI", "Noto Sans CJK SC"});
+    font.setPixelSize(13);
+    app.setFont(font);
+    const int appearanceArg = app.arguments().indexOf("--acceptance-appearance");
+    const int frameArg = app.arguments().indexOf("--acceptance-frame");
+    if (appearanceArg >= 0 && (app.arguments().size() <= appearanceArg + 1 || app.arguments().value(appearanceArg + 1).startsWith("--"))) return 2;
+    if (frameArg >= 0 && (app.arguments().size() <= frameArg + 1 || app.arguments().value(frameArg + 1).startsWith("--"))) return 2;
+    const int acceptanceArg = appearanceArg >= 0 ? appearanceArg : frameArg;
+    const auto acceptanceDirectory = acceptanceArg >= 0 ? QFileInfo(app.arguments().value(acceptanceArg + 1)).absoluteFilePath() : QString();
+    AppearanceManager appearance(nullptr, acceptanceDirectory.isEmpty() ? QString() : acceptanceDirectory + "/appearance.ini");
     QQuickWindow::setDefaultAlphaBuffer(true);
     if (app.arguments().contains("--smoke-png"))
         return smokePng(app);
@@ -201,8 +220,8 @@ int main(int argc, char **argv)
     const bool layoutSmoke = args.contains("--smoke-layout");
     const bool software = layoutSmoke || (batch && qEnvironmentVariable("QT_QUICK_BACKEND") == QStringLiteral("software"));
     QQuickWindow::setGraphicsApi(software ? QSGRendererInterface::Software : QSGRendererInterface::OpenGL);
-    qmlRegisterType<CloudView>("PlannerReplay", 1, 0, "CloudView");
-    qmlRegisterUncreatableType<ReplayController>("PlannerReplay", 1, 0, "ReplayController",
+    qmlRegisterType<CloudView>("UAVStudio", 1, 0, "CloudView");
+    qmlRegisterUncreatableType<ReplayController>("UAVStudio", 1, 0, "ReplayController",
                                                  "Provided by the application");
 
     ReplayController replay;
@@ -211,20 +230,38 @@ int main(int argc, char **argv)
     auto *rosImages = new PreviewImages;
     TopicInspector inspector(replay, *rosImages);
     TrajectoryController trajectory(*trajectoryImages);
+    QObject::connect(&trajectory, &TrajectoryController::settingsEdited, &replay, &ReplayController::setTrajectorySettings);
+    QObject::connect(&replay, &ReplayController::trajectorySettingsLoaded, &trajectory, &TrajectoryController::restoreSettings);
     MovieExporter movie(replay, *movieImages);
+    FrameBatchExporter frameBatch(replay, movie);
     QQmlApplicationEngine engine;
+    engine.rootContext()->setContextProperty("appearance", &appearance);
     engine.addImageProvider(QStringLiteral("trajectory"), trajectoryImages);
     engine.addImageProvider(QStringLiteral("movie"), movieImages);
     engine.addImageProvider(QStringLiteral("ros-inspector"), rosImages);
     engine.rootContext()->setContextProperty("inspector", &inspector);
     engine.rootContext()->setContextProperty("trajectory", &trajectory);
     engine.rootContext()->setContextProperty("movie", &movie);
+    engine.rootContext()->setContextProperty("frameBatch", &frameBatch);
     const bool smoke = args.contains("--smoke");
     engine.rootContext()->setContextProperty("replay", &replay);
     engine.rootContext()->setContextProperty("smokeTest", smoke);
     engine.load(QUrl(batch ? QStringLiteral("qrc:/qml/BatchExport.qml") : QStringLiteral("qrc:/qml/Main.qml")));
     if (engine.rootObjects().isEmpty())
         return 1;
+    if (frameArg >= 0) {
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+        if (!window) return 1;
+        runFrameAcceptance(app, *window, replay, movie, frameBatch, trajectory, appearance, acceptanceDirectory,
+                           app.arguments().value(frameArg + 2), app.arguments().value(frameArg + 3));
+        return app.exec();
+    }
+    if (appearanceArg >= 0) {
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+        if (!window) return 1;
+        runAppearanceAcceptance(app, *window, appearance, replay, acceptanceDirectory, app.arguments().value(appearanceArg + 2));
+        return app.exec();
+    }
     if (layoutSmoke) {
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
         if (!window)

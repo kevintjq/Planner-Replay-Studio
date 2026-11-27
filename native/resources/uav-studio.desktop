@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=UAV Studio
+Comment=All-in-One Robotics Research Studio
+Exec=uav-studio %f
+Icon=uav-studio
+Terminal=false
+Categories=Science;Robotics;AudioVideo;
+MimeType=application/x-uav-studio;

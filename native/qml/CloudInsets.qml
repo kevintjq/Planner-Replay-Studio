@@ -1,5 +1,5 @@
 import QtQuick
-import PlannerReplay
+import UAVStudio
 
 Item {
     id: insets
@@ -7,6 +7,7 @@ Item {
     required property real pointSize
     required property bool allowed
     property bool interactive: true
+    property var captureOptions: ({})
     signal selected(string id)
 
     Repeater {
@@ -27,14 +28,16 @@ Item {
             }
             property real relativeX: settings.x ?? 0
             property real relativeY: settings.y ?? 0
-            visible: insets.allowed
+            visible: insets.allowed && (insets.captureOptions.scope !== "layers" || (insets.captureOptions.layerIds ?? []).indexOf(settings.id) >= 0)
             x: geometry.x
             y: geometry.y
             width: geometry.width
             height: geometry.height
 
             CloudView {
+                property string exportViewId: inset.settings.id ?? ""
                 anchors.fill: parent
+                captureBackground: Object.keys(insets.captureOptions).length > 0 && insets.captureOptions.background !== undefined ? insets.captureOptions.background : ""
                 controller: insets.controller
                 camera: inset.settings.camera ?? 0
                 cameraZoom: inset.settings.zoom ?? 1

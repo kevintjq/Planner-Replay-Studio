@@ -10,7 +10,7 @@ $ErrorActionPreference = 'Stop'
 $AppDirectory = (Resolve-Path $AppDirectory).Path
 $SetupFile = [System.IO.Path]::GetFullPath($SetupFile)
 $root = (Resolve-Path "$PSScriptRoot/../..").Path
-$appExe = Join-Path $AppDirectory 'PlannerReplayNative.exe'
+$appExe = Join-Path $AppDirectory 'uav-studio.exe'
 
 $opencvDlls = Get-ChildItem $OpenCvDirectory -Recurse -File -Filter 'opencv*.dll'
 if (!$opencvDlls -or !($opencvDlls | Where-Object Name -Like 'opencv_videoio_ffmpeg*_64.dll')) {
@@ -18,8 +18,11 @@ if (!$opencvDlls -or !($opencvDlls | Where-Object Name -Like 'opencv_videoio_ffm
 }
 $opencvDlls | Copy-Item -Destination $AppDirectory
 
-windeployqt --release --no-compiler-runtime --qmldir "$root/native/qml" $appExe (Join-Path $AppDirectory "PlannerReplayCli.exe")
+windeployqt --release --no-compiler-runtime --qmldir "$root/native/qml" $appExe (Join-Path $AppDirectory "uav-studio-cli.exe")
 if ($LASTEXITCODE -ne 0) { throw "windeployqt failed with exit code $LASTEXITCODE." }
+if (!(Test-Path (Join-Path $AppDirectory 'imageformats/qtiff.dll'))) {
+    throw 'Qt Image Formats (qtimageformats / qtiff.dll) is required for TIFF research exports.'
+}
 
 # Use Visual Studio's designated x64 redistributable CRT files for app-local deployment.
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"

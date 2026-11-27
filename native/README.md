@@ -1,6 +1,10 @@
-# Planner Replay 原生预览
+# UAV Studio 原生预览
 
-原生预览从源码构建。日常使用请下载完整工作台。见[安装和使用说明](../README_CN.md)。
+当前 C++ / Qt 重构从源码构建，保持开发预览状态。历史发行版安装说明保留在[中文指南](../README_CN.md)。完整验收状态见[验收矩阵](../docs/REBUILD_ACCEPTANCE_CN.md)；源代码能力不等于已发布安装包能力。
+
+### 外观与工作区
+
+顶部 Appearance 提供 Light、Dark、System，自动保存偏好。四个工作区使用统一语义颜色和公共控件，切换主题复用已加载录包、画布及三维对象。场景背景、速度表输出方案和导出背景独立设置。普通设置放在 Inspector；浮动时间轴仍可由用户主动开启。Topic 和 TF Frame 下拉框支持搜索，Frame 来自录包的真实 TF 树。当前更改主要数据话题/Fixed Frame 仍会重新加载录包，完整原生 RViz 属性及无重载切换尚未完成。
 
 ## 项目兼容
 
@@ -44,11 +48,21 @@
 
 ### 导出当前帧
 
-暂停在需要的画面，点击「导出当前帧 PNG」。启用「透明画布」可保留透明背景。输出使用当前预览视口的尺寸，包含可见点云、视频和图片文字图层。
+在 Visualization 或 Video Editor 的预览右上角点击相机，Inspector 展开导出设置；Ctrl+Shift+E 快速保存。支持完整画布、单独三维视角、选中图层，输出 1080P/2K/4K/8K 或自定义宽高、36–2400 DPI（含 300/600/1200 预设），PNG/JPG/TIFF/PDF/SVG，以及透明、白、黑或自定义背景。独立开启文字和速度表；画布编辑边框与操作控件不进入文件。当前已存在的三维/视频/图片/文字合成复用共享渲染器；尚未实现的科研曲线、标尺等不能视为已支持。
+
+点云 FBO 按实际输出尺寸重新创建，视频使用完整源帧，不放大窗口截图。保存完成恢复播放头和播放状态。GPU 上限会提前报错；当前单边最多 8192、最多 4000 万像素，尚无分块渲染。PDF/SVG 当前嵌入场景合成位图，不声称纯矢量；轨迹、文字和图例的完整矢量化仍待开发。
+
+批量关键帧支持手动秒数、区间间隔、事件标记及指定采样网格序号。采样网格时间为序号除以指定 FPS，不等同视频原始 PTS。选择 All Views Separately 可按时间逐个导出主视角和附加视角。每批创建独立目录，`manifest.json` 记录实际实验时间、视角、设置、完成/失败/取消状态和 FBO 尺寸；默认文件名 `frame_{index}_{time}_{view}`，支持三个占位符，拒绝路径穿越和重名，最多 1000 张。
+
+可同时生成多联图，统一面板尺寸和输出设置，自动添加 (a)、(b)… 和实验时间。PDF/SVG 的子图编号与时间戳是真实矢量文字，场景面板嵌入为位图。多联图总计最多 4000 万像素；当前尚不提供色标/物理比例尺锁定与独立面板高级设置。取消时保留已完成图片及清单。
+
+Trajectory Studio 相机入口可独立保存当前源画面或轨迹合成，重新按完整质量源素材及最新编辑快照渲染，支持相同分辨率、DPI 和文件格式。源视频位图细节受原始分辨率限制；背景设置填充画布边缘，不自动抠除视频背景。该工作区的视角/图层拆分及批量仍待补齐。
+
+真实录包和视频已检查 4K/8K FBO、alpha、DPI、主题无关输出、批量与取消恢复；精确视频 PTS、与 MP4 对应帧逐像素对照和完整性能目标尚未认证。
 
 ### 固定机位拖影
 
-打开「固定机位拖影」，选择视频和起始帧，在画面上拖动框选无人机，然后点击「生成拖影」。可设结束时间，留空时跟踪至视频结束或丢失目标。采样间隔设为 0 时按画面中的移动距离选择帧。采样帧列表支持单独删除与恢复，不透明度和采样间隔可直接调整。保存的 PNG 使用素材的原始分辨率。
+打开 Trajectory Studio，选择固定机位视频和起始帧，拖动框选无人机后点击「生成拖影」。结束时间留空时跟踪至结束或丢失目标。采样提供固定间隔（最低 0.1 秒）、固定数量、仅手动与原有自动间距；自动间距是图像间距，不能作为物理距离。虚拟列表和缩略图缓存支持多选、单帧 alpha、手动添加、分段排除、生成范围和撤销/重做。轨迹线与无人机帧可分别排除；半开区间按纳秒时间稳定记录，随项目保存。原有「保存 PNG」继续以原分辨率输出。
 
 ### 速度表与导出视频
 
@@ -58,17 +72,17 @@
 
 ## 构建
 
-需要 CMake 3.22、支持 C++20 的编译器、Qt 6.8 或更高版本（含 Qt Multimedia），以及 BZip2、LZ4、yaml-cpp 和含 tracking、videoio 的 OpenCV 4.8 或更高版本。在 Windows 上可通过 vcpkg 的 `x64-windows-static-md` 安装压缩库。生成安装包还需要 NSIS。构建和安装测试命令见 [Windows 构建流程](../.github/workflows/native-windows.yml)。
+需要 CMake 3.22、支持 C++20 的编译器、Qt 6.8 或更高版本（含 Qt Multimedia、Qt SVG 和 TIFF 插件 qtimageformats），以及 BZip2、LZ4、yaml-cpp 和含 tracking、videoio 的 OpenCV 4.8 或更高版本。在 Windows 上可通过 vcpkg 的 `x64-windows-static-md` 安装压缩库。生成安装包还需要 NSIS。构建和安装测试命令见 [Windows 构建流程](../.github/workflows/native-windows.yml)。
 
-`PlannerReplayCli inspect recording.bag` 输出 JSON，包含话题类型、消息数量、录制时间范围和 TF 坐标系关系。Windows 安装后可在安装目录的 `app` 文件夹运行。
+`uav-studio-cli inspect recording.bag` 输出 JSON，包含话题类型、消息数量、录制时间范围和 TF 坐标系关系。Windows 安装后可在安装目录的 `app` 文件夹运行。
 
 命令行可复用桌面版合成设置。导出时会打开渲染窗口，完成后自动退出。
 
 ```sh
-PlannerReplayCli export project.slamfpv --start 1.5 --output still.png
-PlannerReplayCli export project.slamfpv --start 1.5 --seconds 4 --output flight.mp4
-PlannerReplayCli bag recording.bag --start 0 --seconds 3 --output preview.mp4
-PlannerReplayCli demo --start 0.5 --output demo.png
+uav-studio-cli export project.slamfpv --start 1.5 --output still.png
+uav-studio-cli export project.slamfpv --start 1.5 --seconds 4 --output flight.mp4
+uav-studio-cli bag recording.bag --start 0 --seconds 3 --output preview.mp4
+uav-studio-cli demo --start 0.5 --output demo.png
 ```
 
 MP4 的播放速度和音轨使用项目设置，时间参数以回放秒数为单位。省略 `--seconds` 时导出到录制结束。
@@ -79,7 +93,7 @@ MP4 的播放速度和音轨使用项目设置，时间参数以回放秒数为�
 source /opt/ros/noetic/setup.bash
 cmake -S examples/ros1-native -B build-ros-relay
 cmake --build build-ros-relay --parallel
-PlannerReplayCli listen --seconds 6 --output flight.mp4
+uav-studio-cli listen --seconds 6 --output flight.mp4
 # 在另一个终端
 ./build-ros-relay/planner_replay_bridge
 ```

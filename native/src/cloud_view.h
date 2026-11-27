@@ -15,6 +15,10 @@ class CloudView : public QQuickFramebufferObject {
     Q_PROPERTY(float pointSize READ pointSize WRITE setPointSize NOTIFY pointSizeChanged)
     Q_PROPERTY(bool transparent READ transparent WRITE setTransparent NOTIFY transparentChanged)
     Q_PROPERTY(bool showPath READ showPath WRITE setShowPath NOTIFY showPathChanged)
+    Q_PROPERTY(QSize captureSize READ captureSize WRITE setCaptureSize NOTIFY captureSizeChanged)
+    Q_PROPERTY(int textureLimit READ textureLimit NOTIFY textureLimitChanged)
+    Q_PROPERTY(QSize framebufferSize READ framebufferSize NOTIFY framebufferSizeChanged)
+    Q_PROPERTY(QColor captureBackground READ captureBackground WRITE setCaptureBackground NOTIFY captureBackgroundChanged)
 public:
     explicit CloudView(QQuickItem *parent = nullptr);
     Renderer *createRenderer() const override;
@@ -35,6 +39,12 @@ public:
     void setTransparent(bool transparent);
     bool showPath() const { return showPath_; }
     void setShowPath(bool visible);
+    QSize captureSize() const { return captureSize_; }
+    void setCaptureSize(const QSize &size);
+    int textureLimit() const { return textureLimit_; }
+    QSize framebufferSize() const { return framebufferSize_; }
+    QColor captureBackground() const { return captureBackground_; }
+    void setCaptureBackground(const QColor &color);
     Q_INVOKABLE void orbit(float dx, float dy);
     Q_INVOKABLE void pan(float dx, float dy);
     Q_INVOKABLE void zoom(float steps);
@@ -49,6 +59,10 @@ signals:
     void pointSizeChanged();
     void showPathChanged();
     void transparentChanged();
+    void captureSizeChanged();
+    void textureLimitChanged();
+    void framebufferSizeChanged();
+    void captureBackgroundChanged();
 
 private:
     friend class CloudRenderer;
@@ -60,4 +74,8 @@ private:
     bool showPath_ = true, transparent_ = false, auxiliary_ = false;
     float cameraZoom_ = 1.f;
     QStringList overlays_;
+    QSize captureSize_;
+    QSize framebufferSize_;
+    int textureLimit_ = 0;
+    QColor captureBackground_;
 };

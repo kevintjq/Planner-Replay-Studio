@@ -10,13 +10,13 @@ ColumnLayout {
     readonly property var names: ["当前合成", "实拍全屏", "点云全屏", "实拍作底片", "实拍缩成小窗"]
     readonly property var chosenCue: controller.layoutCues[cues.currentIndex] ?? null
 
-    ComboBox {
+    StudioComboBox {
         id: mode
         Layout.fillWidth: true
         model: editor.names
         enabled: !editor.controller.loading
     }
-    Label {
+    StudioLabel {
         Layout.fillWidth: true
         visible: mode.currentIndex === 1 || mode.currentIndex >= 3
         text: editor.controller.videoLayers[editor.videoIndex]?.label ?? "先选择一路实拍视频"
@@ -25,15 +25,15 @@ ColumnLayout {
     RowLayout {
         Layout.fillWidth: true
         visible: mode.currentIndex === 4
-        Label { text: "过渡（秒）" }
-        TextField {
+        StudioLabel { text: "过渡（秒）" }
+        StudioTextField {
             id: transition
             Layout.fillWidth: true
             text: "0.4"
             validator: DoubleValidator { bottom: 0; top: 5; decimals: 3; locale: "C" }
         }
     }
-    Button {
+    StudioButton {
         Layout.fillWidth: true
         text: "在播放头设置布局"
         enabled: !editor.controller.loading && editor.controller.duration > 0
@@ -42,7 +42,7 @@ ColumnLayout {
         onClicked: editor.controller.setLayoutCue(editor.modes[mode.currentIndex], editor.videoIndex, Number(transition.text))
     }
 
-    ComboBox {
+    StudioComboBox {
         id: cues
         Layout.fillWidth: true
         visible: count > 0
@@ -53,7 +53,7 @@ ColumnLayout {
             editor.controller.seek(editor.controller.layoutCues[index].time)
         }
     }
-    Button {
+    StudioButton {
         Layout.fillWidth: true
         visible: editor.chosenCue !== null
         text: "移除选中布局"

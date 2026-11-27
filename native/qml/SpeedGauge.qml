@@ -1,11 +1,13 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Shapes
 
 Item {
     id: gauge
     required property var controller
     required property bool allowed
     property bool interactive: true
+    readonly property var outputColors: appearance.outputColors(settings.scheme ?? "dark")
     readonly property var settings: controller.speedGauge
     readonly property real horizontal: Math.max(0, parent.width - width)
     readonly property real vertical: Math.max(0, parent.height - height)
@@ -29,33 +31,27 @@ Item {
     Rectangle {
         anchors.fill: parent
         radius: height * .18
-        color: "#d7192235"
+        color: gauge.outputColors.gaugeBackground
         visible: !gauge.settings.transparent
     }
-    Canvas {
+    Shape {
         id: dial
         anchors.fill: parent
-        renderStrategy: Canvas.Immediate
+        preferredRendererType: Shape.CurveRenderer
         readonly property real fraction: Math.max(0, Math.min(1, (Number(gauge.controller.speed) || 0) / gauge.settings.limit))
-        onFractionChanged: requestPaint()
-        onPaint: {
-            const ctx = getContext("2d")
-            ctx.clearRect(0, 0, width, height)
-            const center = [width / 2, height * .61]
-            const radius = height * .46
-            const start = Math.PI * .86, sweep = Math.PI * 1.28
-            ctx.lineCap = "round"
-            ctx.lineWidth = Math.max(2, width * .025)
-            ctx.beginPath()
-            ctx.strokeStyle = "#6685a9"
-            ctx.arc(center[0], center[1], radius, start, start + sweep)
-            ctx.stroke()
-            if (fraction > 0) {
-                ctx.beginPath()
-                ctx.strokeStyle = "#82d9fd"
-                ctx.arc(center[0], center[1], radius, start, start + sweep * fraction)
-                ctx.stroke()
-            }
+        ShapePath {
+            fillColor: gauge.outputColors.transparent
+            strokeColor: gauge.outputColors.border
+            strokeWidth: Math.max(2, gauge.width * .025)
+            capStyle: ShapePath.RoundCap
+            PathAngleArc { centerX: dial.width / 2; centerY: dial.height * .61; radiusX: dial.height * .46; radiusY: radiusX; startAngle: 154.8; sweepAngle: 230.4 }
+        }
+        ShapePath {
+            fillColor: gauge.outputColors.transparent
+            strokeColor: dial.fraction > 0 ? gauge.outputColors.accent : gauge.outputColors.transparent
+            strokeWidth: Math.max(2, gauge.width * .025)
+            capStyle: ShapePath.RoundCap
+            PathAngleArc { centerX: dial.width / 2; centerY: dial.height * .61; radiusX: dial.height * .46; radiusY: radiusX; startAngle: 154.8; sweepAngle: 230.4 * dial.fraction }
         }
     }
     Text {
@@ -64,13 +60,13 @@ Item {
         text: gauge.controller.speed
         font.pixelSize: Math.max(10, parent.width * .25)
         font.bold: true
-        color: "#edf7ff"
+        color: gauge.outputColors.text
     }
     Text {
         anchors.horizontalCenter: parent.horizontalCenter
         y: parent.height * .70
         text: "m/s"
-        color: "#9fcce5"
+        color: gauge.outputColors.secondaryText
         font.pixelSize: Math.max(8, parent.width * .10)
     }
     MouseArea {

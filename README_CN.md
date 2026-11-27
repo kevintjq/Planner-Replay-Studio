@@ -1,4 +1,4 @@
-<h1 align="center">Planner Replay Studio</h1>
+<h1 align="center">UAV Studio</h1>
 
 <p align="center">ROS1 点云回放 · EGO / SUPER 规划叠加 · 多路实飞合成</p>
 
@@ -21,6 +21,12 @@
 ---
 
 ![Planner Replay Studio 模拟数据预览](docs/studio-preview.png)
+
+## C++ / Qt 重构状态
+
+当前开发名称为 **UAV Studio**。本地源码已加入四工作区 Light / Dark / System、集中主题、轨迹多段排除、独立高分辨率画面导出、批量关键帧及多联图。完整验收尚未完成，当前未发布新的稳定版。详见[原生使用说明](native/README.md)、[完整验收矩阵](docs/REBUILD_ACCEPTANCE_CN.md)和[开发变更](docs/NATIVE_CHANGELOG.md)。
+
+下方历史安装包及旧工作台流程继续保留，供兼容使用。最新源码能力不能视作历史安装包已具备的功能。
 
 ## 快速开始
 

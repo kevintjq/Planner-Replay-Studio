@@ -14,19 +14,19 @@ ColumnLayout {
 
     RowLayout {
         Layout.fillWidth: true
-        ComboBox {
+        StudioComboBox {
             id: available
             Layout.fillWidth: true
             model: pane.choices
             textRole: "label"
         }
-        Button {
+        StudioButton {
             text: "添加机位"
             enabled: available.currentIndex >= 0 && !pane.controller.loading
             onClicked: pane.controller.addCloudView(pane.choices[available.currentIndex].camera)
         }
     }
-    ComboBox {
+    StudioComboBox {
         Layout.fillWidth: true
         visible: pane.controller.cloudViews.length > 0
         model: pane.controller.cloudViews
@@ -38,19 +38,19 @@ ColumnLayout {
         Layout.fillWidth: true
         visible: pane.chosen !== null
         columns: 2
-        Label { text: "机位宽度（%）" }
-        TextField {
+        StudioLabel { text: "机位宽度（%）" }
+        StudioTextField {
             id: widthField
             Layout.fillWidth: true
             text: pane.chosen ? (pane.chosen.width * 100).toFixed(0) : ""
         }
-        Label { text: "相机缩放" }
-        TextField {
+        StudioLabel { text: "相机缩放" }
+        StudioTextField {
             id: zoom
             Layout.fillWidth: true
             text: pane.chosen ? pane.chosen.zoom : ""
         }
-        CheckBox {
+        StudioCheckBox {
             id: clear
             text: "透明背景"
             checked: pane.chosen?.transparent ?? false
@@ -71,7 +71,7 @@ ColumnLayout {
                 {key: "scan", label: "雷达"},
                 {key: "camera", label: "视场"}
             ]
-            delegate: CheckBox {
+            delegate: StudioCheckBox {
                 required property var modelData
                 property string overlayKey: modelData.key
                 text: modelData.label
@@ -81,7 +81,7 @@ ColumnLayout {
     }
     RowLayout {
         visible: pane.chosen !== null
-        Button {
+        StudioButton {
             text: "应用机位设置"
             enabled: !pane.controller.loading
             onClicked: {
@@ -97,7 +97,7 @@ ColumnLayout {
                 })
             }
         }
-        Button {
+        StudioButton {
             text: "移除机位"
             enabled: !pane.controller.loading
             onClicked: pane.controller.removeCloudView(pane.chosen.id)

@@ -26,7 +26,7 @@ ColumnLayout {
         return items
     }
 
-    Button {
+    StudioButton {
         id: expand
         Layout.fillWidth: true
         text: checked ? "收起缩窗动画" : "缩窗动画"
@@ -37,15 +37,16 @@ ColumnLayout {
         visible: expand.checked
         columns: 2
 
-        Label { text: "图层" }
-        ComboBox {
+        StudioLabel { text: "图层" }
+        StudioComboBox {
             id: target
             Layout.fillWidth: true
             model: editor.targets
             textRole: "label"
         }
-        Label { text: "常态宽度 (%)"; visible: normalWidth.visible }
-        SpinBox {
+        StudioLabel { text: "常态宽度 (%)"; visible: normalWidth.visible }
+        SpinBox { palette: StudioPalette {}
+
             id: normalWidth
             from: 12
             to: 100
@@ -53,28 +54,31 @@ ColumnLayout {
             editable: true
             visible: target.currentIndex === 0
         }
-        Label { text: "放大起点（秒）" }
-        TextField {
+        StudioLabel { text: "放大起点（秒）" }
+        StudioTextField {
             id: begin
             Layout.fillWidth: true
             text: "0.0"
             validator: DoubleValidator { bottom: 0 }
         }
-        Label { text: "缩窗时长（秒）" }
-        TextField {
+        StudioLabel { text: "缩窗时长（秒）" }
+        StudioTextField {
             id: duration
             Layout.fillWidth: true
             text: "0.4"
             validator: DoubleValidator { bottom: .1; top: 5 }
         }
-        Label { text: "放大宽度 (%)" }
-        SpinBox { id: largeWidth; from: 5; to: 100; value: 100; editable: true }
-        Label { text: "放大位置 (%)" }
+        StudioLabel { text: "放大宽度 (%)" }
+        SpinBox { palette: StudioPalette {}
+ id: largeWidth; from: 5; to: 100; value: 100; editable: true }
+        StudioLabel { text: "放大位置 (%)" }
         RowLayout {
-            SpinBox { id: largeX; from: 0; to: 100; value: 50; editable: true; Accessible.name: "横向位置" }
-            SpinBox { id: largeY; from: 0; to: 100; value: 50; editable: true; Accessible.name: "纵向位置" }
+            SpinBox { palette: StudioPalette {}
+ id: largeX; from: 0; to: 100; value: 50; editable: true; Accessible.name: "横向位置" }
+            SpinBox { palette: StudioPalette {}
+ id: largeY; from: 0; to: 100; value: 50; editable: true; Accessible.name: "纵向位置" }
         }
-        Button {
+        StudioButton {
             Layout.columnSpan: 2
             Layout.fillWidth: true
             text: "在播放头缩窗"
@@ -94,7 +98,7 @@ ColumnLayout {
             required property int index
             required property var modelData
             Layout.fillWidth: true
-            Button {
+            StudioButton {
                 Layout.fillWidth: true
                 text: {
                     const item = editor.targets.find(t => t.kind === modelData.kind && t.layerId === (modelData.layer_id ?? ""))
@@ -102,7 +106,7 @@ ColumnLayout {
                 }
                 onClicked: editor.controller.seek(Number(modelData.time))
             }
-            Button { text: "删除"; onClicked: editor.controller.removeLayerMotion(index) }
+            StudioButton { text: "删除"; onClicked: editor.controller.removeLayerMotion(index) }
         }
     }
     Connections {

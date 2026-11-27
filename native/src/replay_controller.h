@@ -41,6 +41,7 @@ class ReplayController : public QObject {
     Q_PROPERTY(bool tfPose READ tfPose NOTIFY recordingChanged)
     Q_PROPERTY(QString worldFrame READ worldFrame NOTIFY recordingChanged)
     Q_PROPERTY(QString bodyFrame READ bodyFrame NOTIFY recordingChanged)
+    Q_PROPERTY(QStringList tfFrames READ tfFrames NOTIFY recordingChanged)
     Q_PROPERTY(int pointCount READ pointCount NOTIFY positionChanged)
     Q_PROPERTY(bool replacing READ replacing NOTIFY recordingChanged)
     Q_PROPERTY(bool demo READ demo NOTIFY recordingChanged)
@@ -55,6 +56,7 @@ class ReplayController : public QObject {
     Q_PROPERTY(QStringList cameraLabels READ cameraLabels CONSTANT)
     Q_PROPERTY(int cameraIndex READ cameraIndex NOTIFY cameraChanged)
     Q_PROPERTY(bool transparentCanvas READ transparentCanvas NOTIFY transparentCanvasChanged)
+    Q_PROPERTY(QColor sceneBackground READ sceneBackground WRITE setSceneBackground NOTIFY sceneStyleChanged)
     Q_PROPERTY(bool capturing READ capturing NOTIFY stateChanged)
     Q_PROPERTY(int captureMatte READ captureMatte NOTIFY stateChanged)
     Q_PROPERTY(QVariantList layoutCues READ layoutCues NOTIFY layoutsChanged)
@@ -94,6 +96,7 @@ public:
     bool tfPose() const { return record_->tfPose; }
     QString worldFrame() const { return record_->frameId; }
     QString bodyFrame() const { return record_->bodyFrame; }
+    QStringList tfFrames() const;
     int pointCount() const;
     bool replacing() const { return record_->replace; }
     bool demo() const { return path_.isEmpty() && (!project_ || project_->source() == "demo"); }
@@ -118,6 +121,8 @@ public:
     int cameraIndex() const { return cameraIndex_; }
     Q_INVOKABLE void setCamera(int index);
     bool transparentCanvas() const { return project_ && project_->transparentCanvas(); }
+    QColor sceneBackground() const;
+    void setSceneBackground(const QColor &color);
     bool capturing() const { return capturing_; }
     int captureMatte() const { return captureMatte_; }
     Q_INVOKABLE void setTransparentCanvas(bool transparent);
@@ -166,6 +171,7 @@ public:
     Q_INVOKABLE void openProject(const QUrl &url);
     Q_INVOKABLE void saveProjectAs(const QUrl &url);
     Q_INVOKABLE void exportProjectFolder(const QUrl &parent);
+    void setTrajectorySettings(const QVariantMap &settings);
     Q_INVOKABLE void setCloudTopic(const QString &topic);
     Q_INVOKABLE void setOdometryTopic(const QString &topic);
     Q_INVOKABLE void setSpeedTopic(const QString &topic);
@@ -189,9 +195,11 @@ signals:
     void markersChanged();
     void layoutsChanged();
     void transparentCanvasChanged();
+    void sceneStyleChanged();
     void cameraChanged();
     void activeLayoutChanged();
     void editHistoryChanged();
+    void trajectorySettingsLoaded(const QVariantMap &settings);
 
 private:
     struct Result {

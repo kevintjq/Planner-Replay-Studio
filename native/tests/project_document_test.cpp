@@ -131,7 +131,14 @@ Visualization Manager:
                importedLayout.displays[4].name == "Custom data", "RViz settings survive project round trip");
 
         const auto settings = project.json().value("composition").toObject();
+        project.setSceneBackground("#E5EAEE");
+        project.setSpeedGauge({{"scheme", "light"}});
+        project.setTrajectorySettings({{"path", videoPath}, {"interval", .1},
+            {"edits", QJsonObject{{"ranges", QJsonArray{QJsonObject{{"id", "stable"}, {"begin_ns", "100"}, {"end_ns", "200"}}}}}}});
         auto saved = project.saveAs(directory.filePath("relocated/edit.slamfpv"));
+        expect(saved.sceneBackground() == "#e5eaee" && saved.speedGauge().value("scheme") == "light", "independent content style persisted");
+        expect(saved.trajectorySettings().value("path").toString() == videoPath &&
+            saved.trajectorySettings().value("edits") == project.trajectorySettings().value("edits"), "trajectory video and stable edit state rebased");
         expect(replay::ProjectDocument::load(saved.path()).media() == project.media(), "save as must rebase references");
         expect(saved.json().value("metadata") == project.json().value("metadata"), "opaque root settings preserved");
         expect(saved.json().value("composition").toObject().value("layouts") == settings.value("layouts"),
@@ -168,6 +175,7 @@ Visualization Manager:
 
         const QString packedPath = project.exportFolder(directory.filePath("打包项目"));
         const auto packed = replay::ProjectDocument::load(packedPath);
+        expect(read(packed.trajectorySettings().value("path").toString()) == "fpv material", "portable trajectory video copied");
         expect(packed.isPortable() && packed.media().size() == 5, "portable project metadata");
         expect(QFileInfo(packedPath).dir().exists("cache") && QFileInfo(packedPath).dir().exists("exports"), "portable folders");
         const auto packedVideos = packed.json().value("composition").toObject().value("videos").toArray();

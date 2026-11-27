@@ -1,6 +1,8 @@
 #include "replay_controller.h"
 
 #include "camera_presets.h"
+#include "design_tokens.h"
+#include "transform_tree.h"
 
 #include <QtConcurrentRun>
 #include <QDir>
@@ -15,6 +17,15 @@
 #include <cmath>
 #include <exception>
 #include <stdexcept>
+
+QStringList ReplayController::tfFrames() const
+{
+    QStringList frames = record_->transforms ? record_->transforms->frames() : QStringList();
+    for (const auto &frame : {record_->frameId, record_->bodyFrame})
+        if (!frame.isEmpty() && !frames.contains(frame)) frames.append(frame);
+    frames.sort();
+    return frames;
+}
 
 ReplayController::ReplayController(QObject *parent) : QObject(parent), record_(replay::makeDemo())
 {
@@ -92,6 +103,7 @@ void ReplayController::install(std::shared_ptr<const replay::Recording> record, 
         }
         videoDurations_.swap(durations);
         emit editHistoryChanged();
+        emit trajectorySettingsLoaded(project_ ? project_->trajectorySettings().toVariantMap() : QVariantMap{});
     }
     refreshSceneLayers();
     refreshCloudViews();
@@ -99,6 +111,7 @@ void ReplayController::install(std::shared_ptr<const replay::Recording> record, 
     refreshVideoLayers();
     refreshLayoutCues();
     emit transparentCanvasChanged();
+    emit sceneStyleChanged();
     emit markersChanged();
     emit recordingChanged();
     emit positionChanged();
@@ -258,6 +271,20 @@ replay::ProjectDocument ReplayController::projectSnapshot() const
     project.setValue("odom_topic", odometryTopic());
     project.setValue("cloud_mode", replacing() ? QStringLiteral("替换整图") : QStringLiteral("累积扫描"));
     return project;
+}
+
+void ReplayController::setTrajectorySettings(const QVariantMap &settings)
+{
+    if (loading_)
+        return;
+    try {
+        auto document = projectSnapshot();
+        document.setTrajectorySettings(QJsonObject::fromVariantMap(settings));
+        project_ = std::move(document);
+    } catch (const std::exception &error) {
+        status_ = QString::fromUtf8(error.what());
+        emit stateChanged();
+    }
 }
 
 void ReplayController::saveProjectAs(const QUrl &url)
@@ -566,6 +593,20 @@ void ReplayController::setCamera(int index)
     project_ = std::move(project);
     cameraIndex_ = index;
     emit cameraChanged();
+}
+
+QColor ReplayController::sceneBackground() const
+{
+    return QColor(project_ ? project_->sceneBackground() : QString::fromLatin1(DesignTokens::SceneBackground));
+}
+
+void ReplayController::setSceneBackground(const QColor &color)
+{
+    if (!color.isValid() || color.alpha() != 255 || color == sceneBackground()) return;
+    auto document = projectSnapshot();
+    document.setSceneBackground(color.name());
+    project_ = std::move(document);
+    emit sceneStyleChanged();
 }
 
 void ReplayController::setTransparentCanvas(bool transparent)

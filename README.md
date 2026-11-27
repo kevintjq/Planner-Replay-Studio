@@ -1,4 +1,4 @@
-<h1 align="center">Planner Replay Studio</h1>
+<h1 align="center">UAV Studio</h1>
 
 <p align="center">ROS1 point-cloud replay · EGO / SUPER overlays · Multi-camera flight editing</p>
 
@@ -21,6 +21,12 @@
 ---
 
 ![Planner Replay Studio with simulated data](docs/studio-preview.png)
+
+## C++ / Qt rebuild status
+
+The active native application is **UAV Studio**. Source development includes four workspaces, Light / Dark / System appearance, trajectory exclusions, independent high-resolution frame export, keyframe batches and scientific panel figures. Full acceptance remains incomplete; no new stable release has been published. See the [native guide](native/README.md), [acceptance matrix](docs/REBUILD_ACCEPTANCE_CN.md), and [development changes](docs/NATIVE_CHANGELOG.md).
+
+The historical installer and legacy workflows below remain available for compatibility. Source-only features are not capabilities of the older published installer.
 
 ## Quick start
 

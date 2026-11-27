@@ -27,6 +27,7 @@ captures/
 /native/out/
 /native/.vs/
 CMakeUserPresets.json
+/aqtinstall.log
 
 # In-place C++ extension builds.
 src/planner_replay/_cloud*.so

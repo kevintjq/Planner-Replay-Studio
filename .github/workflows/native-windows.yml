@@ -28,7 +28,7 @@ jobs:
         with:
           version: ${{ env.QT_VERSION }}
           arch: win64_msvc2022_64
-          modules: qtmultimedia
+          modules: qtmultimedia qtsvg qtimageformats
           cache: true
       - name: Install native dependencies
         shell: pwsh
@@ -89,28 +89,28 @@ jobs:
       - name: Build the Windows installer
         shell: pwsh
         run: |
-          $match = Select-String -Path native/CMakeLists.txt -Pattern '^project\(PlannerReplayNative VERSION (\d+\.\d+\.\d+) '
+          $match = Select-String -Path native/CMakeLists.txt -Pattern '^project\(UAVStudio VERSION (\d+\.\d+\.\d+) '
           if (!$match) { throw 'Could not read the native app version.' }
           $version = $match.Matches[0].Groups[1].Value
-          cmake --install build-native --config Release --prefix dist/PlannerReplayNative
+          cmake --install build-native --config Release --prefix dist/uav-studio
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ./native/installer/package.ps1 -AppDirectory dist/PlannerReplayNative -SetupFile dist/PlannerReplayNative-Setup.exe -Version $version -QtVersion $env:QT_VERSION -OpenCvDirectory (Join-Path $env:RUNNER_TEMP 'planner-opencv')
+          ./native/installer/package.ps1 -AppDirectory dist/uav-studio -SetupFile dist/uav-studio-Setup.exe -Version $version -QtVersion $env:QT_VERSION -OpenCvDirectory (Join-Path $env:RUNNER_TEMP 'planner-opencv')
       - name: Verify install, launch and uninstall
         timeout-minutes: 3
         shell: pwsh
         run: |
-          $setup = (Resolve-Path dist/PlannerReplayNative-Setup.exe).Path
+          $setup = (Resolve-Path dist/uav-studio-Setup.exe).Path
           $target = Join-Path $env:RUNNER_TEMP 'PlannerReplayInstallerSmoke'
           $install = Start-Process -FilePath $setup -ArgumentList '/S', "/D=$target" -Wait -PassThru
           if ($install.ExitCode -ne 0) { throw "Installer exited with $($install.ExitCode)." }
-          $exe = Join-Path $target 'app/PlannerReplayNative.exe'
-          $cli = Join-Path $target 'app/PlannerReplayCli.exe'
+          $exe = Join-Path $target 'app/uav-studio.exe'
+          $cli = Join-Path $target 'app/uav-studio-cli.exe'
           $uninstaller = Join-Path $target 'Uninstall.exe'
-          $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'Planner Replay Studio.lnk'
+          $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'UAV Studio.lnk'
           if (!(Test-Path $exe) -or !(Test-Path $cli) -or !(Test-Path $uninstaller) -or !(Test-Path $shortcut)) {
             throw 'The installed application, uninstaller or Start menu shortcut is missing.'
           }
-          $registry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\PlannerReplayNative'
+          $registry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\UAVStudio'
           $command = Get-ItemPropertyValue -Path $registry -Name UninstallString -ErrorAction Stop
           if ($command -ne ('"' + $uninstaller + '"')) {
             throw 'Windows Apps settings does not have a valid uninstall command.'
@@ -155,8 +155,8 @@ jobs:
           }
       - uses: actions/upload-artifact@v4
         with:
-          name: PlannerReplayNative-Windows-x64
-          path: dist/PlannerReplayNative-Setup.exe
+          name: uav-studio-Windows-x64
+          path: dist/uav-studio-Setup.exe
           if-no-files-found: error
 
   prerelease:
@@ -170,7 +170,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: PlannerReplayNative-Windows-x64
+          name: uav-studio-Windows-x64
           path: installer
       - name: Publish the verified C++ Windows preview
         env:
@@ -182,7 +182,7 @@ jobs:
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             exit 0
           fi
-          gh release create "$tag" installer/PlannerReplayNative-Setup.exe \
+          gh release create "$tag" installer/uav-studio-Setup.exe \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
-            --title "Planner Replay Studio C++ Preview (${GITHUB_SHA:0:7})" \
+            --title "UAV Studio C++ Preview (${GITHUB_SHA:0:7})" \
             --notes "Windows x64 C++ preview. The installer has passed the Windows install, launch, export and uninstall checks. MP4 export requires FFmpeg. Legacy feature parity is still in progress."

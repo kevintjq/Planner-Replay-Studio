@@ -6,13 +6,13 @@ SetCompressor /SOLID lzma
 !include "FileFunc.nsh"
 !include "Sections.nsh"
 !ifndef PRODUCT
-!define PRODUCT "Planner Replay Studio"
+!define PRODUCT "UAV Studio"
 !endif
 !ifndef PRODUCT_ID
-!define PRODUCT_ID "PlannerReplayNative"
+!define PRODUCT_ID "UAVStudio"
 !endif
 !ifndef APP_EXE
-!define APP_EXE "PlannerReplayNative.exe"
+!define APP_EXE "uav-studio.exe"
 !endif
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_ID}"
 
@@ -22,9 +22,9 @@ InstallDir "$LOCALAPPDATA\Programs\${PRODUCT}"
 InstallDirRegKey HKCU "${UNINSTALL_KEY}" "InstallLocation"
 VIProductVersion "${VERSION}.0"
 VIAddVersionKey "ProductName" "${PRODUCT}"
-VIAddVersionKey "FileDescription" "Planner Replay Studio Windows installer"
+VIAddVersionKey "FileDescription" "UAV Studio Windows installer"
 VIAddVersionKey "FileVersion" "${VERSION}"
-VIAddVersionKey "LegalCopyright" "Planner Replay Studio contributors"
+VIAddVersionKey "LegalCopyright" "UAV Studio contributors"
 
 !define MUI_FINISHPAGE_RUN "$INSTDIR\app\${APP_EXE}"
 !insertmacro MUI_PAGE_DIRECTORY
@@ -62,7 +62,7 @@ Section "$(MainSection)" SecMain
     IfErrors InstallFailed
     WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "${PRODUCT}"
     WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayVersion" "${VERSION}"
-    WriteRegStr HKCU "${UNINSTALL_KEY}" "Publisher" "Planner Replay Studio"
+    WriteRegStr HKCU "${UNINSTALL_KEY}" "Publisher" "UAV Studio"
     WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayIcon" "$INSTDIR\app\${APP_EXE}"
     WriteRegStr HKCU "${UNINSTALL_KEY}" "InstallLocation" "$INSTDIR"
     WriteRegStr HKCU "${UNINSTALL_KEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'

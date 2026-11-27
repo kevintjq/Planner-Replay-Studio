@@ -1,5 +1,7 @@
 #pragma once
 
+#include "trajectory_edits.h"
+
 #include <QImage>
 #include <QPoint>
 #include <QRectF>
@@ -37,6 +39,10 @@ FixedCameraTrajectory trackTrajectory(const QString &file, double start, std::op
                                       const TrackingProgress &progress = {});
 std::vector<size_t> sampleTrajectory(const FixedCameraTrajectory &trajectory, double interval);
 QImage renderTrajectory(const FixedCameraTrajectory &trajectory, const std::vector<size_t> &sampled,
-                        double opacity, const QSet<int> &excluded, QSize limit = {});
+                        double opacity, const QSet<int> &excluded, QSize limit = {},
+                        const TrajectoryEdits &edits = {}, const TrackingCancelled &cancel = {}, bool exactOutputSize = false);
+
+std::vector<size_t> editedTrajectorySamples(const FixedCameraTrajectory &trajectory, double interval,
+                                          int mode, int count, const TrajectoryEdits &edits);
 
 }

@@ -15,7 +15,7 @@ ColumnLayout {
         Layout.fillWidth: true
         spacing: 4
 
-        Button {
+        StudioButton {
             Layout.preferredWidth: timeline.labelWidth
             Layout.preferredHeight: 24
             text: "添加标记"
@@ -31,7 +31,7 @@ ColumnLayout {
             id: lane
             Layout.fillWidth: true
             Layout.preferredHeight: 24
-            color: "#202d40"
+            color: appearance.colors.timelineTrack
             radius: 4
 
             Repeater {
@@ -54,10 +54,9 @@ ColumnLayout {
                         width: 8
                         height: 8
                         rotation: 45
-                        color: pin.active ? timeline.accent : "#eabd77"
+                        color: pin.active ? timeline.accent : appearance.colors.imageClip
                     }
-                    ToolTip.visible: containsMouse
-                    ToolTip.text: modelData.label + " · " + modelData.time.toFixed(3) + " s"
+                    StudioToolTip { visible: parent.containsMouse; text: modelData.label + " · " + modelData.time.toFixed(3) + " s" }
                     onClicked: {
                         timeline.selectedTime = modelData.time
                         timeline.controller.pause()
@@ -73,24 +72,24 @@ ColumnLayout {
         visible: timeline.currentMarker !== null
         enabled: !timeline.controller.loading
 
-        TextField {
+        StudioTextField {
             id: nameEntry
             Layout.fillWidth: true
             text: timeline.currentMarker?.label ?? ""
             onAccepted: if (timeline.currentMarker) timeline.controller.renameMarker(timeline.selectedTime, text)
         }
-        Button {
+        StudioButton {
             text: "重命名"
             onClicked: timeline.controller.renameMarker(timeline.selectedTime, nameEntry.text)
         }
-        Button {
+        StudioButton {
             text: "删除标记"
             onClicked: {
                 timeline.controller.removeMarker(timeline.selectedTime)
                 timeline.selectedTime = -1
             }
         }
-        Button {
+        StudioButton {
             text: "收起"
             onClicked: timeline.selectedTime = -1
         }

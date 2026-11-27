@@ -10,6 +10,7 @@ Item {
     required property bool videoOnly
     required property bool cloudOnly
     property bool exporting: false
+    property bool included: true
     property var exportFrame: null
     property real targetSeconds: -1
     property real lastSeekAt: -1000
@@ -58,7 +59,7 @@ Item {
     y: geometry.y
     width: geometry.width
     height: geometry.height
-    visible: !cloudOnly && (!videoOnly || targetVideo) &&
+    visible: included && !cloudOnly && (!videoOnly || targetVideo) &&
              (exporting ? (exportFrame && exportFrame.width > 0) :
                       targetSeconds >= 0 && player.hasVideo && (player.duration <= 0 || targetSeconds * 1000 < player.duration))
     opacity: full ? 1 : footage.opacity

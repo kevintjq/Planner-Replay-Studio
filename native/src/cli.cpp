@@ -19,9 +19,9 @@ int main(int argc, char **argv)
     qputenv("QT_COMMAND_LINE_PARSER_NO_GUI_MESSAGE_BOXES", "1");
 #endif
     QCoreApplication app(argc, argv);
-    app.setApplicationName(QStringLiteral("PlannerReplayCli"));
+    app.setApplicationName(QStringLiteral("uav-studio-cli"));
     QCommandLineParser parser;
-    parser.setApplicationDescription(QStringLiteral("Inspect ROS1 bags and export Planner Replay scenes."));
+    parser.setApplicationDescription(QStringLiteral("Inspect ROS1 bags and export UAV Studio scenes."));
     const QCommandLineOption output("output", "Save a PNG or MP4 to this path.", "file");
     const QCommandLineOption start("start", "Start at this playback time in seconds.", "seconds", "0");
     const QCommandLineOption duration("seconds", "Export this many seconds, or 0 for the entire remaining interval.", "seconds", "0");
@@ -110,7 +110,7 @@ int main(int argc, char **argv)
                 return 1;
             }
         }
-        auto program = QCoreApplication::applicationDirPath() + QStringLiteral("/PlannerReplayNative");
+        auto program = QCoreApplication::applicationDirPath() + QStringLiteral("/uav-studio");
 #ifdef Q_OS_WIN
         program += QStringLiteral(".exe");
 #endif

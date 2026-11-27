@@ -1,4 +1,6 @@
 #include "project_document.h"
+#include "design_tokens.h"
+#include <QColor>
 
 #include <QDir>
 #include <QFile>
@@ -150,6 +152,22 @@ void ProjectDocument::setLayerEnabled(const QString &layer, bool isEnabled)
     root_.insert("enabled", enabled);
 }
 
+QString ProjectDocument::sceneBackground() const
+{
+    const auto value = root_.value("composition").toObject().value("scene_background").toString();
+    return QColor::isValidColorName(value) ? value : QString::fromLatin1(DesignTokens::SceneBackground);
+}
+
+void ProjectDocument::setSceneBackground(const QString &color)
+{
+    const QColor value(color);
+    if (!value.isValid() || value.alpha() != 255)
+        fail(QStringLiteral("场景背景需要有效的不透明颜色。"));
+    auto scene = root_.value("composition").toObject();
+    scene.insert("scene_background", value.name());
+    root_.insert("composition", scene);
+}
+
 QVariantMap ProjectDocument::speedGauge() const
 {
     const auto scene = root_.value("composition").toObject();
@@ -161,7 +179,8 @@ QVariantMap ProjectDocument::speedGauge() const
             {"scale", scene.value("speed_scale").toDouble(1.)},
             {"x", placement.size() == 2 ? placement[0].toDouble(.05) : .05},
             {"y", placement.size() == 2 ? placement[1].toDouble(.32) : .32},
-            {"transparent", scene.value("speed_transparent").toBool(true)}};
+            {"transparent", scene.value("speed_transparent").toBool(true)},
+            {"scheme", scene.value("speed_scheme").toString("dark")}};
 }
 
 void ProjectDocument::setSpeedGauge(const QVariantMap &changed)
@@ -190,6 +209,7 @@ void ProjectDocument::setSpeedGauge(const QVariantMap &changed)
     scene.insert("speed_scale", scale);
     scene.insert("speed_position", QJsonArray{x,y});
     scene.insert("speed_transparent", setup.value("transparent").toBool());
+    scene.insert("speed_scheme", setup.value("scheme").toString() == "light" ? "light" : "dark");
     root_.insert("composition", scene);
 }
 
@@ -764,6 +784,29 @@ void ProjectDocument::replaceVideoTiming(qsizetype index, const QJsonObject &edi
     root_.insert("composition", scene);
 }
 
+QJsonObject ProjectDocument::trajectorySettings() const
+{
+    auto settings = root_.value("trajectory_studio").toObject();
+    if (!settings.isEmpty())
+        settings.insert("path", absoluteMedia(settings.value("path").toString()));
+    return settings;
+}
+
+void ProjectDocument::setTrajectorySettings(const QJsonObject &settings)
+{
+    if (settings.isEmpty()) {
+        root_.remove("trajectory_studio");
+        return;
+    }
+    auto saved = settings;
+    const auto source = settings.value("path").toString();
+    if (source.isEmpty())
+        fail(QStringLiteral("轨迹图设置缺少源视频路径。"));
+    saved.insert("path", path_.isEmpty() ? absolutePath(source)
+        : referenceFrom(QFileInfo(path_).absolutePath(), absolutePath(source)));
+    root_.insert("trajectory_studio", saved);
+}
+
 QString ProjectDocument::absoluteMedia(const QString &reference) const
 {
     if (reference.isEmpty())
@@ -803,6 +846,13 @@ QJsonObject ProjectDocument::remapMedia(const std::function<QString(const QStrin
         scene.insert(kind, layers);
     }
     root.insert("composition", scene);
+    if (root.contains("trajectory_studio")) {
+        auto trajectory = root.value("trajectory_studio").toObject();
+        if (!trajectory.value("path").isString() || trajectory.value("path").toString().isEmpty())
+            fail(QStringLiteral("轨迹图项目源视频路径无效。"));
+        trajectory.insert("path", map(absoluteMedia(trajectory.value("path").toString())));
+        root.insert("trajectory_studio", trajectory);
+    }
     return root;
 }
 

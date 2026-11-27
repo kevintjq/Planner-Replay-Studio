@@ -70,7 +70,18 @@ class CloudRenderer : public QQuickFramebufferObject::Renderer {
 public:
     void synchronize(QQuickFramebufferObject *item) override
     {
-        const auto *view = static_cast<CloudView *>(item);
+        auto *view = static_cast<CloudView *>(item);
+        owner_ = view;
+        if (captureSize_ != view->captureSize_) {
+            captureSize_ = view->captureSize_;
+            invalidateFramebufferObject();
+        }
+        if (!view->textureLimit_) {
+            int limit = 0;
+            QOpenGLContext::currentContext()->extraFunctions()->glGetIntegerv(GL_MAX_TEXTURE_SIZE, &limit);
+            if (limit > 0) { view->textureLimit_ = limit; QMetaObject::invokeMethod(view, &CloudView::textureLimitChanged, Qt::QueuedConnection); }
+        }
+        pixelScale_ = captureSize_.isValid() ? float(captureSize_.width() / std::max(1., view->width())) : 1.f;
         if (view->controller_) {
             auto recording = view->controller_->recording();
             if (recording != recording_) {
@@ -84,6 +95,7 @@ public:
             cameraFrustum_ = view->controller_->planningLayerEnabled("camera");
             currentScan_ = view->controller_->planningLayerEnabled("scan");
             comparePlans_ = view->controller_->comparePlans();
+            background_ = view->controller_->sceneBackground();
         }
         yaw_ = view->yaw_;
         pitch_ = view->pitch_;
@@ -102,13 +114,24 @@ public:
         camera_ = view->camera_;
         showPath_ = view->showPath_ && (!auxiliary_ || view->overlays_.contains("actual"));
         transparent_ = view->transparent_;
+        if (view->captureBackground_.isValid()) {
+            background_ = view->captureBackground_;
+            transparent_ = background_.alpha() == 0;
+        }
     }
 
     QOpenGLFramebufferObject *createFramebufferObject(const QSize &size) override
     {
         QOpenGLFramebufferObjectFormat format;
         format.setAttachment(QOpenGLFramebufferObject::CombinedDepthStencil);
-        return new QOpenGLFramebufferObject(size, format);
+        format.setSamples(captureSize_.isValid() ? 4 : 0);
+        if (captureSize_.isValid()) qInfo() << "Offscreen cloud FBO" << captureSize_;
+        auto *fbo = new QOpenGLFramebufferObject(captureSize_.isValid() ? captureSize_ : size, format);
+        const QSize allocated = fbo->isValid() ? fbo->size() : QSize();
+        QMetaObject::invokeMethod(owner_, [view = owner_, allocated] {
+            if (view) { view->framebufferSize_ = allocated; emit view->framebufferSizeChanged(); }
+        }, Qt::QueuedConnection);
+        return fbo;
     }
 
     void render() override
@@ -123,7 +146,7 @@ public:
         if (transparent_)
             gl->glClearColor(0.f, 0.f, 0.f, 0.f);
         else
-            gl->glClearColor(.030f, .046f, .071f, 1.f);
+            gl->glClearColor(background_.redF(), background_.greenF(), background_.blueF(), 1.f);
         gl->glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         if (!initialize() || !recording_) {
             QQuickOpenGLUtils::resetOpenGLState();
@@ -144,7 +167,7 @@ public:
         program_.setUniformValue("opacity", 1.f);
         program_.setUniformValue("bodyPosition", body);
         program_.setUniformValue("colorRange", std::max(5.f, recording_->radius * .65f));
-        program_.setUniformValue("pixelSize", pointSize_);
+        program_.setUniformValue("pixelSize", pointSize_ * pixelScale_);
         program_.setUniformValue("fixedColor", QVector3D(.75f, .82f, .88f));
         program_.setUniformValue("solid", true);
         program_.setUniformValue("tfAxes", false);
@@ -195,10 +218,15 @@ public:
     }
 
 private:
+    QColor background_;
     bool initialize()
     {
         if (!initialized_) {
             initialized_ = true;
+            auto *gl = QOpenGLContext::currentContext()->functions();
+            qInfo() << "UAV Studio OpenGL" << reinterpret_cast<const char *>(gl->glGetString(GL_VENDOR))
+                    << reinterpret_cast<const char *>(gl->glGetString(GL_RENDERER))
+                    << reinterpret_cast<const char *>(gl->glGetString(GL_VERSION));
             ready_ = program_.addShaderFromSourceCode(QOpenGLShader::Vertex, Vertex)
                 && program_.addShaderFromSourceCode(QOpenGLShader::Fragment, Fragment)
                 && program_.link() && vao_.create() && path_.create() && marker_.create();
@@ -419,7 +447,9 @@ private:
     bool auxiliary_ = false, scan_ = true, currentScan_ = false;
     bool plan_ = true, corridor_ = true, goal_ = true, cameraFrustum_ = true, comparePlans_ = false;
     qint64 stamp_ = 0;
-    float yaw_ = 0, pitch_ = 0, scale_ = 1, pointSize_ = 2, panX_ = 0, panY_ = 0;
+    float yaw_ = 0, pitch_ = 0, scale_ = 1, pointSize_ = 2, panX_ = 0, panY_ = 0, pixelScale_ = 1;
+    QSize captureSize_;
+    QPointer<CloudView> owner_;
 };
 
 CloudView::CloudView(QQuickItem *parent) : QQuickFramebufferObject(parent)
@@ -437,6 +467,7 @@ void CloudView::setController(ReplayController *controller)
     controller_ = controller;
     if (controller_) {
         connect(controller_, &ReplayController::positionChanged, this, &CloudView::update);
+        connect(controller_, &ReplayController::sceneStyleChanged, this, &CloudView::update);
         currentRecording_ = controller_->recording();
         connect(controller_, &ReplayController::recordingChanged, this, [this] {
             const auto recording = controller_->recording();
@@ -496,6 +527,22 @@ void CloudView::setPointSize(float size)
         emit pointSizeChanged();
         update();
     }
+}
+
+void CloudView::setCaptureSize(const QSize &size)
+{
+    if (captureSize_ == size) return;
+    captureSize_ = size;
+    emit captureSizeChanged();
+    update();
+}
+
+void CloudView::setCaptureBackground(const QColor &color)
+{
+    if (captureBackground_ == color) return;
+    captureBackground_ = color;
+    emit captureBackgroundChanged();
+    update();
 }
 
 void CloudView::setTransparent(bool transparent)

@@ -1,11 +1,14 @@
 import QtQuick
-import PlannerReplay
+import UAVStudio
 
 Rectangle {
     id: canvas
     required property var controller
     required property var exporter
     property bool interactive: true
+    property var captureOptions: ({})
+    readonly property bool captureActive: Object.keys(captureOptions).length > 0
+    function includesLayer(id) { return !captureActive || captureOptions.scope !== "layers" || (captureOptions.layerIds ?? []).indexOf(id) >= 0 }
     property alias showPath: cloud.showPath
     property alias pointSize: cloud.pointSize
     readonly property var activeLayout: controller.activeLayout
@@ -16,14 +19,17 @@ Rectangle {
     function resetCamera() { cloud.resetCamera() }
     signal insetSelected(string id)
     signal sceneSelected(string id)
-    color: canvas.controller.captureMatte === 1 ? "black" : canvas.controller.captureMatte === 2 ? "white"
-         : canvas.controller.transparentCanvas ? "transparent" : "#08101a"
+    color: captureActive && captureOptions.background !== undefined ? captureOptions.background : canvas.controller.captureMatte === 1 ? appearance.outputColors().matteBlack : canvas.controller.captureMatte === 2 ? appearance.outputColors().matteWhite
+         : canvas.controller.transparentCanvas ? appearance.colors.transparent : canvas.controller.sceneBackground
     clip: true
 
     CloudView {
         id: cloud
+        objectName: "primaryCloudView"
+        property string exportViewId: "main"
+        captureBackground: canvas.captureActive && canvas.captureOptions.background !== undefined ? canvas.captureOptions.background : ""
         z: 1
-        visible: !canvas.videoOnly
+        visible: !canvas.videoOnly && canvas.includesLayer("main")
         transparent: canvas.controller.transparentCanvas || (!canvas.cloudOnly
                      && (canvas.activeLayout.backdropId.length > 0 || canvas.activeLayout.progress === 0))
         readonly property rect geometry: {
@@ -46,7 +52,7 @@ Rectangle {
         cameraZoom: canvas.controller.mainView.zoom
         MouseArea {
             anchors.fill: parent
-            enabled: canvas.interactive
+            enabled: canvas.interactive && !canvas.exporter.exporting
             acceptedButtons: Qt.LeftButton | Qt.RightButton
             property real lastX: 0
             property real lastY: 0
@@ -72,6 +78,7 @@ Rectangle {
         controller: canvas.controller
         pointSize: cloud.pointSize
         interactive: canvas.interactive
+        captureOptions: canvas.captureOptions
         allowed: !canvas.videoOnly && !canvas.cloudOnly
         onSelected: id => canvas.insetSelected(id)
     }
@@ -87,6 +94,7 @@ Rectangle {
             cloudOnly: canvas.cloudOnly
             exporting: canvas.exporter.exporting
             exportFrame: canvas.exporter.frames[index] ?? null
+            included: canvas.includesLayer(footage.id)
         }
     }
 
@@ -94,6 +102,8 @@ Rectangle {
         z: 3
         interactive: canvas.interactive
         showText: !canvas.videoOnly && !canvas.cloudOnly
+        includeText: !canvas.captureActive || canvas.captureOptions.includeText !== false
+        captureLayerIds: canvas.captureActive && canvas.captureOptions.scope === "layers" ? canvas.captureOptions.layerIds ?? [] : null
         anchors.fill: parent
         controller: canvas.controller
         onSelected: id => canvas.sceneSelected(id)
@@ -102,7 +112,7 @@ Rectangle {
         z: 4
         controller: canvas.controller
         interactive: canvas.interactive
-        allowed: !canvas.videoOnly && !canvas.cloudOnly
+        allowed: !canvas.videoOnly && !canvas.cloudOnly && canvas.includesLayer("speed") && (!canvas.captureActive || canvas.captureOptions.includeGauge !== false)
     }
 
 }

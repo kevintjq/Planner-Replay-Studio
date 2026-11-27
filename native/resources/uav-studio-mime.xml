@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-uav-studio">
+    <comment>UAV Studio project</comment>
+    <glob pattern="*.uavstudio"/>
+    <glob pattern="*.slamfpv"/>
+  </mime-type>
+</mime-info>

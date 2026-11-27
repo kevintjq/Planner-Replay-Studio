@@ -3,6 +3,7 @@
 
 #include <QFile>
 #include <QPainter>
+#include <QPen>
 #include <QTemporaryDir>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/photo.hpp>
@@ -298,23 +299,91 @@ std::vector<size_t> sampleTrajectory(const FixedCameraTrajectory &trajectory, do
     return limited;
 }
 
+std::vector<size_t> editedTrajectorySamples(const FixedCameraTrajectory &trajectory, double interval,
+                                          int mode, int count, const TrajectoryEdits &edits)
+{
+    std::vector<size_t> result;
+    const auto &frames = trajectory.frames;
+    if (frames.empty())
+        return result;
+    if (mode == 0 || mode == 3)
+        result = sampleTrajectory(trajectory, mode == 3 ? 0. : interval);
+    else if (mode == 1 && count > 0) {
+        const double begin = edits.trim ? double(edits.trim->first) / 1e9 : frames.front().seconds;
+        // trim 为左闭右开；最后一个采样仍选择范围内真实存在的源帧。
+        const double end = edits.trim ? double(edits.trim->second - 1) / 1e9 : frames.back().seconds;
+        for (int i = 0; i < count; ++i) {
+            const double time = count == 1 ? begin : begin + (end - begin) * i / (count - 1);
+            auto frame = std::lower_bound(frames.begin(), frames.end(), time,
+                [](const auto &frame, double time) { return frame.seconds < time - 1e-8; });
+            if (frame == frames.end() || (edits.trim && trajectoryTimestamp(frame->seconds) >= edits.trim->second)) {
+                if (frame == frames.begin())
+                    continue;
+                --frame;
+            }
+            result.push_back(size_t(frame - frames.begin()));
+        }
+    }
+    for (auto edit = edits.frames.cbegin(); edit != edits.frames.cend(); ++edit) {
+        if (!edit->manual)
+            continue;
+        const auto frame = std::lower_bound(frames.begin(), frames.end(), edit.key(),
+            [](const auto &frame, qint64 stamp) { return trajectoryTimestamp(frame.seconds) < stamp; });
+        if (frame != frames.end() && trajectoryTimestamp(frame->seconds) == edit.key())
+            result.push_back(size_t(frame - frames.begin()));
+    }
+    if (edits.trim)
+        std::erase_if(result, [&](size_t i) {
+            const auto stamp = trajectoryTimestamp(frames[i].seconds);
+            return stamp < edits.trim->first || stamp >= edits.trim->second;
+        });
+    std::sort(result.begin(), result.end());
+    result.erase(std::unique(result.begin(), result.end()), result.end());
+    return result;
+}
+
 QImage renderTrajectory(const FixedCameraTrajectory &trajectory, const std::vector<size_t> &sampled,
-                        double opacity, const QSet<int> &excluded, QSize limit)
+                        double opacity, const QSet<int> &excluded, QSize limit,
+                        const TrajectoryEdits &edits, const TrackingCancelled &cancel, bool exactOutputSize)
 {
     auto result = trajectory.background;
     if (result.isNull())
         return result;
-    if (limit.isValid() && (result.width() > limit.width() || result.height() > limit.height()))
+    if (limit.isValid() && (exactOutputSize || result.width() > limit.width() || result.height() > limit.height()))
         result = result.scaled(limit, Qt::KeepAspectRatio, Qt::SmoothTransformation);
     const double xScale = double(result.width()) / trajectory.background.width();
     const double yScale = double(result.height()) / trajectory.background.height();
+    const TrajectoryExclusions exclusions(edits);
     QPainter painter(&result);
     painter.setRenderHint(QPainter::SmoothPixmapTransform);
-    painter.setOpacity(std::clamp(opacity, 0., 1.));
+    if (edits.showLine) {
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(QPen(QColor("#38a5eb"), std::max(1., 2. * xScale)));
+        // 轨迹使用全部跟踪位置，排除拖影不会改变轨迹。跳过跨越排除区间的边，避免错误直线桥接。
+        for (size_t i = 1; i < trajectory.frames.size(); ++i) {
+            if (cancel && cancel())
+                return {};
+            const auto &a = trajectory.frames[i - 1], &b = trajectory.frames[i];
+            const auto begin = trajectoryTimestamp(a.seconds), end = trajectoryTimestamp(b.seconds);
+            if ((edits.trim && (begin < edits.trim->first || end >= edits.trim->second)) ||
+                exclusions.intersects(begin, end, TrajectoryLine) || exclusions.contains(end, TrajectoryLine))
+                continue;
+            const auto from = a.bounds.center(), to = b.bounds.center();
+            painter.drawLine(QPointF(from.x() * xScale, from.y() * yScale), QPointF(to.x() * xScale, to.y() * yScale));
+        }
+    }
     for (const size_t index : sampled) {
+        if (cancel && cancel())
+            return {};
         if (index >= trajectory.frames.size() || excluded.contains(int(index)))
             continue;
         const auto &frame = trajectory.frames[index];
+        const auto stamp = trajectoryTimestamp(frame.seconds);
+        const auto edit = edits.frames.value(stamp);
+        if (edit.excluded || exclusions.contains(stamp, DroneFrames) ||
+            (edits.trim && (stamp < edits.trim->first || stamp >= edits.trim->second)))
+            continue;
+        painter.setOpacity(std::clamp(opacity, 0., 1.) * edit.opacity);
         const QRectF area(frame.bounds.x() * xScale, frame.bounds.y() * yScale,
                           frame.bounds.width() * xScale, frame.bounds.height() * yScale);
         painter.drawImage(area, cachedImage(frame));

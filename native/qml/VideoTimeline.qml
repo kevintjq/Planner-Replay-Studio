@@ -27,6 +27,8 @@ ColumnLayout {
     spacing: 4
 
     ScrollView {
+        ScrollBar.vertical: StudioScrollBar {}
+        ScrollBar.horizontal: StudioScrollBar {}
         id: scroller
         Layout.fillWidth: true
         Layout.preferredHeight: Math.min(102, tracks.implicitHeight)
@@ -58,13 +60,13 @@ ColumnLayout {
                             timeline.layerSelected(modelData.layerId)
                     }
 
-                    Button {
+                    StudioButton {
                         Layout.preferredWidth: timeline.labelWidth
                         Layout.preferredHeight: 24
                         text: row.modelData.label
                         highlighted: row.isSelected
                         id: trackButton
-                        contentItem: Label {
+                        contentItem: StudioLabel {
                             text: trackButton.text
                             color: timeline.ink
                             elide: Text.ElideMiddle
@@ -78,7 +80,7 @@ ColumnLayout {
                         Layout.fillWidth: true
                         Layout.preferredHeight: 24
                         radius: 4
-                        color: "#202d40"
+                        color: appearance.colors.timelineTrack
 
                         function second(x) {
                             return Math.max(0, Math.min(x / Math.max(1, width), 1)) * timeline.duration
@@ -117,20 +119,23 @@ ColumnLayout {
                                 y: 3
                                 height: lane.height - 6
                                 radius: 3
-                                color: row.isVideo ? (row.isSelected ? "#33668a" : "#294a61")
-                                       : row.modelData.kind === "images" ? "#735042" : "#534168"
+                                color: row.isVideo ? (row.isSelected ? appearance.colors.selectedClip : appearance.colors.videoClip)
+                                       : row.modelData.kind === "images" ? appearance.colors.imageClip : appearance.colors.textClip
                                 border.color: timeline.accent
                                 border.width: row.isSelected ? 1 : 0
 
-                                Menu {
+                                Menu { palette: StudioPalette {}
+
                                     id: actions
                                     property real at
-                                    MenuItem {
+                                    MenuItem { palette: StudioPalette {}
+
                                         visible: row.isVideo
                                         text: "在此分割"
                                         onTriggered: timeline.controller.splitVideo(row.modelData.videoIndex, actions.at)
                                     }
-                                    MenuItem {
+                                    MenuItem { palette: StudioPalette {}
+
                                         text: row.isVideo ? "删除此片段" : "移除图层"
                                         onTriggered: {
                                             if (row.isVideo)

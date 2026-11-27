@@ -38,6 +38,8 @@ public:
     void setCameraKind(const QString &kind);
     bool transparentCanvas() const;
     void setTransparentCanvas(bool transparent);
+    QString sceneBackground() const;
+    void setSceneBackground(const QString &color);
     QJsonArray layoutCues() const;
     void setLayoutCue(double time, const QString &mode, const QString &videoId, double transition);
     void removeLayoutCue(double time);
@@ -64,6 +66,8 @@ public:
     QJsonObject videoTiming(qsizetype index) const;
     void setVideoTiming(qsizetype index, const QJsonObject &changes);
     void replaceVideoTiming(qsizetype index, const QJsonObject &edit);
+    QJsonObject trajectorySettings() const;
+    void setTrajectorySettings(const QJsonObject &settings);
 
     ProjectDocument saveAs(const QString &manifest) const;
     QString exportFolder(const QString &folder, const std::function<bool()> &cancel = {}) const;

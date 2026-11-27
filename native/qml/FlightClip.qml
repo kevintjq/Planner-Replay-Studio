@@ -9,6 +9,8 @@ Item {
     required property var layout
     required property bool videoOnly
     required property bool cloudOnly
+    property bool exporting: false
+    property var exportFrame: null
     property real targetSeconds: -1
     property real lastSeekAt: -1000
     property real requestedPosition: -1
@@ -16,7 +18,8 @@ Item {
     property bool producedFrame: false
     readonly property real cropWidth: footage.crop[2] - footage.crop[0]
     readonly property real cropHeight: footage.crop[3] - footage.crop[1]
-    readonly property real sourceAspect: output.sourceRect.height > 0
+    readonly property real sourceAspect: exporting && exportFrame && exportFrame.height > 0
+                                         ? exportFrame.width / exportFrame.height : output.sourceRect.height > 0
                                          ? output.sourceRect.width / output.sourceRect.height : 16 / 9
     readonly property real cropAspect: sourceAspect * cropWidth / cropHeight
 
@@ -45,9 +48,9 @@ Item {
     y: full ? 0 : backdrop ? largeY : between(largeY, insetY)
     width: full ? parent.width : backdrop ? largeWidth : between(largeWidth, insetWidth)
     height: full ? parent.height : backdrop ? largeHeight : between(largeHeight, insetHeight)
-    visible: targetSeconds >= 0 && player.hasVideo
-             && (player.duration <= 0 || targetSeconds * 1000 < player.duration)
-             && !cloudOnly && (!videoOnly || targetVideo)
+    visible: !cloudOnly && (!videoOnly || targetVideo) &&
+             (exporting ? (exportFrame && exportFrame.width > 0) :
+                      targetSeconds >= 0 && player.hasVideo && (player.duration <= 0 || targetSeconds * 1000 < player.duration))
     opacity: full ? 1 : footage.opacity
     clip: true
 
@@ -63,6 +66,12 @@ Item {
     }
 
     function synchronize(force) {
+        if (exporting) {
+            pausedSeek.stop()
+            if (player.playing)
+                player.pause()
+            return
+        }
         const wasActive = targetSeconds >= 0 && (player.duration <= 0 || targetSeconds * 1000 < player.duration)
         targetSeconds = controller.videoSeconds(clipIndex)
         const target = Math.round(targetSeconds * 1000)
@@ -108,6 +117,7 @@ Item {
         }
     }
     onFootageChanged: synchronize(false)
+    onExportingChanged: synchronize(true)
 
     MediaPlayer {
         id: player
@@ -130,10 +140,23 @@ Item {
     VideoOutput {
         id: output
         objectName: "flightClipOutput"
+        visible: !frame.exporting
         x: -(frame.footage.crop[0] + (frame.cropWidth - frame.displayedCropWidth) / 2) * width
         y: -(frame.footage.crop[1] + (frame.cropHeight - frame.displayedCropHeight) / 2) * height
         width: frame.width / Math.max(.000001, frame.displayedCropWidth)
         height: frame.height / Math.max(.000001, frame.displayedCropHeight)
         fillMode: VideoOutput.Stretch
     }
+    Image {
+        visible: frame.exporting
+        source: frame.exporting && frame.exportFrame ? frame.exportFrame.url : ""
+        x: output.x
+        y: output.y
+        width: output.width
+        height: output.height
+        fillMode: Image.Stretch
+        cache: false
+        asynchronous: false
+    }
+
 }

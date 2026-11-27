@@ -15,9 +15,19 @@ ApplicationWindow {
     title: "Planner Replay Studio"
     color: "#0d1420"
 
+    header: TabBar {
+        id: workspace
+        enabled: !movie.exporting
+        onCurrentIndexChanged: if (currentIndex === 1) replay.pause()
+        TabButton { text: "回放与合成" }
+        TabButton { text: "固定机位拖影" }
+    }
+
     property int selectedVideo: 0
     readonly property var activeLayout: replay.activeLayout
-    readonly property bool videoOnly: activeLayout.mode === "video" && activeLayout.fullHasMedia
+    readonly property bool videoOnly: activeLayout.mode === "video" && (movie.exporting
+        ? movie.frames.some((frame, index) => frame.width > 0 && replay.videoLayers[index]?.id === activeLayout.video_id)
+        : activeLayout.fullHasMedia)
     readonly property bool cloudOnly: activeLayout.mode === "cloud"
 
     readonly property color panel: "#151f30"
@@ -73,6 +83,16 @@ ApplicationWindow {
         onAccepted: replay.exportFrame(selectedFile, canvas)
     }
     FileDialog {
+        id: mp4Dialog
+        title: "导出 1080p / 60 fps 视频"
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "mp4"
+        nameFilters: ["MP4 视频 (*.mp4)"]
+        onAccepted: movie.start(selectedFile, canvas, Number(movieBegin.text),
+                                movieEnd.text.trim() === "" ? replay.duration : Number(movieEnd.text),
+                                [1., .5, .25][movieSpeed.currentIndex], movieAudio.currentIndex - 1)
+    }
+    FileDialog {
         id: videoDialog
         title: "添加实拍视频"
         fileMode: FileDialog.OpenFiles
@@ -87,13 +107,13 @@ ApplicationWindow {
         title: "选择打包项目的上级文件夹"
         onAccepted: replay.exportProjectFolder(selectedFolder)
     }
-    Shortcut { sequence: StandardKey.Open; enabled: !replay.loading; onActivated: projectDialog.open() }
-    Shortcut { sequence: StandardKey.SaveAs; enabled: !replay.loading; onActivated: saveDialog.open() }
-    Shortcut { sequences: [StandardKey.Undo]; enabled: !replay.loading && replay.canUndo; onActivated: replay.undo() }
-    Shortcut { sequences: [StandardKey.Redo]; enabled: !replay.loading && replay.canRedo; onActivated: replay.redo() }
-    Shortcut { sequence: "Space"; onActivated: replay.togglePlayback() }
-    Shortcut { sequence: "Left"; onActivated: { replay.pause(); replay.seek(replay.position - 1 / 60) } }
-    Shortcut { sequence: "Right"; onActivated: { replay.pause(); replay.seek(replay.position + 1 / 60) } }
+    Shortcut { sequence: StandardKey.Open; enabled: !movie.exporting && !replay.loading; onActivated: projectDialog.open() }
+    Shortcut { sequence: StandardKey.SaveAs; enabled: !movie.exporting && !replay.loading; onActivated: saveDialog.open() }
+    Shortcut { sequences: [StandardKey.Undo]; enabled: !movie.exporting && !replay.loading && replay.canUndo; onActivated: replay.undo() }
+    Shortcut { sequences: [StandardKey.Redo]; enabled: !movie.exporting && !replay.loading && replay.canRedo; onActivated: replay.redo() }
+    Shortcut { sequence: "Space"; enabled: !movie.exporting && workspace.currentIndex === 0; onActivated: replay.togglePlayback() }
+    Shortcut { sequence: "Left"; enabled: !movie.exporting && workspace.currentIndex === 0; onActivated: { replay.pause(); replay.seek(replay.position - 1 / 60) } }
+    Shortcut { sequence: "Right"; enabled: !movie.exporting && workspace.currentIndex === 0; onActivated: { replay.pause(); replay.seek(replay.position + 1 / 60) } }
 
     component PanelTitle: Label {
         color: window.ink
@@ -105,9 +125,18 @@ ApplicationWindow {
         font.pixelSize: 12
     }
 
+    TrajectoryPane {
+        anchors.fill: parent
+        anchors.margins: 18
+        visible: workspace.currentIndex === 1
+        editor: trajectory
+    }
+
     RowLayout {
         anchors.fill: parent
         anchors.margins: 18
+        visible: workspace.currentIndex === 0
+        enabled: !movie.exporting
         spacing: 14
 
         Rectangle {
@@ -158,9 +187,9 @@ ApplicationWindow {
                     PanelTitle { text: "项目" }
                     RowLayout {
                         Layout.fillWidth: true
-                        Button { text: "打开项目"; enabled: !replay.loading; onClicked: projectDialog.open() }
-                        Button { text: "另存为"; enabled: !replay.loading; onClicked: saveDialog.open() }
-                        Button { text: "打包"; enabled: !replay.loading; onClicked: packageDialog.open() }
+                        Button { text: "打开项目"; enabled: !movie.exporting && !replay.loading; onClicked: projectDialog.open() }
+                        Button { text: "另存为"; enabled: !movie.exporting && !replay.loading; onClicked: saveDialog.open() }
+                        Button { text: "打包"; enabled: !movie.exporting && !replay.loading; onClicked: packageDialog.open() }
                     }
                     Caption {
                         Layout.fillWidth: true
@@ -331,6 +360,50 @@ ApplicationWindow {
                             pngDialog.open()
                         }
                     }
+                    PanelTitle { text: "导出视频" }
+                    GridLayout {
+                        columns: 2
+                        Layout.fillWidth: true
+                        Label { text: "开始（秒）" }
+                        TextField {
+                            id: movieBegin
+                            text: "0"
+                            Layout.fillWidth: true
+                            validator: DoubleValidator { bottom: 0; locale: "C" }
+                        }
+                        Label { text: "结束（秒）" }
+                        TextField {
+                            id: movieEnd
+                            placeholderText: "回放末尾"
+                            Layout.fillWidth: true
+                            validator: DoubleValidator { bottom: 0; locale: "C" }
+                        }
+                        Label { text: "速度" }
+                        ComboBox {
+                            id: movieSpeed
+                            Layout.fillWidth: true
+                            model: ["1×", "0.5×", "0.25×"]
+                        }
+                        Label { text: "音轨" }
+                        ComboBox {
+                            id: movieAudio
+                            Layout.fillWidth: true
+                            model: ["无音轨"].concat(replay.videoLayers.map(layer => layer.label))
+                        }
+                    }
+                    Button {
+                        text: "导出 1080p / 60 fps MP4"
+                        Layout.fillWidth: true
+                        enabled: !replay.loading && !replay.capturing && replay.duration > 0 && movieBegin.acceptableInput
+                                 && (movieEnd.text.trim() === "" || movieEnd.acceptableInput)
+                        onClicked: mp4Dialog.open()
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: movie.message
+                        wrapMode: Text.Wrap
+                        visible: text.length > 0
+                    }
                     Button {
                         text: "重置视角"
                         Layout.fillWidth: true
@@ -423,6 +496,8 @@ ApplicationWindow {
                             layout: window.activeLayout
                             videoOnly: window.videoOnly
                             cloudOnly: window.cloudOnly
+                            exporting: movie.exporting
+                            exportFrame: movie.frames[index] ?? null
                         }
                     }
 
@@ -525,8 +600,8 @@ ApplicationWindow {
                             enabled: !replay.loading && videoPicker.currentIndex >= 0
                             onClicked: replay.deleteVideoSegment(videoPicker.currentIndex, replay.position)
                         }
-                        Button { text: "撤销视频"; visible: replay.videoLayers.length > 0; enabled: !replay.loading && replay.canUndo; onClicked: replay.undo() }
-                        Button { text: "重做视频"; visible: replay.videoLayers.length > 0; enabled: !replay.loading && replay.canRedo; onClicked: replay.redo() }
+                        Button { text: "撤销视频"; visible: replay.videoLayers.length > 0; enabled: !movie.exporting && !replay.loading && replay.canUndo; onClicked: replay.undo() }
+                        Button { text: "重做视频"; visible: replay.videoLayers.length > 0; enabled: !movie.exporting && !replay.loading && replay.canRedo; onClicked: replay.redo() }
                         ColumnLayout {
                             spacing: 3
                             Layout.fillWidth: true
@@ -553,4 +628,24 @@ ApplicationWindow {
             }
         }
     }
+    Rectangle {
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 20
+        visible: movie.exporting
+        color: window.panel
+        border.color: window.thin
+        radius: 8
+        width: Math.min(parent.width - 40, 520)
+        height: exportProgress.implicitHeight + 24
+        RowLayout {
+            id: exportProgress
+            anchors.fill: parent
+            anchors.margins: 12
+            Caption { text: Math.round(movie.progress * 100) + "%" }
+            ProgressBar { Layout.fillWidth: true; value: movie.progress }
+            Button { text: "取消导出"; onClicked: movie.cancel() }
+        }
+    }
+
 }

@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory = $true)][string]$AppDirectory,
     [Parameter(Mandatory = $true)][string]$SetupFile,
     [Parameter(Mandatory = $true)][string]$Version,
-    [Parameter(Mandatory = $true)][string]$QtVersion
+    [Parameter(Mandatory = $true)][string]$QtVersion,
+    [Parameter(Mandatory = $true)][string]$OpenCvDirectory
 )
 
 $ErrorActionPreference = 'Stop'
@@ -10,6 +11,12 @@ $AppDirectory = (Resolve-Path $AppDirectory).Path
 $SetupFile = [System.IO.Path]::GetFullPath($SetupFile)
 $root = (Resolve-Path "$PSScriptRoot/../..").Path
 $appExe = Join-Path $AppDirectory 'PlannerReplayNative.exe'
+
+$opencvDlls = Get-ChildItem $OpenCvDirectory -Recurse -File -Filter 'opencv*.dll'
+if (!$opencvDlls -or !($opencvDlls | Where-Object Name -Like 'opencv_videoio_ffmpeg*_64.dll')) {
+    throw 'OpenCV and its video decoding plugin are required.'
+}
+$opencvDlls | Copy-Item -Destination $AppDirectory
 
 windeployqt --release --no-compiler-runtime --qmldir "$root/native/qml" $appExe
 if ($LASTEXITCODE -ne 0) { throw "windeployqt failed with exit code $LASTEXITCODE." }
@@ -30,6 +37,7 @@ Copy-Item "$crt/*.dll" $AppDirectory
 
 Copy-Item "$root/native/README.md", "$root/LICENSE", "$PSScriptRoot/THIRD_PARTY.md" $AppDirectory
 $licenses = New-Item -ItemType Directory -Force -Path "$AppDirectory/licenses"
+Copy-Item "$OpenCvDirectory/opencv-LICENSE.txt", "$OpenCvDirectory/opencv-ffmpeg-LICENSE.txt" $licenses
 foreach ($dependency in @('bzip2', 'lz4', 'yaml-cpp')) {
     Copy-Item "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows-static-md/share/$dependency/copyright" "$licenses/$dependency.txt"
 }

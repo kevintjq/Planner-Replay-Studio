@@ -21,7 +21,7 @@ env:
 jobs:
   package:
     runs-on: windows-2022
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: jurplel/install-qt-action@v4
@@ -35,10 +35,52 @@ jobs:
         run: |
           & "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe" install bzip2:x64-windows-static-md lz4:x64-windows-static-md yaml-cpp:x64-windows-static-md
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Cache OpenCV
+        id: opencv-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/planner-opencv
+          key: opencv-4.10.0-win-x64-msvc-tracking-videoio-v1
+      - name: Build OpenCV tracking and video I/O
+        if: steps.opencv-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $target = Join-Path $env:RUNNER_TEMP 'planner-opencv'
+          git clone --depth 1 --branch 4.10.0 https://github.com/opencv/opencv.git opencv-source
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git clone --depth 1 --branch 4.10.0 https://github.com/opencv/opencv_contrib.git opencv-contrib
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake -S opencv-source -B opencv-build -G "Visual Studio 17 2022" -A x64 `
+            "-DCMAKE_INSTALL_PREFIX=$target" "-DOPENCV_EXTRA_MODULES_PATH=$PWD/opencv-contrib/modules" `
+            "-DBUILD_LIST=core,imgproc,photo,tracking,videoio" -DBUILD_SHARED_LIBS=ON `
+            -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF -DBUILD_EXAMPLES=OFF -DBUILD_DOCS=OFF `
+            -DBUILD_opencv_python3=OFF -DBUILD_JAVA=OFF -DWITH_IPP=OFF -DWITH_OPENCL=OFF -DWITH_FFMPEG=ON
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build opencv-build --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --install opencv-build --config Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item opencv-source/LICENSE "$target/opencv-LICENSE.txt"
+          Copy-Item opencv-source/3rdparty/ffmpeg/license.txt "$target/opencv-ffmpeg-LICENSE.txt"
+      - name: Prepare FFmpeg for export regression
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'ffmpeg-7.1.1-essentials_build.zip'
+          $url = 'https://github.com/GyanD/codexffmpeg/releases/download/7.1.1/ffmpeg-7.1.1-essentials_build.zip'
+          Invoke-WebRequest $url -OutFile $archive
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne '04861d3339c5ebe38b56c19a15cf2c0cc97f5de4fa8910e4d47e5e6404e4a2d4') {
+            throw 'FFmpeg tool archive did not match the pinned SHA-256.'
+          }
+          Expand-Archive $archive -DestinationPath $env:RUNNER_TEMP
+          (Join-Path $env:RUNNER_TEMP 'ffmpeg-7.1.1-essentials_build/bin') >> $env:GITHUB_PATH
       - name: Build and test
         shell: pwsh
         run: |
-          cmake -S native -B build-native -G "Visual Studio 17 2022" -A x64 "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" "-DVCPKG_TARGET_TRIPLET=x64-windows-static-md"
+          $opencv = Join-Path $env:RUNNER_TEMP 'planner-opencv'
+          $opencvBins = Get-ChildItem $opencv -Recurse -File -Filter 'opencv*.dll' | Select-Object -ExpandProperty DirectoryName -Unique
+          if (!$opencvBins) { throw 'OpenCV shared libraries were not found.' }
+          $env:PATH = ($opencvBins -join ';') + ';' + $env:PATH
+          cmake -S native -B build-native "-DOpenCV_DIR=$opencv" -G "Visual Studio 17 2022" -A x64 "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" "-DVCPKG_TARGET_TRIPLET=x64-windows-static-md"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build build-native --config Release --parallel
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -52,7 +94,7 @@ jobs:
           $version = $match.Matches[0].Groups[1].Value
           cmake --install build-native --config Release --prefix dist/PlannerReplayNative
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ./native/installer/package.ps1 -AppDirectory dist/PlannerReplayNative -SetupFile dist/PlannerReplayNative-Setup.exe -Version $version -QtVersion $env:QT_VERSION
+          ./native/installer/package.ps1 -AppDirectory dist/PlannerReplayNative -SetupFile dist/PlannerReplayNative-Setup.exe -Version $version -QtVersion $env:QT_VERSION -OpenCvDirectory (Join-Path $env:RUNNER_TEMP 'planner-opencv')
       - name: Verify install, launch and uninstall
         shell: pwsh
         run: |

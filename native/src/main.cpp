@@ -1,8 +1,13 @@
 #include "cloud_view.h"
+#include "movie_exporter.h"
 #include "replay_controller.h"
+#include "trajectory_controller.h"
 
 #include <QGuiApplication>
 #include <QImage>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QStandardPaths>
 #include <QFileInfo>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -78,6 +83,86 @@ Rectangle {
     return app.exec();
 }
 
+int smokeMovie(QGuiApplication &app)
+{
+    QQuickWindow::setGraphicsApi(QSGRendererInterface::Software);
+    QTemporaryDir temporary;
+    if (!temporary.isValid())
+        return 1;
+    const auto input = temporary.filePath("audio-source.mp4");
+    const auto output = temporary.filePath("export.mp4");
+    const auto ffmpeg = QStandardPaths::findExecutable("ffmpeg");
+    const auto ffprobe = QStandardPaths::findExecutable("ffprobe");
+    if (ffmpeg.isEmpty() || ffprobe.isEmpty() ||
+        QProcess::execute(ffmpeg, {"-v", "error", "-y", "-f", "lavfi", "-i",
+            "testsrc2=size=160x90:rate=24:duration=1", "-f", "lavfi", "-i",
+            "sine=frequency=440:sample_rate=48000:duration=1", "-c:v", "libx264", "-c:a", "aac", input}) != 0)
+        return 1;
+
+    ReplayController replay;
+    QQmlEngine engine;
+    auto *images = new MovieImages;
+    engine.addImageProvider("movie", images);
+    MovieExporter movie(replay, *images);
+    engine.rootContext()->setContextProperty("movieExporter", &movie);
+    engine.rootContext()->setContextProperty("replay", &replay);
+    replay.addVideo(QUrl::fromLocalFile(input));
+    replay.seek(.5);
+    QQuickWindow window;
+    window.resize(160, 90);
+    QQmlComponent component(&engine);
+    component.setData(R"qml(
+import QtQuick
+Rectangle {
+    width: 160
+    height: 90
+    color: "black"
+    Image {
+        anchors.fill: parent
+        source: movieExporter.frames[0]?.url ?? ""
+        cache: false
+        asynchronous: false
+    }
+    Rectangle { width: 12; height: 12; x: replay.position * 30; color: "red" }
+}
+)qml", QUrl());
+    std::unique_ptr<QObject> root(component.create());
+    auto *canvas = qobject_cast<QQuickItem *>(root.get());
+    if (!canvas)
+        return 1;
+    canvas->setParentItem(window.contentItem());
+
+    QObject::connect(&movie, &MovieExporter::changed, &app, [&] {
+        if (movie.exporting())
+            return;
+        QProcess probe;
+        probe.start(ffprobe, {"-v", "error", "-show_streams", "-of", "json", output});
+        if (!probe.waitForFinished(4000)) {
+            app.exit(1);
+            return;
+        }
+        const auto streams = QJsonDocument::fromJson(probe.readAllStandardOutput()).object().value("streams").toArray();
+        bool audio = false, video = false;
+        for (const auto &entry : streams) {
+            const auto stream = entry.toObject();
+            if (stream.value("codec_type").toString() == "audio")
+                audio = stream.value("codec_name").toString() == "aac";
+            if (stream.value("codec_type").toString() == "video") {
+                video = stream.value("width").toInt() == 1920 && stream.value("height").toInt() == 1080 &&
+                        stream.value("avg_frame_rate").toString() == "60/1" &&
+                        stream.value("nb_frames").toString() == "12";
+            }
+        }
+        if (!audio || !video || replay.position() != .5)
+            qWarning() << movie.message() << "Expected 12 1080p/60 fps frames, AAC, and restored playhead";
+        app.exit(audio && video && replay.position() == .5 ? 0 : 1);
+    });
+    window.show();
+    QTimer::singleShot(100, &app, [&] { movie.start(QUrl::fromLocalFile(output), canvas, .1, .2, .5, 0); });
+    QTimer::singleShot(25000, &app, [&] { app.exit(1); });
+    return app.exec();
+}
+
 }
 
 int main(int argc, char **argv)
@@ -95,13 +180,23 @@ int main(int argc, char **argv)
     QQuickWindow::setDefaultAlphaBuffer(true);
     if (app.arguments().contains("--smoke-png"))
         return smokePng(app);
+    if (app.arguments().contains("--smoke-mp4"))
+        return smokeMovie(app);
     QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
     qmlRegisterType<CloudView>("PlannerReplay", 1, 0, "CloudView");
     qmlRegisterUncreatableType<ReplayController>("PlannerReplay", 1, 0, "ReplayController",
                                                  "Provided by the application");
 
     ReplayController replay;
+    auto *trajectoryImages = new TrajectoryImages;
+    auto *movieImages = new MovieImages;
+    TrajectoryController trajectory(*trajectoryImages);
+    MovieExporter movie(replay, *movieImages);
     QQmlApplicationEngine engine;
+    engine.addImageProvider(QStringLiteral("trajectory"), trajectoryImages);
+    engine.addImageProvider(QStringLiteral("movie"), movieImages);
+    engine.rootContext()->setContextProperty("trajectory", &trajectory);
+    engine.rootContext()->setContextProperty("movie", &movie);
     const bool smoke = app.arguments().contains("--smoke");
     engine.rootContext()->setContextProperty("replay", &replay);
     engine.rootContext()->setContextProperty("smokeTest", smoke);
@@ -167,6 +262,11 @@ int main(int argc, char **argv)
                     return;
                 }
                 const auto fixture = QUrl::fromLocalFile(QFileInfo(app.arguments().at(fixtureIndex)).absoluteFilePath());
+                if (replay::readTrajectoryFrame(fixture.toLocalFile(), .25).isNull()) {
+                    qWarning("OpenCV could not decode the installed application's video fixture");
+                    app.exit(1);
+                    return;
+                }
                 replay.addVideo(fixture);
                 replay.addVideo(fixture);
                 replay.setVideoAnchor(0, 0, QStringLiteral("0.2"));

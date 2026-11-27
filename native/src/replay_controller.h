@@ -69,6 +69,8 @@ public:
     QString projectPath() const { return project_ ? project_->path() : QString(); }
     std::shared_ptr<const replay::Recording> recording() const { return record_; }
 
+    const std::vector<replay::VideoClip> &videoClips() const { return clips_; }
+    bool referencesFile(const QString &path) const;
     const QVariantList &videoLayers() const { return videoLayers_; }
     QVariantList markers() const;
     QVariantList layoutCues() const { return layouts_.toVariantList(); }

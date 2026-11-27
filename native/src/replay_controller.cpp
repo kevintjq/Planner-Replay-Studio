@@ -468,6 +468,21 @@ void ReplayController::setTransparentCanvas(bool transparent)
     emit transparentCanvasChanged();
 }
 
+bool ReplayController::referencesFile(const QString &path) const
+{
+    const QFileInfo output(path);
+    if (!output.exists())
+        return false;
+    const auto canonical = output.canonicalFilePath();
+    const auto document = projectSnapshot();
+    if (canonical == QFileInfo(document.path()).canonicalFilePath())
+        return true;
+    const auto media = document.media();
+    return std::any_of(media.begin(), media.end(), [&](const auto &asset) {
+        return QFileInfo(asset).canonicalFilePath() == canonical;
+    });
+}
+
 void ReplayController::exportFrame(const QUrl &url, QQuickItem *canvas)
 {
     if (loading_ || capturing_ || !canvas || !url.isLocalFile())

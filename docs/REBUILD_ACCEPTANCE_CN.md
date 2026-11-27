@@ -24,6 +24,7 @@
 - 真实录包两种 RViz 导入顺序（先配置/先 Bag）均通过 C++ 控制器验证；隐藏点云预先解码，20 轮开关期间加载信号为 0，录包/数据指针、播放推进、相机、标记、文字及视角设置保持，显隐状态另存/重开通过。结果在 captures/display-current/import-order.json。
 - 实际 NVIDIA OpenGL 窗口再次验证图层显隐确实改变画面，关闭后相机画面恢复；截图文字抗锯齿的最大通道差为 1/255，明确不宣称逐字节相同。运行证据在 captures/display-current/display-acceptance.json 与 hidden/enabled/restored.png；它验证实际渲染与控制器调用，不代替手动复选框交互。
 - 私人录包、视频、实验几何及相关截图保持本地只读/忽略，不提交。
+- 已推送开发分支 codex/uav-studio-theme-frame-export，未合并 main、未发布新发行版。当前本地 Release 开发目录补齐 FFmpeg/FFprobe，在仅保留程序目录和 Windows 系统 PATH、清除 Qt/QML 外部路径后，界面布局与 MP4 冒烟测试均通过，结果在 captures/deployment-current/report.json；不等同安装器或干净系统验收。
 
 ## 功能与实测门禁
 

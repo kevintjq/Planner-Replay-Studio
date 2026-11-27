@@ -38,10 +38,9 @@ One existing local bag was read without modifying it. It contains 394 world clou
 | Timestamp convention | Stored bag times and sensor headers differ by months; header-based processing succeeds |
 | Visual review | Main rear view and oblique inset, RGB axes, accumulated points, no drone model |
 
-Reproduce on a bag with the same topics/frames and point order:
+Render the two views on a bag with matching topics and frames:
 
 ```bash
-python examples/validate_real_bag.py /absolute/path/run.bag
 planner-replay bag /absolute/path/run.bag --start 1 --seconds 4 --output captures/real-odom.mp4
 planner-replay bag /absolute/path/run.bag --cloud-topic /cloud_registered_body --pose-source tf \
   --start 1 --seconds 4 --width 960 --height 540 --output captures/real-tf.mp4

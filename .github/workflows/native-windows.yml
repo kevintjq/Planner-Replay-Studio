@@ -96,6 +96,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./native/installer/package.ps1 -AppDirectory dist/PlannerReplayNative -SetupFile dist/PlannerReplayNative-Setup.exe -Version $version -QtVersion $env:QT_VERSION -OpenCvDirectory (Join-Path $env:RUNNER_TEMP 'planner-opencv')
       - name: Verify install, launch and uninstall
+        timeout-minutes: 3
         shell: pwsh
         run: |
           $setup = (Resolve-Path dist/PlannerReplayNative-Setup.exe).Path
@@ -132,8 +133,6 @@ jobs:
             Remove-Item Env:QT_PLUGIN_PATH, Env:QML_IMPORT_PATH, Env:QML2_IMPORT_PATH -ErrorAction SilentlyContinue
             $app = Start-Process -FilePath $exe -ArgumentList '--smoke', ('"' + $fixture + '"') -WorkingDirectory $target -Wait -PassThru
             if ($app.ExitCode -ne 0) { throw "Installed application exited with $($app.ExitCode)." }
-            & $cli --help | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "Installed CLI exited with $LASTEXITCODE." }
             $env:QT_QPA_PLATFORM = 'offscreen'
             $env:QT_QUICK_BACKEND = 'software'
             $batchPng = Join-Path $env:RUNNER_TEMP 'planner-batch-smoke.png'

@@ -11,6 +11,10 @@
 
 int main(int argc, char **argv)
 {
+#ifdef Q_OS_WIN
+    // The command-line tool must report usage through standard streams on CI and in pipes.
+    qputenv("QT_COMMAND_LINE_PARSER_NO_GUI_MESSAGE_BOXES", "1");
+#endif
     QCoreApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("PlannerReplayCli"));
     QCommandLineParser parser;

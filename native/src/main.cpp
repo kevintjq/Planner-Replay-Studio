@@ -6,6 +6,7 @@
 #include "trajectory_controller.h"
 #include "appearance_manager.h"
 #include "appearance_acceptance.h"
+#include "display_acceptance.h"
 #include "frame_acceptance.h"
 #include "frame_batch_exporter.h"
 #include <QQuickStyle>
@@ -205,9 +206,11 @@ int main(int argc, char **argv)
     app.setFont(font);
     const int appearanceArg = app.arguments().indexOf("--acceptance-appearance");
     const int frameArg = app.arguments().indexOf("--acceptance-frame");
+    const int displayArg = app.arguments().indexOf("--acceptance-displays");
+    if (displayArg >= 0 && (app.arguments().size() <= displayArg + 2 || app.arguments().value(displayArg + 1).startsWith("--"))) return 2;
     if (appearanceArg >= 0 && (app.arguments().size() <= appearanceArg + 1 || app.arguments().value(appearanceArg + 1).startsWith("--"))) return 2;
     if (frameArg >= 0 && (app.arguments().size() <= frameArg + 1 || app.arguments().value(frameArg + 1).startsWith("--"))) return 2;
-    const int acceptanceArg = appearanceArg >= 0 ? appearanceArg : frameArg;
+    const int acceptanceArg = appearanceArg >= 0 ? appearanceArg : frameArg >= 0 ? frameArg : displayArg;
     const auto acceptanceDirectory = acceptanceArg >= 0 ? QFileInfo(app.arguments().value(acceptanceArg + 1)).absoluteFilePath() : QString();
     AppearanceManager appearance(nullptr, acceptanceDirectory.isEmpty() ? QString() : acceptanceDirectory + "/appearance.ini");
     QQuickWindow::setDefaultAlphaBuffer(true);
@@ -249,6 +252,12 @@ int main(int argc, char **argv)
     engine.load(QUrl(batch ? QStringLiteral("qrc:/qml/BatchExport.qml") : QStringLiteral("qrc:/qml/Main.qml")));
     if (engine.rootObjects().isEmpty())
         return 1;
+    if (displayArg >= 0) {
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+        if (!window) return 1;
+        runDisplayAcceptance(app, *window, replay, acceptanceDirectory, app.arguments().value(displayArg + 2));
+        return app.exec();
+    }
     if (frameArg >= 0) {
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
         if (!window) return 1;

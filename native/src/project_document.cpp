@@ -698,7 +698,7 @@ void ProjectDocument::setTopicLayout(const RvizLayout &layout)
     bool hasCloud = false;
     for (const auto &display : layout.displays) {
         displays.append(display.toJson());
-        hasCloud = hasCloud || (display.enabled && display.kind == "cloud");
+        hasCloud = hasCloud || display.kind == "cloud";
     }
     composition.insert("topic_displays", displays);
     composition.insert("display_fixed_frame", layout.fixedFrame);

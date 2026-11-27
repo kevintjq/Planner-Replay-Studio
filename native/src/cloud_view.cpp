@@ -89,6 +89,7 @@ public:
                 needsStorage_ = true;
             }
             stamp_ = recording_->stampAt(view->controller_->position());
+            displayVisibility_ = view->controller_->topicDisplayVisibility();
             plan_ = view->controller_->planningLayerEnabled("plan");
             corridor_ = view->controller_->planningLayerEnabled("corridor");
             goal_ = view->controller_->planningLayerEnabled("goal");
@@ -219,6 +220,7 @@ public:
 
 private:
     QColor background_;
+    QHash<QString, bool> displayVisibility_;
     bool initialize()
     {
         if (!initialized_) {
@@ -252,6 +254,8 @@ private:
     {
         for (size_t i = 0; i < recording_->topicOverlays.size(); ++i) {
             const auto &overlay = recording_->topicOverlays[i];
+            if (!displayVisibility_.value(overlay.display.id, overlay.display.enabled))
+                continue;
             const auto &role = overlay.display.plannerRole;
             if ((auxiliary_ && overlay.display.mainOnly) || (overlay.display.kind == "laser" && !scan_) ||
                 (role == "scan" && (!scan_ || !currentScan_)))

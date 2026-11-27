@@ -40,7 +40,7 @@ target_include_directories(studio_appearance PUBLIC src)
 qt_add_executable(UAVStudio WIN32 src/main.cpp src/cloud_view.cpp src/cloud_view.h
     src/replay_controller.cpp src/replay_controller.h
     src/trajectory_controller.cpp src/trajectory_controller.h src/movie_exporter.cpp src/movie_exporter.h src/topic_inspector.cpp src/topic_inspector.h)
-target_sources(UAVStudio PRIVATE src/trajectory_frame_model.cpp src/trajectory_frame_model.h src/appearance_acceptance.cpp src/frame_acceptance.cpp src/frame_batch_exporter.cpp src/frame_batch_exporter.h)
+target_sources(UAVStudio PRIVATE src/trajectory_frame_model.cpp src/trajectory_frame_model.h src/appearance_acceptance.cpp src/display_acceptance.cpp src/frame_acceptance.cpp src/frame_batch_exporter.cpp src/frame_batch_exporter.h)
 qt_add_resources(UAVStudio "interface" PREFIX "/" FILES qml/Main.qml qml/FlightClip.qml qml/VideoTimeline.qml
     qml/SceneOverlays.qml qml/SceneLayerEditor.qml qml/MarkerTimeline.qml qml/LayoutEditor.qml qml/TrajectoryPane.qml qml/TopicInspector.qml qml/SpeedGauge.qml
     qml/CloudInsets.qml qml/CloudInsetEditor.qml qml/LayerMotionEditor.qml qml/ReplayCanvas.qml qml/BatchExport.qml qml/TrajectoryTimeline.qml
@@ -85,6 +85,13 @@ endif()
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(display_visibility_test tests/display_visibility_test.cpp src/replay_controller.cpp src/replay_controller.h)
+    target_link_libraries(display_visibility_test PRIVATE replay_data Qt6::Quick Qt6::Concurrent)
+    if(MSVC)
+        target_compile_options(display_visibility_test PRIVATE /utf-8)
+    endif()
+    add_test(NAME display_visibility COMMAND display_visibility_test)
+    set_tests_properties(display_visibility PROPERTIES TIMEOUT 30 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(rviz_roundtrip_test tests/rviz_roundtrip_test.cpp)
     target_link_libraries(rviz_roundtrip_test PRIVATE replay_data yaml-cpp::yaml-cpp)
     add_test(NAME rviz_roundtrip COMMAND rviz_roundtrip_test)

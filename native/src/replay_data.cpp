@@ -1221,9 +1221,8 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
     QHash<size_t, std::shared_ptr<std::vector<std::pair<qint64, quint64>>>> markerClears;
     quint64 markerOrder = 0;
     for (const auto &display : displays) {
-        if (!display.enabled)
-            continue;
-
+        // Decode configured hidden displays once so visibility edits never reopen the bag.
+        // Keep the flag on each layer; the renderer applies the current session override.
         const auto match = std::find_if(connections.begin(), connections.end(), [&](const auto &entry) {
             return entry.second.topic == display.topic && supportsTopic(display.kind, entry.second.type);
         });

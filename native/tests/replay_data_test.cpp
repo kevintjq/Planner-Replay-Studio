@@ -256,25 +256,27 @@ int main(int argc, char **argv)
             {"six", "/tf_static", "tf", "Static transforms", QColor("#ff0000")}
         };
         const auto overlayBag = replay::loadBag(file.fileName(), configured);
-        require(!overlayBag->showMainCloud && overlayBag->topicOverlays.size() == 5, "Enabled cloud layer did not replace the default cloud.");
+        require(!overlayBag->showMainCloud && overlayBag->topicOverlays.size() == 6, "Configured displays were not cached or cloud fallback is wrong.");
+        require(!overlayBag->topicOverlays[1].display.enabled && !overlayBag->topicOverlays[1].samples.empty(),
+                "Initially disabled display must retain decoded data for live visibility changes.");
         const auto &overlay = overlayBag->topicOverlays.front();
         require(overlay.display.color == QColor("#0a141e") && overlay.samples.size() == 1 &&
                 overlay.points[size_t(overlay.samples.front().range.first)].x == 42.f,
                 "Imported layer color, source or frame filtering is incorrect.");
         require(!overlay.sampleAt(overlayBag->stampAt(0)) && overlay.sampleAt(overlayBag->stampAt(2)) == &overlay.samples.front(),
                 "Imported overlay did not follow the replay clock.");
-        const auto &pathLayer = overlayBag->topicOverlays[1];
+        const auto &pathLayer = overlayBag->topicOverlays[2];
         require(pathLayer.points.size() == 1 && pathLayer.points.front().z == 3.f, "Path points were misread.");
-        const auto &scanLayer = overlayBag->topicOverlays[2];
+        const auto &scanLayer = overlayBag->topicOverlays[3];
         require(scanLayer.points.size() == 2 && scanLayer.points.front().x == 12.f &&
                 std::abs(scanLayer.points.back().y - 3.f) < .001f, "LaserScan polar coordinates were misread.");
-        require(overlayBag->topicOverlays[3].points.front().x == 10.f &&
-                overlayBag->topicOverlays[4].points.front().x == 20.f, "TF layer lost one of the child frames.");
+        require(overlayBag->topicOverlays[4].points.front().x == 10.f &&
+                overlayBag->topicOverlays[5].points.front().x == 20.f, "TF layer lost one of the child frames.");
         require(overlayBag->topicWarnings.contains("Missing path"), "Missing topic did not produce a warning.");
         configured.topicLayout.fixedFrame = "published";
         const auto fixed = replay::loadBag(file.fileName(), configured);
         require(fixed->frameId == "published" && fixed->points.front().x == -16.f &&
-                fixed->topicOverlays[2].points.front().x == -8.f, "Imported fixed frame did not map every layer.");
+                fixed->topicOverlays[3].points.front().x == -8.f, "Imported fixed frame did not map every layer.");
         configured.topicLayout.fixedFrame = "unavailable";
         const auto fallback = replay::loadBag(file.fileName(), configured);
         require(fallback->frameId == "map" && fallback->points.front().x == 4.f, "Missing fixed frame moved the main view.");

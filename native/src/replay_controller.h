@@ -164,6 +164,7 @@ public:
     bool canRedo() const { return !redo_.empty(); }
 
     QVariantList topicDisplays() const;
+    const QHash<QString, bool> &topicDisplayVisibility() const { return displayVisibility_; }
     Q_INVOKABLE void setTopicDisplayEnabled(int index, bool enabled);
     Q_INVOKABLE void setFixedFrame(const QString &frame);
     Q_INVOKABLE void openRviz(const QUrl &url);
@@ -220,6 +221,7 @@ private:
     replay::ProjectDocument projectSnapshot() const;
     void install(std::shared_ptr<const replay::Recording> record, bool keepSession = false);
     void applyTopicLayout(const replay::RvizLayout &layout);
+    void refreshDisplayVisibility();
     void setPosition(double seconds);
     void refreshVideoLayers();
     void refreshSceneLayers();
@@ -240,6 +242,7 @@ private:
     void restoreVideoEdit(bool redo);
 
     QHash<QString, double> videoDurations_;
+    QHash<QString, bool> displayVisibility_;
     std::vector<VideoEdit> undo_, redo_;
 
     std::shared_ptr<const replay::Recording> record_;

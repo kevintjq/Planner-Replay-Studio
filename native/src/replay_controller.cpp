@@ -86,6 +86,7 @@ void ReplayController::install(std::shared_ptr<const replay::Recording> record, 
 {
     pause();
     record_ = std::move(record);
+    refreshDisplayVisibility();
     position_ = keepSession ? std::min(position_, duration()) : 0.;
     if (!keepSession) {
         const auto camera = project_ ? project_->cameraKind() : QString();
@@ -138,10 +139,27 @@ void ReplayController::setTopicDisplayEnabled(int index, bool enabled)
     auto layout = project_->topicLayout();
     if (index < 0 || size_t(index) >= layout.displays.size())
         return;
-    if (layout.displays[size_t(index)].enabled != enabled) {
-        layout.displays[size_t(index)].enabled = enabled;
-        applyTopicLayout(layout);
-    }
+    const auto selected = layout.displays[size_t(index)];
+    if (selected.enabled == enabled)
+        return;
+    // A single RViz TF node produces dynamic and static render layers. Keep its
+    // checkbox consistent across both layers and across project/RViz exports.
+    for (auto &display : layout.displays)
+        if (display.id == selected.id || (!selected.sourcePath.isEmpty() && display.sourcePath == selected.sourcePath))
+            display.enabled = enabled;
+    auto document = projectSnapshot();
+    document.setTopicLayout(layout);
+    project_ = std::move(document);
+    refreshDisplayVisibility();
+    emit recordingChanged();
+}
+
+void ReplayController::refreshDisplayVisibility()
+{
+    displayVisibility_.clear();
+    if (project_)
+        for (const auto &display : project_->topicLayout().displays)
+            displayVisibility_.insert(display.id, display.enabled);
 }
 
 void ReplayController::setFixedFrame(const QString &frame)
@@ -210,6 +228,7 @@ void ReplayController::applyTopicLayout(const replay::RvizLayout &layout)
 
     project_ = std::move(document);
     status_ = tr("已保存 %1 个 RViz 话题显示。打开录包后载入匹配的图层。").arg(layout.displays.size());
+    refreshDisplayVisibility();
     if (!layout.skipped.isEmpty())
         status_ += tr(" · 无法按原插件显示：%1").arg(layout.skipped.mid(0, 5).join(QStringLiteral("、")));
     emit recordingChanged();

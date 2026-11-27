@@ -5,7 +5,7 @@
 ## 已取得证据与限制
 
 - 再次核对远端 main：69f8a4f，与本地开发起点一致。已发布原生预览仍为 native-v0.1.1-preview.3；历史正式发行版 studio-v0.4.3 保留。本地源码改动尚不等同发行版。
-- 本轮完整 Release 构建通过，13/13 原生回归通过，7.10 秒；覆盖原生 PNG/MP4 smoke、主题对比度/偏好、轨迹编辑/持久化、图像编码、批量计划、混合矢量/位图多联图、轨迹工作区导出及 RViz 未知属性往返。旧实现兼容回归 78 项通过。日志在忽略目录 build-native。
+- 本轮完整 Release 构建通过，14/14 原生回归通过；覆盖原生 PNG/MP4 smoke、主题对比度/偏好、轨迹编辑/持久化、图像编码、批量计划、混合矢量/位图多联图、轨迹工作区导出、RViz 未知属性往返及无重载图层切换。旧实现兼容回归 78 项通过。日志在忽略目录 build-native。
 - 真实 PointCloud2 + Odometry + TF bag、NVIDIA OpenGL 实际运行：四工作区 8 张亮/暗截图，播放连续、录包/画布/CloudView 对象保持、场景像素不变。最新结果在 captures/appearance-current；轨迹截图此处仍为空状态。
 - 真实 bag 加实拍视频：10 项独立导出、5 组批量/取消、4 项轨迹工作区源画面导出共 19 项检查通过，JSON 在 captures/frame-final-current/frame-acceptance.json。轨迹工作区另有真实源视频运行截图；不将其作为无人机前景提取验收。
 - 主点云实际 FBO 达到 3840×2160 和 7680×4320；GL_MAX_TEXTURE_SIZE 为 32768。PNG/TIFF alpha、300/600/1200 DPI、实验时间元数据、随机跳转、视角隔离和软件主题无关像素输出已检查。GPU 上限拒绝存在，分块尚未实现。
@@ -18,6 +18,8 @@
 - 未覆盖系统外观实时切换/跨进程重启、精确视频 PTS、图片与 MP4 对应帧逐像素一致、原生 RViz 对照或完整性能目标。仅 Livox CustomMsg + IMU 的另一 bag 不支持作为主场景，不能以 Demo 代验。
 - 真实 FAST_LIO 的 11178 字节 RViz 配置经 C++ 项目保存/重开后导出逐字节一致，源文件哈希未变；Grid/Axes 等暂未渲染显示明确列入兼容报告。嵌套未知插件、QoS、相机、工具、BOM、父分组及拆分 TF 冲突由回归验证。
 - 独立 Noetic C++ 探针实际加载导出配置，9 个顶层显示及分组内子显示的插件类/名称/顺序与原配置一致，Fixed Frame 为 camera_init，生成原生 RViz 运行截图并由 RViz 自身另存成功。结果在 captures/rviz-current/native-probe.json；此测试没有播放 bag，场景等价仍未认证。
+- 真实录包两种 RViz 导入顺序（先配置/先 Bag）均通过 C++ 控制器验证；隐藏点云预先解码，20 轮开关期间加载信号为 0，录包/数据指针、播放推进、相机、标记、文字及视角设置保持，显隐状态另存/重开通过。结果在 captures/display-current/import-order.json。
+- 实际 NVIDIA OpenGL 窗口再次验证图层显隐确实改变画面，关闭后相机画面恢复；截图文字抗锯齿的最大通道差为 1/255，明确不宣称逐字节相同。运行证据在 captures/display-current/display-acceptance.json 与 hidden/enabled/restored.png；它验证实际渲染与控制器调用，不代替手动复选框交互。
 - 私人录包、视频、实验几何及相关截图保持本地只读/忽略，不提交。
 
 ## 功能与实测门禁
@@ -27,9 +29,9 @@
 | Light / Dark / System | 集中管理、偏好保存、公共 QML Palette/Label；8 张最新运行截图 | 系统实时切换、跨进程重启、完整菜单/禁用/选中状态及 SVG 逐项对照 |
 | 主题无损切换 | 真实录包/画布/CloudView 对象、场景像素、播放检查通过 | 相机、TF 跟随、视频连续性、编辑状态、无闪屏延迟 |
 | 普通配置内联 | Topic Inspector 已内嵌，场景颜色改内联输入，图片导出设置内联 | 完整颜色选择、全部高级属性审计和交互工具复测 |
-| RViz Displays / Topic | 现有原生子集；主要 Topic 可搜索 | 完整模型、By Type / By Topic、分组排序复制、状态原因、独立同 Topic 多 Display |
+| RViz Displays / Topic | 现有原生子集；主要 Topic 可搜索；已配置层无重载显隐及真实 OpenGL 画面通过 | 完整模型、By Type / By Topic、分组排序复制、状态原因、独立同 Topic 多 Display、隐藏层缓存内存 |
 | Fixed / Target Frame | 真实 TF 枚举及可搜索 Frame | TF Tree、缺失变换诊断；主要数据/Fixed Frame 当前仍重载 bag |
-| .rviz 双向兼容 | 新导入完整原文/未知属性及兼容说明保存在项目；选择性导出及真实配置逐字节往返通过 | 两种 GUI 导入顺序、完整原生属性模型、实际 bag 播放与 RViz 场景对照；不宣称 ROS1/ROS2 全兼容 |
+| .rviz 双向兼容 | 新导入完整原文/未知属性及兼容说明保存在项目；选择性导出及真实配置逐字节往返通过；两种顺序的真实 Bag 控制器验收通过 | 两种顺序的手动 GUI 复测、完整原生属性模型、实际 bag 播放与 RViz 场景对照；不宣称 ROS1/ROS2 全兼容 |
 | 共享三维 / 多视角 | 共享录包/GPU 缓冲；导出保持对象并验证 FBO | 多视角完整独立属性、原生 RViz 对照、资源/帧时间 |
 | 轨迹采样 / 编辑 | 0.1s、数量、手动、单帧 alpha、多段排除、撤销及持久化；单测通过 | 真实无人机固定机位视频、随机跳转、取消/恢复、长视频 GUI |
 | 轨迹长视频 | 异步预览、有界缓存、虚拟列表，36k 行模型测试 | 10/30/60 分钟视频、内存上限和响应延迟；模型测试不等于性能验收 |

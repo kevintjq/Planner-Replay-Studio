@@ -117,7 +117,9 @@ public:
         transparent_ = view->transparent_;
         if (view->captureBackground_.isValid()) {
             background_ = view->captureBackground_;
-            transparent_ = background_.alpha() == 0;
+            // A canvas matte must not turn a transparent inset or video overlay
+            // opaque. The canvas/writer supplies the requested backdrop beneath it.
+            transparent_ = transparent_ || background_.alpha() == 0;
         }
     }
 

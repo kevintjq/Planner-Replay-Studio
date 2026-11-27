@@ -55,6 +55,7 @@ signals:
     void changed();
     void framesChanged();
     void finished(bool success, const QString &message);
+    void frameCaptured(const QImage &image, double experimentTime);
 
 private:
     struct Decoder;
@@ -68,6 +69,9 @@ private:
     void grabFrame();
     void finish(const QString &error);
     void saveStill(const QImage &image);
+    QString prepareCapture(QQuickItem *canvas, QQuickItem *target, int width, int height, int supersample, const QVariantMap &options);
+    QString validateCapture();
+    QString updateCaptureSizes();
     void restoreCapture();
     QStringList encoderArguments() const;
 

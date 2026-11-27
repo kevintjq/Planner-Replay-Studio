@@ -7,6 +7,7 @@
 #include "appearance_manager.h"
 #include "appearance_acceptance.h"
 #include "display_acceptance.h"
+#include "movie_frame_acceptance.h"
 #include "frame_acceptance.h"
 #include "frame_batch_exporter.h"
 #include <QQuickStyle>
@@ -143,6 +144,13 @@ Rectangle {
         return 1;
     canvas->setParentItem(window.contentItem());
 
+    QList<double> capturedTimes;
+    bool capturedSizes = true;
+    const QVariantMap originalOptions{{"retained", "original"}};
+    canvas->setProperty("captureOptions", originalOptions);
+    QObject::connect(&movie, &MovieExporter::frameCaptured, &app, [&](const QImage &image, double time) {
+        capturedTimes.append(time); capturedSizes &= image.size() == QSize(1920, 1080);
+    });
     QObject::connect(&movie, &MovieExporter::changed, &app, [&] {
         if (movie.exporting())
             return;
@@ -174,12 +182,15 @@ Rectangle {
                 blue = rgb.size() == 12 && uchar(rgb[0]) < 60 && uchar(rgb[1]) < 60 && uchar(rgb[2]) > 180;
             }
         }
-        if (!audio || !video || !blue || replay.position() != .5)
-            qWarning() << movie.message() << "Expected 12 1080p/60 fps frames, decoded source pixels, AAC, and restored playhead";
-        app.exit(audio && video && blue && replay.position() == .5 ? 0 : 1);
+        const bool captureValid = capturedSizes && capturedTimes.size() == 12 && std::abs(capturedTimes.first() - .1) < 1.e-9 &&
+            std::abs(capturedTimes.last() - (.1 + 11. / 120.)) < 1.e-9;
+        const bool restored = replay.position() == .5 && replay.playing() && canvas->property("captureOptions").toMap() == originalOptions;
+        if (!audio || !video || !blue || !captureValid || !restored)
+            qWarning() << movie.message() << "Expected 12 full-resolution timed frames, decoded pixels, AAC, restored playhead/playback and capture settings";
+        app.exit(audio && video && blue && captureValid && restored ? 0 : 1);
     });
     window.show();
-    QTimer::singleShot(100, &app, [&] { movie.start(QUrl::fromLocalFile(output), canvas, .1, .2, .5, 0); });
+    QTimer::singleShot(100, &app, [&] { replay.togglePlayback(); movie.start(QUrl::fromLocalFile(output), canvas, .1, .2, .5, 0); });
     QTimer::singleShot(25000, &app, [&] { app.exit(1); });
     return app.exec();
 }
@@ -207,10 +218,12 @@ int main(int argc, char **argv)
     const int appearanceArg = app.arguments().indexOf("--acceptance-appearance");
     const int frameArg = app.arguments().indexOf("--acceptance-frame");
     const int displayArg = app.arguments().indexOf("--acceptance-displays");
+    const int movieFrameArg = app.arguments().indexOf("--acceptance-movie-frames");
+    if (movieFrameArg >= 0 && (app.arguments().size() <= movieFrameArg + 2 || app.arguments().value(movieFrameArg + 1).startsWith("--"))) return 2;
     if (displayArg >= 0 && (app.arguments().size() <= displayArg + 2 || app.arguments().value(displayArg + 1).startsWith("--"))) return 2;
     if (appearanceArg >= 0 && (app.arguments().size() <= appearanceArg + 1 || app.arguments().value(appearanceArg + 1).startsWith("--"))) return 2;
     if (frameArg >= 0 && (app.arguments().size() <= frameArg + 1 || app.arguments().value(frameArg + 1).startsWith("--"))) return 2;
-    const int acceptanceArg = appearanceArg >= 0 ? appearanceArg : frameArg >= 0 ? frameArg : displayArg;
+    const int acceptanceArg = appearanceArg >= 0 ? appearanceArg : frameArg >= 0 ? frameArg : displayArg >= 0 ? displayArg : movieFrameArg;
     const auto acceptanceDirectory = acceptanceArg >= 0 ? QFileInfo(app.arguments().value(acceptanceArg + 1)).absoluteFilePath() : QString();
     AppearanceManager appearance(nullptr, acceptanceDirectory.isEmpty() ? QString() : acceptanceDirectory + "/appearance.ini");
     QQuickWindow::setDefaultAlphaBuffer(true);
@@ -252,6 +265,13 @@ int main(int argc, char **argv)
     engine.load(QUrl(batch ? QStringLiteral("qrc:/qml/BatchExport.qml") : QStringLiteral("qrc:/qml/Main.qml")));
     if (engine.rootObjects().isEmpty())
         return 1;
+    if (movieFrameArg >= 0) {
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+        if (!window) return 1;
+        runMovieFrameAcceptance(app, *window, replay, movie, acceptanceDirectory,
+            app.arguments().value(movieFrameArg + 2), app.arguments().value(movieFrameArg + 3));
+        return app.exec();
+    }
     if (displayArg >= 0) {
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
         if (!window) return 1;

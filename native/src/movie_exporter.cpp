@@ -20,9 +20,6 @@
 #include <stdexcept>
 
 namespace {
-constexpr int Width = 1920;
-constexpr int Height = 1080;
-
 QList<QQuickItem *> visualItems(QQuickItem *parent)
 {
     QList<QQuickItem *> result{parent};
@@ -93,8 +90,8 @@ bool publish(const QString &source, const QString &target)
 }
 
 struct MovieExporter::Decoder {
-    explicit Decoder(std::vector<replay::VideoClip> list, std::atomic_bool &stop, bool original = false)
-        : clips(std::move(list)), readers(clips.size()), cached(clips.size()), indices(clips.size(), -1), cancelled(stop), original(original) {}
+    explicit Decoder(std::vector<replay::VideoClip> list, std::atomic_bool &stop)
+        : clips(std::move(list)), readers(clips.size()), cached(clips.size()), indices(clips.size(), -1), cancelled(stop) {}
 
     std::vector<QImage> decode(double seconds)
     {
@@ -110,8 +107,6 @@ struct MovieExporter::Decoder {
             if (reader->select(timestamp, [this] { return cancelled.load(); })) {
                 if (reader->index() != indices[index]) {
                     auto frame = replay::imageOf(reader->frame);
-                    if (!original && (frame.width() > Width || frame.height() > Height))
-                        frame = frame.scaled(Width, Height, Qt::KeepAspectRatio, Qt::SmoothTransformation);
                     indices[index] = reader->index();
                     cached[index] = std::move(frame);
                 }
@@ -126,7 +121,6 @@ struct MovieExporter::Decoder {
     std::vector<QImage> cached;
     std::vector<int> indices;
     std::atomic_bool &cancelled;
-    bool original = false;
 };
 
 void MovieImages::prepare(const std::vector<QImage> &images)
@@ -266,6 +260,11 @@ void MovieExporter::start(const QUrl &destination, QQuickItem *canvas, double be
         staging_.reset();
         return;
     }
+    const auto captureError = prepareCapture(canvas, canvas, width_, height_, supersample_, {});
+    if (!captureError.isEmpty()) {
+        staging_.reset(); reject(captureError); return;
+    }
+    previousPlaying_ = replay_.playing();
     replay_.pause();
     previous_ = replay_.position();
     canvas_ = canvas;
@@ -318,38 +317,11 @@ void MovieExporter::startStill(const QUrl &destination, QQuickItem *canvas, doub
             emit changed(); emit finished(false, message_); return;
         }
     }
-    // 提升实际点云 FBO 尺寸；grabToImage 本身无法提升嵌套 FBO 的细节。
-    const auto fit = target->size().toSize().scaled(width, height, Qt::KeepAspectRatio);
-    const double scale = double(fit.width()) / target->width();
-    const auto items = visualItems(target);
-    for (auto *item : items) {
-        auto *view = qobject_cast<CloudView *>(item);
-        if (!view) continue;
-        if (!view->isVisible()) continue;
-        const QSize pixels(qCeil(view->width() * scale), qCeil(view->height() * scale));
-        if (view->textureLimit() <= 0 || std::max({pixels.width(), pixels.height(), width, height}) > view->textureLimit()) {
-            message_ = tr("GPU 未就绪或导出超过最大纹理尺寸；当前版本尚未启用分块渲染。");
-            emit changed(); emit finished(false, message_); return;
-        }
-    }
+    const auto captureError = prepareCapture(canvas, target, width, height, 1, options);
+    if (!captureError.isEmpty()) { message_ = captureError; emit changed(); emit finished(false, message_); return; }
     previousPlaying_ = replay_.playing();
     replay_.pause();
     previous_ = replay_.position();
-    canvas_ = canvas;
-    captureItem_ = target;
-    previousCaptureOptions_ = canvas->property("captureOptions");
-    auto captureOptions = options;
-    captureOptions.insert("renderScale", scale);
-    canvas->setProperty("captureOptions", captureOptions);
-    captureViews_.clear();
-    captureMetrics_.clear();
-    for (auto *item : items) {
-        auto *view = qobject_cast<CloudView *>(item);
-        if (!view) continue;
-        if (!view->isVisible()) continue;
-        captureViews_.append(qMakePair(QPointer<QQuickItem>(view), view->captureSize()));
-        view->setCaptureSize(QSize(qCeil(view->width() * scale), qCeil(view->height() * scale)));
-    }
     width_ = width; height_ = height; dpi_ = dpi;
     destination_ = destination.toLocalFile();
     begin_ = time;
@@ -358,7 +330,7 @@ void MovieExporter::startStill(const QUrl &destination, QQuickItem *canvas, doub
     index_ = 0;
     cancelled_ = false;
     still_ = true;
-    decoder_ = std::make_shared<Decoder>(replay_.videoClips(), cancelled_, true);
+    decoder_ = std::make_shared<Decoder>(replay_.videoClips(), cancelled_);
     exporting_ = true;
     message_ = tr("正在导出 %1 × %2 / %3 DPI…").arg(width_).arg(height_).arg(dpi_);
     emit changed();
@@ -480,6 +452,8 @@ void MovieExporter::grabFrame()
         finish(tr("无法读取导出画布。"));
         return;
     }
+    const auto captureError = updateCaptureSizes();
+    if (!captureError.isEmpty()) { finish(captureError); return; }
     if (still_) {
         if (!captureItem_) { finish(tr("导出视角已删除。")); return; }
         const auto fit = captureItem_->size().toSize().scaled(width_, height_, Qt::KeepAspectRatio);
@@ -509,6 +483,9 @@ void MovieExporter::grabFrame()
             finish(tr("合成帧为空。"));
             return;
         }
+        const auto captureError = validateCapture();
+        if (!captureError.isEmpty()) { finish(captureError); return; }
+        emit frameCaptured(frame, begin_ + double(index_) * speed_ / fps_);
         QImage canvas(width_, height_, QImage::Format_RGB888);
         canvas.fill(Qt::black);
         QPainter draw(&canvas);
@@ -545,7 +522,7 @@ void MovieExporter::finish(const QString &error)
     images_.prepare({});
     staging_.reset();
     replay_.seek(previous_);
-    if (still_ && previousPlaying_) replay_.togglePlayback();
+    if (previousPlaying_) replay_.togglePlayback();
     previousPlaying_ = false;
     message_ = error.isEmpty() ? tr("已导出 %1：%2").arg(still_ ? QStringLiteral("Image") : QStringLiteral("MP4"), destination_)
                                : error;
@@ -556,24 +533,77 @@ void MovieExporter::finish(const QString &error)
 
 void MovieExporter::restoreCapture()
 {
-    if (still_ && canvas_) canvas_->setProperty("captureOptions", previousCaptureOptions_);
+    if (canvas_) canvas_->setProperty("captureOptions", previousCaptureOptions_);
     for (const auto &[item, size] : captureViews_)
         if (auto *view = qobject_cast<CloudView *>(item.data())) view->setCaptureSize(size);
-    captureViews_.clear(); captureItem_ = nullptr;
+    captureViews_.clear(); captureItem_ = nullptr; canvas_ = nullptr; previousCaptureOptions_ = {};
+}
+
+QString MovieExporter::prepareCapture(QQuickItem *canvas, QQuickItem *target, int width, int height,
+                                      int supersample, const QVariantMap &options)
+{
+    if (!canvas || !target || target->width() <= 0. || target->height() <= 0.)
+        return tr("无法读取导出画布。 / Invalid export canvas.");
+    const auto fit = target->size().toSize().scaled(width, height, Qt::KeepAspectRatio) * supersample;
+    const double scale = double(fit.width()) / target->width();
+    const auto items = visualItems(target);
+    for (auto *item : items) {
+        auto *view = qobject_cast<CloudView *>(item);
+        if (!view || !view->isVisible()) continue;
+        const QSize pixels(qCeil(view->width() * scale), qCeil(view->height() * scale));
+        if (view->textureLimit() <= 0 || std::max({pixels.width(), pixels.height(), width * supersample, height * supersample}) > view->textureLimit())
+            return tr("GPU 未就绪或导出超过最大纹理尺寸；当前版本尚未启用分块渲染。");
+    }
+    canvas_ = canvas; captureItem_ = target;
+    previousCaptureOptions_ = canvas->property("captureOptions");
+    auto captureOptions = options; captureOptions.insert("renderScale", scale);
+    canvas->setProperty("captureOptions", captureOptions);
+    captureViews_.clear(); captureMetrics_.clear();
+    return {};
+}
+
+QString MovieExporter::updateCaptureSizes()
+{
+    if (!captureItem_ || captureItem_->width() <= 0. || captureItem_->height() <= 0.)
+        return tr("导出视角不可用。 / Export view is unavailable.");
+    const auto fit = captureItem_->size().toSize().scaled(width_, height_, Qt::KeepAspectRatio) * (still_ ? 1 : supersample_);
+    const double scale = double(fit.width()) / captureItem_->width();
+    // Geometry and visibility can change with the exact frame's animation state.
+    for (auto *item : visualItems(captureItem_)) {
+        auto *view = qobject_cast<CloudView *>(item);
+        if (!view || !view->isVisible()) continue;
+        const QSize pixels(qCeil(view->width() * scale), qCeil(view->height() * scale));
+        if (view->textureLimit() <= 0 || std::max({pixels.width(), pixels.height(), fit.width(), fit.height()}) > view->textureLimit())
+            return tr("当前动画帧超过 GPU 纹理上限；尚未启用分块渲染。 / Frame exceeds GPU texture limits.");
+        if (std::none_of(captureViews_.begin(), captureViews_.end(), [view](const auto &entry) { return entry.first == view; }))
+            captureViews_.append(qMakePair(QPointer<QQuickItem>(view), view->captureSize()));
+        view->setCaptureSize(pixels);
+    }
+    return {};
+}
+
+QString MovieExporter::validateCapture()
+{
+    QVariantList metrics;
+    for (const auto &[item, previous] : captureViews_) {
+        auto *view = qobject_cast<CloudView *>(item.data());
+        if (view && !view->isVisible()) continue;
+        if (!view || view->framebufferSize() != view->captureSize())
+            return tr("点云离屏缓冲区未达到输出分辨率，已停止导出。 / Offscreen resolution mismatch.");
+        metrics.append(QVariantMap{{"view", view->property("exportViewId")},
+            {"width", view->framebufferSize().width()}, {"height", view->framebufferSize().height()},
+            {"texture_limit", view->textureLimit()}});
+    }
+    captureMetrics_ = std::move(metrics);
+    return {};
 }
 
 void MovieExporter::saveStill(const QImage &image)
 {
     if (image.isNull()) { finish(tr("离屏图像为空。")); return; }
-    for (const auto &[item, previous] : captureViews_) {
-        auto *view = qobject_cast<CloudView *>(item.data());
-        if (!view || view->framebufferSize() != view->captureSize()) {
-            finish(tr("点云离屏缓冲区未达到输出分辨率，已停止导出。 / Offscreen resolution mismatch.")); return;
-        }
-        captureMetrics_.append(QVariantMap{{"view", view->property("exportViewId")},
-            {"width", view->framebufferSize().width()}, {"height", view->framebufferSize().height()},
-            {"texture_limit", view->textureLimit()}});
-    }
+    const auto captureError = validateCapture();
+    if (!captureError.isEmpty()) { finish(captureError); return; }
+    emit frameCaptured(image, begin_);
     const auto options = canvas_->property("captureOptions").toMap();
     const QColor background(options.value("background", "transparent").toString());
     const int width = width_, height = height_, dpi = dpi_;

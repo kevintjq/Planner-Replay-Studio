@@ -15,6 +15,8 @@ CLOUD = "sensor_msgs/msg/PointCloud2"
 EGO_SPLINES = ("ego_planner/msg/Bspline", "traj_utils/msg/Bspline", "plan_manage/msg/Bspline")
 PLAN_TYPES = (PATH, MARKER, MARKERS, *EGO_SPLINES)
 CORRIDOR_TYPES = (MARKER, MARKERS)
+ODOMETRY = "nav_msgs/msg/Odometry"
+TF_MESSAGE = "tf2_msgs/msg/TFMessage"
 POSE_STAMPED = "geometry_msgs/msg/PoseStamped"
 POINT_STAMPED = "geometry_msgs/msg/PointStamped"
 GOAL_TYPES = (MARKER, MARKERS, POSE_STAMPED, POINT_STAMPED)
@@ -99,7 +101,7 @@ CUBE_VERTICES = np.array([[-1,-1,-1], [1,-1,-1], [1,1,-1], [-1,1,-1],
                           [-1,-1,1], [1,-1,1], [1,1,1], [-1,1,1]]) / 2
 
 
-def marker_shape(marker, *, goal=False):
+def marker_shape(marker, *, goal=False, generic=False):
     points = coordinates(marker.points)
     kind = marker.type
     if goal:
@@ -111,6 +113,10 @@ def marker_shape(marker, *, goal=False):
             shape = Geometry(goals=(points[-1:],))
         else:
             return None
+    elif generic and kind in (2, 3):                       # SPHERE, CYLINDER (centres)
+        shape = Geometry(goals=(np.zeros((1, 3)),))
+    elif generic and kind in (6, 7, 8) and len(points):       # CUBE_LIST, SPHERE_LIST, POINTS
+        shape = Geometry(goals=(points,))
     elif kind == 0 and len(points) in (0, 2):                # ARROW, including SUPER segments
         segment = points if len(points) else np.array([[0., 0., 0.], [marker.scale.x, 0., 0.]])
         color = (marker.color.r, marker.color.g, marker.color.b)
@@ -144,7 +150,8 @@ def stamp_ns(time):
 
 class GeometryTimeline:
     """Replay path replacement and ROS marker identities, deletion and lifetime."""
-    def __init__(self, *, goal=False, native_goal=False, plan_frame="world"):
+    def __init__(self, *, goal=False, native_goal=False, plan_frame="world", generic=False):
+        self.generic = generic
         self.goal = goal
         self.native_goal = native_goal
         self.plan_frame = plan_frame
@@ -160,6 +167,22 @@ class GeometryTimeline:
             self.first_message = stamp
 
     def add(self, typename, message, recorded):
+        if self.generic and typename == TF_MESSAGE:
+            origin = np.zeros((3, 3))
+            endpoints = np.eye(3) * .35
+            axes = np.stack((origin, endpoints), axis=1)
+            for item in message.transforms:
+                stamp = stamp_ns(item.header.stamp) or recorded
+                t, q = item.transform.translation, item.transform.rotation
+                if not all(map(isfinite, (t.x, t.y, t.z, q.x, q.y, q.z, q.w))) or not any((q.x, q.y, q.z, q.w)):
+                    continue
+                self.note_message(stamp)
+                pose = matrix((t.x, t.y, t.z), (q.x, q.y, q.z, q.w))
+                shape = Geometry(segments=(axes,)).transformed(pose)
+                self.events.append((stamp, "", item.child_frame_id, "path",
+                                    item.header.frame_id, shape, True, 0, False))
+            return
+
         if typename in EGO_SPLINES:
             t = stamp_ns(message.start_time) or recorded
             self.note_message(t)
@@ -168,14 +191,15 @@ class GeometryTimeline:
                 self.events.append((t, "", 0, "path", self.plan_frame, shape, False, 0, False))
                 self.record_update(t, [(self.plan_frame, shape)])
             return
-        if typename in (PATH, POSE_STAMPED, POINT_STAMPED):
+        if typename in (PATH, POSE_STAMPED, POINT_STAMPED, ODOMETRY):
             t = stamp_ns(message.header.stamp) or recorded
             self.note_message(t)
             if typename == PATH:
                 points = coordinates(item.pose.position for item in message.poses)
-                shape = Geometry(lines=(points,)) if len(points) >= 2 else None
+                shape = Geometry(lines=(points,)) if len(points) >= 2 and np.isfinite(points).all() else None
             else:
-                point = message.pose.position if typename == POSE_STAMPED else message.point
+                point = (message.pose.pose.position if typename == ODOMETRY else
+                         message.pose.position if typename == POSE_STAMPED else message.point)
                 points = coordinates((point,))
                 shape = Geometry(goals=(points,)) if np.isfinite(points).all() else None
             self.events.append((t, "", 0, "path", message.header.frame_id, shape, False, 0, False))
@@ -192,7 +216,7 @@ class GeometryTimeline:
         updates = []
         for marker in markers:
             header_time = stamp_ns(marker.header.stamp)
-            shape = marker_shape(marker, goal=self.goal) if marker.action == 0 else None
+            shape = marker_shape(marker, goal=self.goal, generic=self.generic) if marker.action == 0 else None
             namespace, identity = marker.ns, marker.id
             action = "target" if native_goal and shape is not None else marker.action
             self.events.append((header_time or recorded, namespace, identity, action,
@@ -299,6 +323,7 @@ class SpatialFrame:
     goal: tuple = ()
     previous_plan: tuple = ()
     missing_tf: dict = field(default_factory=dict)
+    topic_frames: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -341,13 +366,20 @@ class SpatialOverlays:
             self.scans = source.scans()
             stack.callback(self.scans.close)
             self.pending = next(self.scans, None)
+        self.topic_scans = {}
+        for topic in getattr(source, "display_scan_topics", ()):
+            frames = source.scans(topic)
+            stack.callback(frames.close)
+            self.topic_scans[topic] = (frames, next(frames, None), None)
+        self.display_status = {}
         if self.camera and not self.demo:
             frames = {source.world, source.body, *(frame for pair in source.tree.edges for frame in pair)}
             if self.camera.frame.lstrip("/") not in frames:
                 raise ValueError(f"找不到相机坐标系 {self.camera.frame}，请检查 TF 或外参 JSON。")
 
     def __bool__(self):
-        return bool(self.plan or self.corridor or self.goal or self.show_scan or self.camera)
+        return bool(self.plan or self.corridor or self.goal or self.show_scan or self.camera
+                    or getattr(self.source, "displays", ()))
 
     def update_map_scan(self, stamp, xyz):
         if self.show_scan and self.scans is None:
@@ -384,7 +416,46 @@ class SpatialOverlays:
             goal = read("goal", self.goal)
 
         return SpatialFrame(plan, corridor, self.camera_frame(stamp, body_pose), scan, goal,
-                            self.previous_plan, missing_tf)
+                            self.previous_plan, missing_tf, self.display_frames(stamp, check_cancel))
+
+    def display_frames(self, stamp, check_cancel):
+        for topic, (stream, pending, latest) in self.topic_scans.items():
+            while pending is not None and pending[0] <= stamp:
+                if check_cancel is not None:
+                    check_cancel()
+                latest, pending = pending, next(stream, None)
+            self.topic_scans[topic] = stream, pending, latest
+
+        self.display_status = {}
+        result = []
+        for display in getattr(self.source, "displays", ()):
+            points, shapes = None, ()
+            if display.topic in self.topic_scans and display.kind in {"cloud", "laser"}:
+                _, pending, latest = self.topic_scans[display.topic]
+                if latest is None:
+                    status = LayerStatus("等待首帧" if pending is not None else "当前无数据")
+                elif latest[1] is None:
+                    status = LayerStatus("缺少 TF", tone="Warning")
+                else:
+                    points = latest[1]
+                    status = LayerStatus(f"{len(points):,} 点", tone="Ready")
+            else:
+                name = "topic:" + display.id
+                missing = set()
+                shapes = self.source.mission_shapes(name, stamp, missing_tf=missing)
+                timeline = self.source.mission[name][2]
+                if missing:
+                    status = LayerStatus("缺少 TF", "、".join(sorted(missing)), "Warning")
+                elif shapes:
+                    status = LayerStatus("已读取", tone="Ready")
+                elif timeline.first_message is not None and stamp < timeline.first_message:
+                    status = LayerStatus("等待首帧")
+                else:
+                    status = LayerStatus("当前无数据")
+            self.display_status[display.id] = status
+            if points is not None or shapes:
+                result.append((display, points, shapes))
+        return tuple(result)
 
     def update_comparison(self, stamp):
         index = bisect_right(self.plan_updates, stamp) - 1
@@ -439,6 +510,7 @@ class SpatialOverlays:
                     layers[name] = LayerStatus("等待首帧")
                 else:
                     layers[name] = LayerStatus("当前无数据", "当前时刻无可绘制数据", "Warning")
+        layers.update(self.display_status)
         return layers
 
     def camera_frame(self, stamp, body_pose):

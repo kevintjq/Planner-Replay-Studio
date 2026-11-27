@@ -23,6 +23,8 @@ from .composition import (
 )
 from .desktop_style import INK, desktop_style
 from .timeline import Timeline
+from .topic_panel import TopicPanel
+from .topic_displays import DISPLAY_TYPES, INSPECTOR_TYPES
 from .preview_transport import PreviewTransport
 from .layer_controls import VIDEO_FILES, LayerControls
 from .trajectory_tool import TrajectoryTool
@@ -211,7 +213,8 @@ class RendererApp(LayerControls):
                           (self.undo_history, self.redo_history))
         if not current:
             return
-        other.append(self.project)
+        previous = self.project
+        other.append(previous)
         self._project = current.pop()
         self.selection = None
         self.timeline.active_segment = None
@@ -219,6 +222,12 @@ class RendererApp(LayerControls):
         self.compare_plans.set(self.project.compare_plans)
         self.footages = (None,) * len(self.project.videos)
         self.refresh_layers()
+        self.spatial_diagnostics.clear()
+        if previous.display_fixed_frame != self.project.display_fixed_frame and not self.project.display_fixed_frame:
+            self.change_source_frames()
+        else:
+            self.topic_panel.apply_fixed_frame()
+        self.topic_panel.refresh()
         if self.elapsed is not None:
             self.transport.request(self.elapsed)
         self.status.set("已重做。" if redo else "已撤销。")
@@ -495,6 +504,8 @@ class RendererApp(LayerControls):
         self.data_nav.add(source, text="数据来源")
         self.spatial_tab = ttk.Frame(self.data_nav)
         self.data_nav.add(self.spatial_tab, text="空间叠加")
+        self.topic_panel = TopicPanel(self.data_nav, self)
+        self.data_nav.add(self.topic_panel, text="话题显示")
         spatial_canvas = tk.Canvas(self.spatial_tab, bg="#FFFFFF", highlightthickness=0, width=1, height=1)
         spatial_scroll = ttk.Scrollbar(self.spatial_tab, orient="vertical", command=spatial_canvas.yview)
         spatial_canvas.configure(yscrollcommand=spatial_scroll.set)
@@ -718,6 +729,7 @@ class RendererApp(LayerControls):
             self.spatial_details[name].set(" · ".join(part for part in (source, detail) if part))
             if current.tone == "Warning":
                 warnings.append(f"{self.spatial_labels[name]} {current.label}")
+        self.topic_panel.refresh()
         self.overlay_status.set("  ·  ".join(warnings))
         self.spatial_hint.set(f"预览位置 {self.elapsed:.3f} s" if self.spatial_diagnostics
                               else "勾选图层后生成预览，查看播放位置的数据状态。")
@@ -913,6 +925,7 @@ class RendererApp(LayerControls):
         self.selection = None
         self.reset_alignment()
         self._project = saved.composition
+        self.topic_panel.apply_fixed_frame()
         self.undo_history.clear()
         self.redo_history.clear()
         self.transparent_canvas.set(self.project.transparent_canvas)
@@ -1088,7 +1101,10 @@ class RendererApp(LayerControls):
             widget.configure(values=choices)
             widget.set("自动识别")
         self.sync_spatial()
-        self.status.set(f"已读取 {len(clouds)} 个点云话题，{len(odometry)} 个里程计话题")
+        alignment = "" if self.topic_panel.apply_fixed_frame() else (
+            f" · 未找到导入的固定坐标系 {self.project.display_fixed_frame}"
+        )
+        self.status.set(f"已读取 {len(clouds)} 个点云话题，{len(odometry)} 个里程计话题{alignment}")
 
     def change_cloud_topic(self, *_):
         topic = self.values["cloud_topic"].get()
@@ -1265,6 +1281,15 @@ class RendererApp(LayerControls):
         self.add_spatial_args(args, values)
         settings = parser(FormParser).parse_args(args)
         validate(settings)
+        if self.bag_path is not None:
+            types = {}
+            for row in self.bag_metadata["topics"]:
+                types.setdefault(row["topic"], set()).add(row["type"])
+            settings.topic_displays = tuple(
+                display for display in self.project.topic_displays
+                if display.enabled and display.kind not in INSPECTOR_TYPES and display.topic in types
+                and types[display.topic].issubset(DISPLAY_TYPES[display.kind][1])
+            )
         return settings
 
     def start_render(self, preview, *, advanced=False):
@@ -1545,6 +1570,10 @@ class RendererApp(LayerControls):
                     self.set_topics(*value)
                 elif kind == "project":
                     self.restore_workspace(*value)
+                elif kind == "topic_message":
+                    panel, message, image = value
+                    panel.show_message(message, image)
+                    self.status.set("话题消息已读取。")
                 elif kind == "workspace_saved":
                     self.accept_workspace_save(*value)
                 elif kind == "export_check":
@@ -1571,6 +1600,7 @@ class RendererApp(LayerControls):
         self.source_duration, self.timeline_events, self.clip_durations = duration, events, clips
         frame, videos, elapsed, self.speed, self.cloud_views = frame_info
         self.spatial_diagnostics = diagnostics
+        self.topic_panel.refresh()
         self.frame = Image.fromarray(frame)
         self.elapsed = elapsed
         self.base_cache = None

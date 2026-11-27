@@ -300,3 +300,26 @@ def test_proxy_stream_delivers_ordered_previews_without_writing_a_file(tmp_path)
     assert events == [()]
     assert frames[0][0].shape == (180, 320, 4)
     assert not output.exists()
+
+
+def test_topic_display_draws_only_in_selected_view_and_clears():
+    from planner_replay.spatial import SpatialFrame
+    from planner_replay.topic_displays import TopicDisplay
+
+    renderer = Renderer(320, 180, False, .4, 16, 3., 5., 1.6, 0., 70., 8., 4.,
+                        view_modes=("oblique",))
+    try:
+        cloud = CloudMap(0)
+        cloud.add(np.array([[0., 0., 0.]]))
+        renderer.show_main_cloud = False
+        renderer.update_cloud(cloud)
+        assert not renderer.cloud_actors[0][1].GetVisibility()
+        display = TopicDisplay("/scan", "cloud", main_only=True)
+        sample = np.array([[1., 0., 0.]])
+        renderer.frame(np.eye(4), [], "topic display", spatial=SpatialFrame(
+            (), (), None, None, topic_frames=((display, sample, ()),)))
+        assert set(renderer.topic_actors) == {(0, display.id)}
+        renderer.frame(np.eye(4), [], "topic display")
+        assert not renderer.topic_actors
+    finally:
+        renderer.close()

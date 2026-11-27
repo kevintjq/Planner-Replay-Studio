@@ -273,3 +273,33 @@ def test_ego_bspline_uses_start_time_and_samples_curve_in_chosen_frame(bag):
     assert abs(curve.lines[0][:, 1].max() - 1.5) < .005
     target, = source.mission_shapes("goal", source.last)
     np.testing.assert_allclose(target.goals[0], [[6., -1., 2.]])
+
+
+def test_multiple_display_topics_and_custom_message_fields(bag):
+    from contextlib import ExitStack
+    from types import SimpleNamespace
+
+    from planner_replay.spatial import SpatialOverlays
+    from planner_replay.topic_displays import TopicDisplay
+    from planner_replay.topic_inspection import message_children, read_topic_at
+
+    path = TopicDisplay("/plan", "path", main_only=True)
+    scan = TopicDisplay("/scan", "cloud")
+    goal = TopicDisplay("/goal", "position")
+    tf = TopicDisplay("/tf", "tf")
+    hidden = TopicDisplay("/laser", "laser", enabled=False)
+    source = BagSource(bag, "/points", "/odom", "map", "body",
+                       displays=(path, scan, goal, tf, hidden)).index()
+    with ExitStack() as stack:
+        layers = SpatialOverlays(SimpleNamespace(command="bag"), source, stack)
+        stamp = source.first + 100_000_000
+        frame = layers.frame(stamp, source.pose(stamp))
+        display_data = {display.id: (points, shapes) for display, points, shapes in frame.topic_frames}
+        assert set(display_data) == {path.id, scan.id, goal.id, tf.id}
+        np.testing.assert_allclose(display_data[path.id][1][0].lines[0][:, 0], [2, 4])
+        assert display_data[scan.id][0].shape == (1, 3)
+        assert display_data[goal.id][1][0].goals and display_data[tf.id][1][0].segments
+    message = read_topic_at(bag, "/planning/bspline", .15, "/points", lambda: None)
+    assert message.kind == "ego_planner/msg/Bspline" and not message.raw
+    assert "pos_pts" in dict(message_children(message.value))
+    assert read_topic_at(bag, "/planning/bspline", 0, "/points", lambda: None) is None

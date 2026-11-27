@@ -8,6 +8,7 @@ from tempfile import NamedTemporaryFile, mkdtemp
 
 from .composition import Composition, ImageLayer, LayerMotion, LayoutCue, PointCloudView, TextLayer, TimelineMarker, VideoLayer
 from .footage import VideoEdit
+from .topic_displays import TopicDisplay
 
 
 WORKSPACE_PROJECT = "project.slamfpv"
@@ -176,6 +177,7 @@ def load_project(path):
         composition["motions"] = tuple(LayerMotion(**vectors(item, "large_position"))
                                        for item in composition.get("motions", ()))
         composition["markers"] = tuple(TimelineMarker(**item) for item in composition.get("markers", ()))
+        composition["topic_displays"] = tuple(TopicDisplay(**item) for item in composition.get("topic_displays", ()))
         return ProjectFile(Composition(**composition), values, enabled, source, bag, media(data.get("extrinsics")), data.get("portable") is True)
     except (AttributeError, KeyError, TypeError) as error:
         raise ValueError("项目文件格式无效。") from error

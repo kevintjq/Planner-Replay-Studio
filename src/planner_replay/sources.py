@@ -7,6 +7,7 @@ from rosbags.highlevel import AnyReader
 from .geometry import TransformTree, transform_points
 from .cloud import decode
 from .spatial import CLOUD, CORRIDOR_TYPES, GOAL_TYPES, PLAN_TYPES, GeometryTimeline
+from .topic_displays import DISPLAY_TYPES, INSPECTOR_TYPES
 from .sensor_topics import ODOM, SCAN_TYPES, TWIST, VELOCITY_TYPES, camera_choices, connected_frames, inspect_metadata, planner_map_topic, scan_points
 
 
@@ -44,7 +45,7 @@ def add_tf(tree, msg, static=False):
 class BagSource:
     def __init__(self, path, cloud_topic, odom_topic, world, body, pose_source='odom', max_gap=.5, extrinsics=(), *,
                  plan_topic=None, corridor_topic=None, scan_topic=None, goal_topic=None, plan_frame='world',
-                 speed_topic=None):
+                 speed_topic=None, displays=()):
         self.path, self.cloud_topic = Path(path), cloud_topic
         self.planner_map = planner_map_topic(cloud_topic)
         self.world, self.body = world.lstrip('/'), body.lstrip('/')
@@ -68,6 +69,15 @@ class BagSource:
             for key, topic, types in (("plan", plan_topic, PLAN_TYPES), ("corridor", corridor_topic, CORRIDOR_TYPES),
                                       ("goal", goal_topic, GOAL_TYPES)) if topic
         }
+        self.displays = tuple(item for item in displays if item.enabled and item.kind not in INSPECTOR_TYPES)
+        self.display_scan_topics = tuple(dict.fromkeys(item.topic for item in self.displays
+                                                      if item.kind in {"cloud", "laser"}))
+        for display in self.displays:
+            if display.kind not in {"laser", "cloud"}:
+                self.mission["topic:" + display.id] = (
+                    display.topic, DISPLAY_TYPES[display.kind][1],
+                    GeometryTimeline(plan_frame=plan_frame, generic=True),
+                )
         self.first = self.last = None
         self.count = 0
         self.leading_cloud_skips = 0
@@ -81,6 +91,8 @@ class BagSource:
             specifications = [(topic, types) for topic, types, _ in self.mission.values()]
             if self.scan_topic:
                 specifications.append((self.scan_topic, SCAN_TYPES))
+            specifications.extend((item.topic, DISPLAY_TYPES[item.kind][1]) for item in self.displays
+                                  if item.kind in {"cloud", "laser"})
             if self.speed_topic:
                 specifications.append((self.speed_topic, VELOCITY_TYPES))
             for topic, types in specifications:
@@ -197,15 +209,17 @@ class BagSource:
     def sensor_pose(self, sensor, t):
         return self.tree.lookup(self.world, sensor.frame, t)
 
-    def scans(self):
+    def scans(self, topic=None):
+        generic = topic is not None
+        topic = topic or self.scan_topic
         previous = None
         with AnyReader([self.path]) as reader:
-            connections = [c for c in reader.connections if c.topic == self.scan_topic]
-            for connection, _, raw in reader.messages(connections=connections):
+            connections = [c for c in reader.connections if c.topic == topic]
+            for connection, recorded, raw in reader.messages(connections=connections):
                 msg = reader.deserialize(raw, connection.msgtype)
-                t = stamp(msg)
+                t = stamp(msg, unstamped_map_time=recorded if generic else None)
                 if previous is not None and t < previous:
-                    raise ValueError(f"{self.scan_topic}: 当前扫描的帧时间戳倒退")
+                    raise ValueError(f"{topic}: 当前扫描的帧时间戳倒退")
                 previous = t
                 try:
                     transform = self.tree.lookup(self.world, msg.header.frame_id, t)

@@ -24,6 +24,8 @@ def smoke():
     from planner_replay.composition import Composition, ImageLayer, TextLayer, VideoLayer, compose
     from planner_replay.gui import RendererApp
     from planner_replay.project_file import ProjectFile, load_project, save_project, save_workspace_folder
+    from planner_replay.rviz_config import read_rviz
+    from planner_replay.topic_inspection import read_topic_at
 
     assert vtk.vtkVersion.GetVTKMajorVersion() >= 9
     assert cv2.TrackerCSRT_create() is not None
@@ -49,7 +51,15 @@ def smoke():
             topic, _, raw = next(reader.messages())
             assert reader.deserialize(raw, topic.msgtype).data == "replay"
 
-        project = Composition(show_speed=True, texts=(TextLayer("Smoke", 0., 1.),))
+        config = folder / "smoke.rviz"
+        config.write_text("Visualization Manager:\n  Global Options: {Fixed Frame: map}\n"
+                          "  Displays: [{Class: example/Custom, Topic: /smoke}]\n", encoding="utf-8")
+        rviz = read_rviz(config)
+        sample = read_topic_at(bag, "/smoke", 0, "", lambda: None)
+        assert rviz.fixed_frame == "map" and rviz.displays[0].kind == "message" and sample.value.data == "replay"
+
+        project = Composition(show_speed=True, texts=(TextLayer("Smoke", 0., 1.),),
+                              topic_displays=rviz.displays, display_fixed_frame=rviz.fixed_frame)
         project_path = folder / "smoke.slamfpv"
         save_project(project_path, ProjectFile(project, {}, {}, "demo"))
         restored = load_project(project_path).composition

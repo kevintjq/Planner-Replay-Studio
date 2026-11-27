@@ -228,10 +228,15 @@ class Composition:
     markers: tuple = ()
     motions: tuple = ()
     images: tuple = ()
+    topic_displays: tuple = ()
+    show_main_cloud: bool = True
+    display_fixed_frame: str = ""
 
     def __post_init__(self):
         if any(left.time >= right.time for left, right in zip(self.markers, self.markers[1:])):
             raise ValueError("手动标记须按时间递增。")
+        if len({display.id for display in self.topic_displays}) != len(self.topic_displays):
+            raise ValueError("话题显示标识重复。")
         ids = {layer.id for layer in self.videos}
         if len(ids) != len(self.videos) or (self.audio_id is not None and self.audio_id not in ids):
             raise ValueError("视频图层引用无效。")

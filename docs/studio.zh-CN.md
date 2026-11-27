@@ -6,7 +6,7 @@
 
 ## 快速开始
 
-[下载完整工作台 Windows EXE](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.3.2/PlannerReplayStudio-Setup.exe)，安装后从开始菜单打开 **Planner Replay Studio Full**。
+[下载完整工作台 Windows EXE](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.4.0/PlannerReplayStudio-Setup.exe)，安装后从开始菜单打开 **Planner Replay Studio Full**。
 
 在「数据」打开 ROS1 `.bag`，或点「使用模拟数据」查看效果。选择机位和图层后点「生成预览」。
 
@@ -41,6 +41,18 @@ SUPER 优先识别 `visualization/exp_traj` 和 `visualization/exp_sfc`。EGO �
 左侧「数据 → 空间叠加」列出 bag 的全部话题，保留自动识别。选中不兼容的话题时，对应图层会提示「类型不匹配」。各图层也会显示当前预览位置的数据状态。
 
 预览时，将鼠标移到点云主画面或小窗上滚动即可拉近、拉远。各视角的设置里也可直接输入相机缩放比例，随项目保存。
+
+## 话题显示与 RViz 导入
+
+在「数据 → 话题显示」点「按话题添加」，按话题名或消息类型搜索。每项可以改名、选色、启用或停用，并选择是否只在主画面显示。主点云也可以隐藏。配置随项目保存，3D 显示同时用于预览和导出。
+
+| 显示 | 支持内容 |
+| --- | --- |
+| 3D | 点云、LaserScan、Path、EGO B 样条、Marker / MarkerArray、位置与 TF。附加点云显示最近一帧 |
+| 图像 | 查看常用 8 位 Image 及普通 JPEG / PNG CompressedImage |
+| 消息字段 | 所有已录制话题均可查看字段。按录包时间取该时刻前最近一条，支持展开数组和自定义消息。无法解码时可查看原始字节 |
+
+点「导入 .rviz」可以从 RViz / RViz2 配置读取固定坐标系、话题、显示名称、显隐与颜色。可在打开 bag 前导入。导入会替换话题显示列表，支持的 3D 图层直接显示。网格、RobotModel、插件窗口和视角布局等 RViz 专用设置不会导入。导入状态会列出跳过的项目和改用字段查看的项目。
 
 ## 时间轴
 

@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "planner-replay-studio"
-version = "0.3.2"
+version = "0.4.0"
 description = "Planner Replay Studio for ROS1 UAV planning, point clouds and flight footage"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.24,<3", "vtk>=9.3,<10", "rosbags>=0.10,<0.12", "imageio>=2.34,<3", "imageio-ffmpeg>=0.5,<1", "Pillow>=10,<14", "av>=15,<19", "opencv-contrib-python-headless>=4.11,<5"]
+dependencies = ["numpy>=1.24,<3", "vtk>=9.3,<10", "rosbags>=0.10,<0.12", "ruamel.yaml>=0.17,<0.20", "imageio>=2.34,<3", "imageio-ffmpeg>=0.5,<1", "Pillow>=10,<14", "av>=15,<19", "opencv-contrib-python-headless>=4.11,<5"]
 
 [project.optional-dependencies]
 test = ["pytest>=8,<10"]

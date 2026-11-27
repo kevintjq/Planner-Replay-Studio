@@ -192,6 +192,8 @@ def render(a, source, *, preview=None, preview_offset=0, preview_stream=False, p
                                          view.overlays for view in (project.main_view, *project.views)),
                                      view_zooms=None if project is None else tuple(
                                          view.zoom for view in (project.main_view, *project.views)))
+            if project is not None:
+                renderer.show_main_cloud = project.show_main_cloud
             stack.callback(renderer.close)
             output = None
             if preview is None:
@@ -303,12 +305,15 @@ def render(a, source, *, preview=None, preview_offset=0, preview_stream=False, p
                           retained_points=len(cloud.xyz),fps=a.fps,edl_requested=not a.no_edl and not a.slam_view,
                           complete=failure is None and count > 0,error=failure,encoder=codec,
                           config={k:str(v) if isinstance(v,Path) else v for k,v in vars(a).items() if k != 'bag'})
+            if "topic_displays" in report["config"]:
+                report["config"]["topic_displays"] = [asdict(display) for display in a.topic_displays]
             if project is not None:
                 report['composition'] = asdict(project)
+            payload = json.dumps(report, indent=2, default=str)
             destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.with_suffix('.json').write_text(json.dumps(report,indent=2,default=str),encoding='utf-8')
+            destination.with_suffix('.json').write_text(payload, encoding='utf-8')
             if progress is None:
-                print(json.dumps(report,indent=2))
+                print(payload)
 
 
 def open_source(a, check_cancel=None, metadata=None):
@@ -325,7 +330,8 @@ def open_source(a, check_cancel=None, metadata=None):
     source = BagSource(a.bag, a.cloud_topic, a.odom_topic, a.world, a.body, a.pose_source,
                        a.max_gap, extrinsics(a.extrinsics), plan_topic=a.plan_topic,
                        corridor_topic=a.corridor_topic, scan_topic=scan_topic, goal_topic=a.goal_topic,
-                       plan_frame=a.plan_frame, speed_topic=speed_topic).index(check_cancel)
+                       plan_frame=a.plan_frame, speed_topic=speed_topic,
+                       displays=getattr(a, "topic_displays", ())).index(check_cancel)
     if auto_camera:
         source.detect_camera(a.camera_info_topic, metadata)
     return source

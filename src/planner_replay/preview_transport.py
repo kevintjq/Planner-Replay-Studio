@@ -108,7 +108,7 @@ class PreviewTransport:
         source_fields = (("demo_scene", "start", "seconds") if args.command == "demo" else
                          ("bag", "cloud_topic", "odom_topic", "world", "body", "pose_source", "max_gap",
                           "extrinsics", "plan_topic", "corridor_topic", "scan_topic", "goal_topic", "plan_frame",
-                          "speed_topic", "camera_info_topic", "show_camera_fov", "camera_fov", "show_scan"))
+                          "speed_topic", "camera_info_topic", "show_camera_fov", "camera_fov", "show_scan", "topic_displays"))
         source_key = (args.command, *(settings[name] for name in source_fields))
         frames = Queue(maxsize=8) if playing else None
         self.buffer, self.working, self.requested = frames, True, time

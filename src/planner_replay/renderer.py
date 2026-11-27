@@ -230,6 +230,8 @@ class Renderer:
         self.inset_args=(inset_distance,inset_height,0.)
         self.windows=[]
         self.views=[]
+        self.topic_actors = {}
+        self.show_main_cloud = True
         self.cloud_actors=[]
         self.range_cloud = self.range_position = None
         self.dynamic=[]
@@ -277,6 +279,7 @@ class Renderer:
         for scene, _ in self.views:
             # Reuse the CPU mesh while each OpenGL context retains its own mapper.
             actor = point_actor(mesh, self.point_size)
+            actor.SetVisibility(self.show_main_cloud)
             scene.AddActor(actor)
             self.cloud_actors.append((scene, actor))
 
@@ -366,6 +369,45 @@ class Renderer:
                     overlay.AddViewProp(actor)
                     self.dynamic.append((overlay, actor))
 
+    def draw_topic_displays(self, scene, index, frames):
+        active = set()
+        for display, points, shapes in frames:
+            if display.main_only and index != 0:
+                continue
+            rgb = display.rgb
+            color = tuple(channel / 255 for channel in rgb)
+            if points is not None and len(points):
+                key = index, display.id
+                active.add(key)
+                previous = self.topic_actors.get(key)
+                if previous is None or previous[0] is not points:
+                    if previous is not None:
+                        scene.RemoveActor(previous[1])
+                    sample = points[::max(1, (len(points) + 79999) // 80000)]
+                    mesh = point_mesh(sample, np.broadcast_to(rgb, sample.shape))
+                    actor = point_actor(mesh, self.point_size)
+                    scene.AddActor(actor)
+                    self.topic_actors[key] = points, actor
+            if shapes:
+                lines = tuple(line for shape in shapes for line in shape.lines) + tuple(
+                    line for shape in shapes for group in shape.segments for line in group)
+                surfaces = tuple(triangle for shape in shapes for group in shape.triangles for triangle in group)
+                positions = tuple(point for shape in shapes for point in shape.goals)
+                for groups, surface in ((lines, False), (surfaces, True)):
+                    if groups:
+                        actor = mission_actor(groups, color, 2.5*self.scale, surface=surface)
+                        scene.AddActor(actor)
+                        self.dynamic.append((scene, actor))
+                if positions:
+                    points = np.concatenate(positions)
+                    actor = point_actor(point_mesh(points, np.broadcast_to(rgb, points.shape)), 8*self.scale)
+                    scene.AddActor(actor)
+                    self.dynamic.append((scene, actor))
+        for key in tuple(self.topic_actors):
+            if key[0] == index and key not in active:
+                _, actor = self.topic_actors.pop(key)
+                scene.RemoveActor(actor)
+
     def frame(self,pose,trajectory,label,elapsed=0.,fpv_pose=None, spatial=None):
         self.update_range_colors(pose[:3, 3])
         for renderer,actor in self.dynamic: renderer.RemoveActor(actor)
@@ -396,6 +438,7 @@ class Renderer:
                     scene.AddActor(actor); self.dynamic.append((scene,actor))
             if spatial is not None:
                 self.add_spatial(scene, overlay, spatial, visible)
+            self.draw_topic_displays(scene, index, spatial.topic_frames if spatial else ())
             viewport_width, viewport_height = self.windows[index].GetSize()
             screen_space = mode in FPV_MODES
             if screen_space:

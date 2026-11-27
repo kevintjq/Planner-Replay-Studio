@@ -6,7 +6,7 @@
 
 ## Quick start
 
-[Download the complete Windows setup EXE](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.3.2/PlannerReplayStudio-Setup.exe) and open **Planner Replay Studio Full** from the Start menu.
+[Download the complete Windows setup EXE](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.4.0/PlannerReplayStudio-Setup.exe) and open **Planner Replay Studio Full** from the Start menu.
 
 Open a ROS1 `.bag` under **Data** or choose **Use simulated data**. Pick views and layers, then generate a preview.
 
@@ -39,6 +39,18 @@ SUPER defaults to `visualization/exp_traj` and `visualization/exp_sfc` when pres
 Scroll over a point-cloud view to zoom it. Each view also has a camera zoom percentage that is saved with the project.
 
 Under **Data → Spatial overlays**, keep automatic detection or select any topic in the bag. Each layer reports its status at the preview position and flags incompatible message types.
+
+## Topic displays and RViz import
+
+Under **Data → Topic displays**, add displays by searching topic names or message types. Rename each display, set its color, toggle it, or restrict it to the main view. The base cloud can be hidden. Project files keep these settings, and 3D displays appear in both previews and exports.
+
+| Display | Support |
+| --- | --- |
+| 3D | Point clouds, LaserScan, Path, EGO B-splines, Marker / MarkerArray, positions, and TF. Extra clouds show the latest frame |
+| Image | Common 8-bit Image encodings and JPEG / PNG CompressedImage |
+| Message fields | Inspect any recorded topic. Read the most recent message at or before a recorded time, expand arrays, and inspect custom fields or raw bytes if decoding fails |
+
+Import an RViz or RViz2 `.rviz` file before or after opening a bag. The import replaces the topic display list and reads the fixed frame, names, topics, visibility, and colors. The import status lists unsupported plugins and topics opened as message fields. RViz grid, RobotModel, panels, and camera layout are outside the import scope.
 
 ## Timeline
 

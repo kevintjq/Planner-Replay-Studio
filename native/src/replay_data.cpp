@@ -257,8 +257,20 @@ bool isMarker(const QByteArray &type)
     return type == "visualization_msgs/Marker" || type == "visualization_msgs/MarkerArray";
 }
 
+bool isLivox(const QByteArray &type)
+{
+    return type == "livox_ros_driver/CustomMsg" || type == "livox_ros_driver2/CustomMsg";
+}
+
+bool isScan(const QByteArray &type)
+{
+    return type == "sensor_msgs/PointCloud2" || type == "sensor_msgs/LaserScan" || isLivox(type);
+}
+
 bool supportsTopic(const QString &kind, const QByteArray &type)
 {
+    if (kind == "scan")
+        return isScan(type);
     if (kind == "cloud")
         return type == "sensor_msgs/PointCloud2";
     if (kind == "laser")
@@ -299,6 +311,21 @@ void readOverlay(TopicOverlay &overlay, const QByteArray &type, QByteArrayView d
     const int start = int(overlay.points.size());
     if (type == "sensor_msgs/PointCloud2") {
         readCloudPoints(overlay.points, message, cancel);
+    } else if (isLivox(type)) {
+        message.take(8); // Sensor timebase.
+        const auto quantity = message.u32();
+        message.take(4); // LiDAR ID and reserved bytes.
+        const auto count = message.u32();
+        if (quantity != count || count > MaxPoints)
+            fail("Livox CustomMsg 点数量无效。");
+        Bytes returns(message.take(qsizetype(count) * 19));
+        for (quint32 i = 0; i < count; ++i) {
+            if ((i & 1023) == 0)
+                checkCancel(cancel);
+            returns.take(4); // Point time offset.
+            appendPoint(overlay.points, {returns.float32(), returns.float32(), returns.float32()});
+            returns.take(3); // Reflectivity, tag and line.
+        }
     } else if (type == "sensor_msgs/LaserScan") {
         const double minimumAngle = message.float32();
         message.take(4); // Maximum angle is derived from the range index.
@@ -952,8 +979,83 @@ std::optional<float> Recording::speedAt(qint64 stamp) const
     return (end.position - begin.position).length() / float(double(end.stamp - begin.stamp) / Second);
 }
 
+QJsonObject inspectBag(const QString &path, const Cancel &cancel)
+{
+    QFile file(path);
+    auto [chunks, connections] = readBagDirectory(file, cancel);
+    struct TopicStats {
+        qint64 count = 0;
+        QString frame, child;
+    };
+    QHash<quint32, TopicStats> statistics;
+    QSet<QPair<QString, QString>> transforms;
+    qint64 first = std::numeric_limits<qint64>::max(), last = 0;
+    for (const auto &chunk : chunks) {
+        checkCancel(cancel);
+        if (!file.seek(chunk.offset))
+            fail("无法定位 bag 数据块。");
+        const auto decompressed = unpack(readExactly(file, chunk.size), chunk);
+        Bytes reader(decompressed);
+        while (!reader.empty()) {
+            checkCancel(cancel);
+            const auto header = fields(reader.blob());
+            const auto data = reader.blob();
+            if (opcode(header) != 0x02)
+                continue;
+            const auto id = number(header, "conn");
+            const auto entry = connections.find(id);
+            if (entry == connections.end())
+                continue;
+
+            auto &summary = statistics[id];
+            ++summary.count;
+            const auto time = Bytes(header.value("time")).time();
+            first = std::min(first, time);
+            last = std::max(last, time);
+            const auto &type = entry->second.type;
+            try {
+                if (summary.count <= 12 && (type == "tf2_msgs/TFMessage" || type == "tf/tfMessage")) {
+                    for (const auto &transform : readTransforms(data, time))
+                        transforms.insert({transform.parent, transform.child});
+                } else if (summary.frame.isEmpty() && (isScan(type) || type == "nav_msgs/Odometry" || type == "sensor_msgs/CameraInfo")) {
+                    Bytes input(data);
+                    summary.frame = messageHeader(input).frame;
+                    if (type == "nav_msgs/Odometry") {
+                        summary.child = input.string();
+                        while (summary.child.startsWith('/'))
+                            summary.child.remove(0, 1);
+                    }
+                }
+            } catch (const std::runtime_error &) {
+                // A damaged payload can still be counted in the bag inventory.
+            }
+        }
+    }
+
+    QJsonArray topics, pairs;
+    for (const auto &[id, connection] : connections) {
+        const auto stats = statistics.value(id);
+        QString type = QString::fromUtf8(connection.type);
+        const auto slash = type.indexOf('/');
+        if (slash >= 0 && !type.contains("/msg/"))
+            type.insert(slash + 1, QStringLiteral("msg/"));
+        QJsonObject row{{"topic", connection.topic}, {"type", type}, {"count", stats.count}};
+        if (!stats.frame.isEmpty())
+            row.insert("frame", stats.frame);
+        if (!stats.child.isEmpty())
+            row.insert("child", stats.child);
+        topics.append(row);
+    }
+    auto sorted = transforms.values();
+    std::sort(sorted.begin(), sorted.end());
+    for (const auto &[parent, child] : sorted)
+        pairs.append(QJsonArray{parent, child});
+    return {{"storage_start_ns", first == std::numeric_limits<qint64>::max() ? qint64(0) : first},
+            {"storage_end_ns", last ? last + 1 : qint64(0)}, {"topics", topics}, {"tf_pairs", pairs}};
+}
+
 std::optional<TopicMessage> inspectBagTopic(const QString &path, const QString &topic, qint64 stamp,
-                                            const Cancel &cancel)
+                                            const Cancel &cancel, int arrayPage)
 {
     QFile file(path);
     auto [chunks, connections] = readBagDirectory(file, cancel);
@@ -995,7 +1097,7 @@ std::optional<TopicMessage> inspectBagTopic(const QString &path, const QString &
     }
     if (!definition)
         return {};
-    return decodeTopicMessage(definition->type, definition->definition, payload, chosen);
+    return decodeTopicMessage(definition->type, definition->definition, payload, chosen, arrayPage);
 }
 
 std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions &options,
@@ -1008,8 +1110,13 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
     if (std::isfinite(options.maximumGap) && options.maximumGap > 0. && options.maximumGap <= 60.)
         record->maximumGap = qint64(options.maximumGap * Second);
 
+    if (std::isfinite(options.scanMaximumAge) && options.scanMaximumAge > 0. && options.scanMaximumAge <= 60.)
+        record->scanMaximumAge = qint64(options.scanMaximumAge * Second);
+
     for (const auto &[id, connection] : connections) {
         record->topics.append(connection.topic);
+        if (isScan(connection.type))
+            record->scanTopics.append(connection.topic);
         if (isVelocity(connection.type))
             record->speedTopics.append(connection.topic);
         if (connection.type == "sensor_msgs/PointCloud2")
@@ -1019,6 +1126,10 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
     }
     record->topics.removeDuplicates();
     record->topics.sort();
+    record->scanTopics.removeDuplicates();
+    record->scanTopics.sort();
+    record->scanTopic = options.scanTopic;
+
     record->speedTopics.removeDuplicates();
     record->speedTopics.sort();
     record->cloudTopics.removeDuplicates();
@@ -1035,6 +1146,27 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
     }
     if (!record->cloudTopics.contains(record->cloudTopic))
         fail("所选点云话题不存在。");
+    if (options.autoScan && record->scanTopic.isEmpty()) {
+        QString best;
+        int bestRank = 3;
+        for (const auto &[id, connection] : connections) {
+            if (!isScan(connection.type) || connection.topic == record->cloudTopic)
+                continue;
+            const auto name = connection.topic.toLower();
+            const int rank = isLivox(connection.type) ? 0 : connection.type == "sensor_msgs/LaserScan" ? 2 :
+                (name.contains("registered") || name.contains("map") || name.contains("camera") || name.contains("depth") ||
+                 !(name.contains("lidar") || name.contains("livox") || name.contains("velodyne") || name.contains("ouster"))) ? 3 : 1;
+            if (rank < bestRank || (rank == bestRank && !best.isEmpty() && connection.topic < best)) {
+                best = connection.topic;
+                bestRank = rank;
+            }
+        }
+        record->scanTopic = best.isEmpty() ? record->cloudTopic : best;
+    }
+    if (!record->scanTopic.isEmpty() && !record->scanTopics.contains(record->scanTopic)) {
+        record->topicWarnings.append(record->scanTopic);
+        record->scanTopic.clear();
+    }
     record->odometryTopic = options.odometryTopic;
     if (record->odometryTopic.isEmpty() && !record->odometryTopics.isEmpty()) {
         record->odometryTopic = record->odometryTopics.contains("/Odometry") ? "/Odometry" : record->odometryTopics.front();
@@ -1061,6 +1193,9 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
 
     QHash<QString, std::vector<size_t>> overlayIndices;
     auto displays = options.topicLayout.displays;
+    if (!record->scanTopic.isEmpty() && record->scanTopic != record->cloudTopic)
+        displays.push_back({"scan", record->scanTopic, "scan", QStringLiteral("当前扫描"),
+                            QColor("#ffa664"), true, false, "scan"});
     const auto addPlannerDisplay = [&](const QString &role, const QString &selected, const QString &name, const QColor &color) {
         const auto topic = selectPlannerTopic(connections, role, selected);
         const auto connection = std::find_if(connections.begin(), connections.end(), [&](const auto &entry) {
@@ -1255,6 +1390,10 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
                             readCamera(overlay, data, recorded);
                         else
                             readOverlay(overlay, connection.type, data, recorded, cancel);
+                        if (overlay.display.kind == "scan") {
+                            auto &sample = overlay.samples.back();
+                            sample.expires = sample.range.stamp + record->scanMaximumAge;
+                        }
                         if (overlay.points.size() > before &&
                             (overlay.display.plannerRole == "plan" || overlay.display.plannerRole == "goal"))
                             record->planningEvents.emplace_back(overlay.samples.back().range.stamp, overlay.display.name);
@@ -1280,6 +1419,17 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
     });
     record->speeds.erase(std::unique(record->speeds.begin(), record->speeds.end(),
         [](const auto &a, const auto &b) { return a.first == b.first; }), record->speeds.end());
+    if (!options.tfPose && !overlayIndices.isEmpty()) {
+        const auto children = transforms.children();
+        const QSet<QString> childrenWithTf(children.cbegin(), children.cend());
+        for (const auto &sample : odometry) {
+            checkCancel(cancel);
+            if (!childrenWithTf.contains(sample.child) && sample.pose.stamp > 0 &&
+                !sample.pose.rotation.isNull() && std::isfinite(sample.pose.position.lengthSquared()))
+                transforms.add(sample.parent, sample.child, sample.pose.stamp,
+                               {sample.pose.position, sample.pose.rotation}, false);
+        }
+    }
     transforms.prepare();
     if (options.tfPose) {
         setTfPoses(*record, options, transforms, odometry, cancel);

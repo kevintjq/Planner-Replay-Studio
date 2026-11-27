@@ -103,9 +103,10 @@ jobs:
           $install = Start-Process -FilePath $setup -ArgumentList '/S', "/D=$target" -Wait -PassThru
           if ($install.ExitCode -ne 0) { throw "Installer exited with $($install.ExitCode)." }
           $exe = Join-Path $target 'app/PlannerReplayNative.exe'
+          $cli = Join-Path $target 'app/PlannerReplayCli.exe'
           $uninstaller = Join-Path $target 'Uninstall.exe'
           $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'Planner Replay Studio.lnk'
-          if (!(Test-Path $exe) -or !(Test-Path $uninstaller) -or !(Test-Path $shortcut)) {
+          if (!(Test-Path $exe) -or !(Test-Path $cli) -or !(Test-Path $uninstaller) -or !(Test-Path $shortcut)) {
             throw 'The installed application, uninstaller or Start menu shortcut is missing.'
           }
           $registry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\PlannerReplayNative'
@@ -131,6 +132,8 @@ jobs:
             Remove-Item Env:QT_PLUGIN_PATH, Env:QML_IMPORT_PATH, Env:QML2_IMPORT_PATH -ErrorAction SilentlyContinue
             $app = Start-Process -FilePath $exe -ArgumentList '--smoke', ('"' + $fixture + '"') -WorkingDirectory $target -Wait -PassThru
             if ($app.ExitCode -ne 0) { throw "Installed application exited with $($app.ExitCode)." }
+            & $cli --help | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Installed CLI exited with $LASTEXITCODE." }
           } finally {
             $env:PATH = $originalPath
           }

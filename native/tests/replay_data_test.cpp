@@ -58,6 +58,15 @@ QByteArray scan(quint32 sec)
     return result + u32(2) + u32(std::bit_cast<quint32>(2.f)) + u32(std::bit_cast<quint32>(3.f)) + u32(0);
 }
 
+QByteArray livox(quint32 sec)
+{
+    QByteArray result = u32(0) + stamp(sec) + blob("scanner") + QByteArray(8, 0)
+        + u32(1) + QByteArray(4, 0) + u32(1) + u32(0);
+    for (const float coordinate : {5.f, 6.f, 7.f})
+        result += u32(std::bit_cast<quint32>(coordinate));
+    return result + QByteArray(3, 0);
+}
+
 QByteArray transform(const QByteArray &child, double x)
 {
     QByteArray result = u32(0) + stamp(1) + blob("map") + blob(child);
@@ -156,7 +165,13 @@ int main(int argc, char **argv)
                 "Custom ROS message fields did not decode.");
         const auto samples = readings[0].toObject().value("samples").toObject();
         require(samples.value("total").toInt() == 129 &&
-                samples.value("firstItems").toArray().at(4).toDouble() == 1., "Large ROS array summary is incorrect.");
+                samples.value("items").toArray().at(4).toDouble() == 1., "Large ROS array summary is incorrect.");
+        const auto secondPage = replay::decodeTopicMessage("fixture/Reading", schema, message, 2'000'000'000, 1);
+        const auto secondObject = QJsonDocument::fromJson(secondPage.fields.toUtf8()).object();
+        const auto lastSamples = secondObject.value("readings").toArray().first().toObject().value("samples").toObject();
+        require(inspected.arrayPageCount == 2 && lastSamples.value("offset").toInt() == 128 &&
+                lastSamples.value("items").toArray().size() == 1 &&
+                lastSamples.value("items").toArray().first().toDouble() == 32., "ROS array paging missed the final entry.");
         const auto imageBuffer = u32(1) + stamp(2) + blob("optical") + u32(2) + u32(1) + blob("bgr8") +
             QByteArray(1, 0) + u32(4) + blob(QByteArray::fromHex("0708090028323c00"));
         const auto imageMessage = replay::decodeTopicMessage("sensor_msgs/Image", {}, imageBuffer, 2'000'000'000);
@@ -172,12 +187,14 @@ int main(int argc, char **argv)
         const auto pathConnection = field("conn", u32(2));
         const auto scanConnection = field("conn", u32(3));
         const auto tfConnection = field("conn", u32(4));
+        const auto livoxConnection = field("conn", u32(5));
         const auto payload = record(2, tfConnection + field("time", stamp(1)),
                                     u32(2) + transform("scanner", 10.) + transform("published", 20.))
                            + record(2, connection + field("time", stamp(1)), cloud(1, 4.f))
                            + record(2, secondary + field("time", stamp(2)), cloud(2, 42.f))
                            + record(2, pathConnection + field("time", stamp(2)), path(2))
                            + record(2, scanConnection + field("time", stamp(2)), scan(2))
+                           + record(2, livoxConnection + field("time", stamp(2)), livox(2))
                            + record(2, secondary + field("time", stamp(3)), cloud(3, 90.f, "camera"))
                            + record(2, connection + field("time", stamp(3)), cloud(3, 9.f));
         const auto contents = QByteArray("#ROSBAG V2.0\n")
@@ -186,14 +203,43 @@ int main(int argc, char **argv)
             + record(7, secondary + field("topic", "/secondary"), field("type", "sensor_msgs/PointCloud2"))
             + record(7, pathConnection + field("topic", "/plan"), field("type", "nav_msgs/Path"))
             + record(7, scanConnection + field("topic", "/laser"), field("type", "sensor_msgs/LaserScan"))
-            + record(7, tfConnection + field("topic", "/tf_static"), field("type", "tf2_msgs/TFMessage"));
+            + record(7, tfConnection + field("topic", "/tf_static"), field("type", "tf2_msgs/TFMessage"))
+            + record(7, livoxConnection + field("topic", "/livox/lidar"), field("type", "livox_ros_driver2/CustomMsg"));
         require(file.write(contents) == contents.size(), "Could not write temporary test file.");
         file.close();
+        const auto inventory = replay::inspectBag(file.fileName());
+        const auto topics = inventory.value("topics").toArray();
+        require(inventory.value("storage_start_ns").toInteger() == 1'000'000'000 &&
+                inventory.value("storage_end_ns").toInteger() == 3'000'000'001 && topics.size() == 6 &&
+                topics.first().toObject().value("count").toInt() == 2 &&
+                topics.first().toObject().value("type").toString() == "sensor_msgs/msg/PointCloud2" &&
+                inventory.value("tf_pairs").toArray().size() == 2,
+                "Bag inventory lost a storage timestamp, count, type or TF pair.");
         const auto bag = replay::loadBag(file.fileName());
         require(bag->replace && bag->cloudTopic == "/rog_map/occ", "Planner map defaults are wrong.");
         require(bag->duration() == 2. && bag->points.back().x == 9.f, "ROS1 PointCloud2 data was misread.");
         require(bag->frameAt(bag->stampAt(1)).first == 0 && bag->frameAt(bag->stampAt(2)).first == 1,
                 "Timeline chose the wrong PointCloud2 frame.");
+        replay::LoadOptions currentScan;
+        currentScan.autoScan = true;
+        currentScan.scanMaximumAge = .25;
+        auto withScan = replay::loadBag(file.fileName(), currentScan);
+        require(withScan->scanTopics.contains("/laser") && withScan->scanTopic == "/livox/lidar",
+                "The preferred current scan topic was not selected.");
+        const auto current = std::find_if(withScan->topicOverlays.begin(), withScan->topicOverlays.end(),
+                                          [](const auto &layer) { return layer.display.plannerRole == "scan"; });
+        require(current != withScan->topicOverlays.end(), "Current scan did not produce a render layer.");
+        const auto &liveScan = *current;
+        require(liveScan.display.plannerRole == "scan" && liveScan.points.size() == 1 &&
+                liveScan.points.front().x == 15.f && liveScan.points.front().z == 7.f &&
+                liveScan.sampleAt(withScan->stampAt(1.125)) && !liveScan.sampleAt(withScan->stampAt(1.25)),
+                "Livox current scan was decoded, transformed or expired incorrectly.");
+        currentScan.scanTopic = "/rog_map/occ";
+        withScan = replay::loadBag(file.fileName(), currentScan);
+        require(withScan->scanTopic == withScan->cloudTopic &&
+                std::none_of(withScan->topicOverlays.begin(), withScan->topicOverlays.end(),
+                             [](const auto &layer) { return layer.display.plannerRole == "scan"; }),
+                "The current primary scan should reuse the parsed map points.");
         const auto topicAtTime = replay::inspectBagTopic(file.fileName(), "/plan", 2'500'000'000);
         require(topicAtTime && topicAtTime->stamp == 2'000'000'000 && topicAtTime->type == "nav_msgs/Path" &&
                 !replay::inspectBagTopic(file.fileName(), "/plan", 1'900'000'000),

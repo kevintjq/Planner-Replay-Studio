@@ -318,7 +318,8 @@ ApplicationWindow {
                             {key: "plan", label: "规划轨迹"},
                             {key: "corridor", label: "安全走廊"},
                             {key: "goal", label: "目标点"},
-                            {key: "camera", label: "相机视场"}
+                            {key: "camera", label: "相机视场"},
+                            {key: "scan", label: "当前扫描"}
                         ]
                         delegate: CheckBox {
                             required property var modelData
@@ -329,6 +330,37 @@ ApplicationWindow {
                             onClicked: replay.setPlanningLayerEnabled(modelData.key, checked)
                             ToolTip.visible: hovered
                             ToolTip.text: plannerLayer?.topic ?? ""
+                        }
+                    }
+                    Button {
+                        id: scanExpand
+                        visible: replay.scanTopics.length > 0
+                        text: checked ? "收起当前扫描设置" : "当前扫描设置"
+                        checkable: true
+                    }
+                    ColumnLayout {
+                        visible: scanExpand.visible && scanExpand.checked
+                        Layout.fillWidth: true
+                        ComboBox {
+                            id: scanChoice
+                            Layout.fillWidth: true
+                            model: ["关闭", ...replay.scanTopics]
+                            currentIndex: Math.max(0, replay.scanTopics.indexOf(replay.scanTopic) + 1)
+                        }
+                        RowLayout {
+                            Label { text: "最大保留秒数" }
+                            TextField {
+                                id: scanAge
+                                Layout.fillWidth: true
+                                text: Number(replay.scanMaximumAge).toLocaleString(Qt.locale(), "f", 2)
+                                validator: DoubleValidator { bottom: .001; top: 60 }
+                            }
+                        }
+                        Button {
+                            text: "应用当前扫描"
+                            enabled: !replay.loading && scanAge.acceptableInput
+                            onClicked: replay.setScanOptions(scanChoice.currentIndex === 0 ? "" : scanChoice.currentText,
+                                                            Number.fromLocaleString(scanAge.text))
                         }
                     }
                     CheckBox {

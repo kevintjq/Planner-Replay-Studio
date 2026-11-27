@@ -365,7 +365,16 @@ void ReplayController::load(const QString &path, const replay::LoadOptions &opti
         settings.planTopic = values.value("plan_topic").toString();
         settings.corridorTopic = values.value("corridor_topic").toString();
         settings.goalTopic = values.value("goal_topic").toString();
-        settings.cameraTopic = values.value("camera_topic").toString();
+        settings.cameraTopic = values.value("camera_info_topic").toString(values.value("camera_topic").toString());
+        const bool legacyScan = project->json().value("enabled").toObject().value("scan").toBool(false);
+        settings.scanTopic = values.value("scan_topic").toString();
+        if (settings.scanTopic == QStringLiteral("自动识别"))
+            settings.scanTopic.clear();
+        settings.autoScan = legacyScan && settings.scanTopic.isEmpty();
+        bool validScanAge = false;
+        const double scanSeconds = values.value("scan_max_age").toString().toDouble(&validScanAge);
+        if (validScanAge)
+            settings.scanMaximumAge = scanSeconds;
         settings.speedTopic = values.value("speed_topic").toString();
         settings.tfPose = values.value("pose_source").toString().compare("TF", Qt::CaseInsensitive) == 0;
         settings.world = values.value("world").toString();
@@ -743,14 +752,30 @@ void ReplayController::removeLayoutCue(double time)
     emit stateChanged();
 }
 
+void ReplayController::setScanOptions(const QString &topic, double maximumAge)
+{
+    if (loading_ || path_.isEmpty() || (!topic.isEmpty() && !scanTopics().contains(topic)) ||
+        !std::isfinite(maximumAge) || maximumAge <= 0. || maximumAge > 60.)
+        return;
+    auto document = projectSnapshot();
+    document.setValue("scan_topic", topic);
+    document.setValue("scan_max_age", QString::number(maximumAge));
+    document.setLayerEnabled("scan", !topic.isEmpty());
+    load(path_, {cloudTopic(), odometryTopic(), mapMode_}, std::move(document), true);
+}
+
 bool ReplayController::planningLayerEnabled(const QString &role) const
 {
+    if (role == "scan" && record_->scanTopic.isEmpty())
+        return false;
     return !project_ || project_->isLayerEnabled(role);
 }
 
 QVariantMap ReplayController::planningLayers() const
 {
     QVariantMap layers;
+    if (!record_->scanTopic.isEmpty())
+        layers.insert("scan", QVariantMap{{"topic", record_->scanTopic}, {"enabled", planningLayerEnabled("scan")}});
     for (const auto &overlay : record_->topicOverlays) {
         const auto &display = overlay.display;
         if (!display.plannerRole.isEmpty() && !overlay.samples.empty())
@@ -762,7 +787,7 @@ QVariantMap ReplayController::planningLayers() const
 
 void ReplayController::setPlanningLayerEnabled(const QString &role, bool enabled)
 {
-    if (loading_ || (role != "plan" && role != "corridor" && role != "goal" && role != "camera"))
+    if (loading_ || (role != "plan" && role != "corridor" && role != "goal" && role != "camera" && role != "scan"))
         return;
     auto document = projectSnapshot();
     document.setLayerEnabled(role, enabled);

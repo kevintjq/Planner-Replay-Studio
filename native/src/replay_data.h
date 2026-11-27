@@ -59,6 +59,9 @@ struct Recording {
     QString cloudTopic;
     QString odometryTopic;
     QString speedTopic, bodyFrame;
+    QString scanTopic;
+    QStringList scanTopics;
+    qint64 scanMaximumAge = 500'000'000;
     QString frameId;
     QStringList cloudTopics;
     QStringList odometryTopics;
@@ -98,13 +101,17 @@ struct LoadOptions {
     QString speedTopic, world, body, extrinsics;
     bool tfPose = false;
     double maximumGap = .5;
+    QString scanTopic;
+    double scanMaximumAge = .5;
+    bool autoScan = false;
 };
 
 using Cancel = std::function<bool()>;
 using Progress = std::function<void(double)>;
 
+QJsonObject inspectBag(const QString &path, const Cancel &cancel = {});
 std::optional<TopicMessage> inspectBagTopic(const QString &path, const QString &topic, qint64 stamp,
-                                            const Cancel &cancel = {});
+                                            const Cancel &cancel = {}, int arrayPage = 0);
 std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions &options = {},
                                          const Cancel &cancel = {}, const Progress &progress = {});
 std::shared_ptr<const Recording> makeDemo();

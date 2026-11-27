@@ -4,6 +4,7 @@
 #include "trajectory_controller.h"
 
 #include <QtConcurrentRun>
+#include <algorithm>
 #include <cmath>
 #include <exception>
 
@@ -16,6 +17,9 @@ TopicInspector::TopicInspector(ReplayController &controller, PreviewImages &imag
             return;
         current_ = latest;
         cancelled_ = true;
+        topic_.clear();
+        page_ = 0;
+        pageCount_ = 1;
         status_.clear();
         fields_.clear();
         hasImage_ = false;
@@ -30,6 +34,8 @@ TopicInspector::TopicInspector(ReplayController &controller, PreviewImages &imag
                 const auto relative = double(item.stamp - current_->recordedOrigin) / 1.e9;
                 status_ = tr("%1 · %2 s").arg(item.type, QString::number(relative, 'f', 3));
                 fields_ = item.fields;
+                page_ = pendingPage_;
+                pageCount_ = std::max(pageCount_, item.arrayPageCount);
                 hasImage_ = !item.image.isNull();
                 if (hasImage_) {
                     images_.setImage(item.image);
@@ -38,6 +44,8 @@ TopicInspector::TopicInspector(ReplayController &controller, PreviewImages &imag
             } else {
                 status_ = result.error.isEmpty() ? tr("播放位置之前没有这一路消息。") : result.error;
                 fields_.clear();
+                page_ = 0;
+                pageCount_ = 1;
                 hasImage_ = false;
             }
         }
@@ -65,15 +73,32 @@ void TopicInspector::inspect(const QString &topic)
 {
     if (working_ || replay_.loading() || !current_->topics.contains(topic) || replay_.bagPath().isEmpty())
         return;
+    topic_ = topic;
+    stamp_ = current_->recordedOrigin + qint64(std::llround(replay_.position() * 1.e9));
+    page_ = 0;
+    pageCount_ = 1;
+    fields_.clear();
+    hasImage_ = false;
+    read(0);
+}
+
+void TopicInspector::setArrayPage(int page)
+{
+    if (!working_ && !replay_.loading() && !topic_.isEmpty() && page >= 0 && page < pageCount_ && page != page_)
+        read(page);
+}
+
+void TopicInspector::read(int page)
+{
     const auto path = replay_.bagPath();
-    const auto stamp = current_->recordedOrigin + qint64(std::llround(replay_.position() * 1.e9));
+    pendingPage_ = page;
     cancelled_ = false;
     working_ = true;
     status_ = tr("正在读取录包消息…");
     emit changed();
-    watcher_.setFuture(QtConcurrent::run([this, path, topic, stamp]() -> Result {
+    watcher_.setFuture(QtConcurrent::run([this, path, topic = topic_, stamp = stamp_, page]() -> Result {
         try {
-            return {replay::inspectBagTopic(path, topic, stamp, [this] { return cancelled_.load(); }), {}};
+            return {replay::inspectBagTopic(path, topic, stamp, [this] { return cancelled_.load(); }, page), {}};
         } catch (const std::exception &error) {
             return {{}, QString::fromUtf8(error.what())};
         }

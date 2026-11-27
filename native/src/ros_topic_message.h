@@ -11,9 +11,10 @@ struct TopicMessage {
     QString fields;
     QImage image;
     qint64 stamp = 0;
+    int arrayPageCount = 1;
 };
 
 TopicMessage decodeTopicMessage(const QByteArray &type, const QByteArray &definition,
-                                QByteArrayView bytes, qint64 stamp);
+                                QByteArrayView bytes, qint64 stamp, int arrayPage = 0);
 
 }

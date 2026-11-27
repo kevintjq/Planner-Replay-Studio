@@ -26,6 +26,7 @@ public:
     void prepare();
     QString rootOf(const QString &frame) const;
     QStringList frames() const;
+    QStringList children() const { return edges_.keys(); }
     std::vector<qint64> sampleTimes(const QString &frame) const;
     std::optional<RigidTransform> lookup(const QString &target, const QString &source, qint64 stamp) const;
 

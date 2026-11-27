@@ -34,6 +34,9 @@ class ReplayController : public QObject {
     Q_PROPERTY(QStringList odometryTopics READ odometryTopics NOTIFY recordingChanged)
     Q_PROPERTY(QStringList speedTopics READ speedTopics NOTIFY recordingChanged)
     Q_PROPERTY(QString speedTopic READ speedTopic NOTIFY recordingChanged)
+    Q_PROPERTY(QStringList scanTopics READ scanTopics NOTIFY recordingChanged)
+    Q_PROPERTY(QString scanTopic READ scanTopic NOTIFY recordingChanged)
+    Q_PROPERTY(double scanMaximumAge READ scanMaximumAge NOTIFY recordingChanged)
     Q_PROPERTY(QString speedSelection READ speedSelection NOTIFY recordingChanged)
     Q_PROPERTY(bool tfPose READ tfPose NOTIFY recordingChanged)
     Q_PROPERTY(QString worldFrame READ worldFrame NOTIFY recordingChanged)
@@ -83,6 +86,10 @@ public:
     QStringList odometryTopics() const { return record_->odometryTopics; }
     QStringList speedTopics() const { return record_->speedTopics; }
     QString speedTopic() const { return record_->speedTopic; }
+    QStringList scanTopics() const { return record_->scanTopics; }
+    QString scanTopic() const { return record_->scanTopic; }
+    double scanMaximumAge() const { return double(record_->scanMaximumAge) / 1.e9; }
+    Q_INVOKABLE void setScanOptions(const QString &topic, double maximumAge);
     QString speedSelection() const;
     bool tfPose() const { return record_->tfPose; }
     QString worldFrame() const { return record_->frameId; }

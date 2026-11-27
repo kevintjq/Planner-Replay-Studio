@@ -71,6 +71,24 @@ ColumnLayout {
         source: pane.inspector.preview
         cache: false
     }
+    RowLayout {
+        Layout.fillWidth: true
+        visible: pane.inspector.arrayPageCount > 1
+        Button {
+            text: "上一页"
+            enabled: !pane.inspector.working && pane.inspector.arrayPage > 0
+            onClicked: pane.inspector.setArrayPage(pane.inspector.arrayPage - 1)
+        }
+        Label {
+            Layout.fillWidth: true
+            text: "数组 " + (pane.inspector.arrayPage + 1) + " / " + pane.inspector.arrayPageCount
+        }
+        Button {
+            text: "下一页"
+            enabled: !pane.inspector.working && pane.inspector.arrayPage + 1 < pane.inspector.arrayPageCount
+            onClicked: pane.inspector.setArrayPage(pane.inspector.arrayPage + 1)
+        }
+    }
     ScrollView {
         Layout.fillWidth: true
         Layout.fillHeight: true

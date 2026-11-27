@@ -11,6 +11,7 @@
 - 打开 ROS1 bag，选择 `PointCloud2` 和 `Odometry` 话题。支持配准点云，以及里程计机体坐标系中的点云。后者需要同步位姿。
 - 点击播放或拖动时间轴。左键旋转视口，右键平移，滚轮缩放。距离颜色以当前机体位置为基准。
 - 主视口可切换地图总览、前后左右跟随、高低位、环绕、稳定 FPV 和原始 FPV。主视角随项目保存。可添加附加点云机位，在画面拖动位置并编辑大小、缩放和叠加内容。
+- 在「当前扫描设置」选择 PointCloud2、LaserScan 或 Livox CustomMsg 话题，设置最大保留时间。选择主点云话题时，高亮最新一帧。
 - 在「缩窗动画」选择主点云、附加机位、实拍、图片、文字或速度表。设置放大区间的起点、位置、宽度和缩窗时长后，将播放头移到缩窗时刻并添加标记。动画随项目保存。
 - EGO 和 SUPER 的常见占据地图话题默认整图替换。可从 Odometry 或 TF 读取位姿，并选用独立 Twist、TwistStamped 或 Odometry 速度话题。旧项目引用的外参 JSON 也会用于坐标变换。
 - bag 支持无压缩、BZ2 和 LZ4。预览版每块最多 256 MiB，每个所选点云话题最多载入 1600 万有效点，不做自动降采样。
@@ -58,3 +59,5 @@
 ## 构建
 
 需要 CMake 3.22、支持 C++20 的编译器、Qt 6.8 或更高版本（含 Qt Multimedia），以及 BZip2、LZ4、yaml-cpp 和含 tracking、videoio 的 OpenCV 4.8 或更高版本。在 Windows 上可通过 vcpkg 的 `x64-windows-static-md` 安装压缩库。生成安装包还需要 NSIS。构建和安装测试命令见 [Windows 构建流程](../.github/workflows/native-windows.yml)。
+
+`PlannerReplayCli inspect recording.bag` 输出 JSON，包含话题类型、消息数量、录制时间范围和 TF 坐标系关系。Windows 安装后可在安装目录的 `app` 文件夹运行。

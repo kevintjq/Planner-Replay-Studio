@@ -82,6 +82,7 @@ public:
             corridor_ = view->controller_->planningLayerEnabled("corridor");
             goal_ = view->controller_->planningLayerEnabled("goal");
             cameraFrustum_ = view->controller_->planningLayerEnabled("camera");
+            currentScan_ = view->controller_->planningLayerEnabled("scan");
             comparePlans_ = view->controller_->comparePlans();
         }
         yaw_ = view->yaw_;
@@ -143,11 +144,24 @@ public:
         program_.setUniformValue("solid", false);
         program_.setUniformValue("tfAxes", false);
 
-        if (recording_->showMainCloud && cloud_ && cloud_->buffer.isCreated()) {
-            upload(frame.end);
-            bind(cloud_->buffer);
-            const int from = recording_->replace ? frame.first : 0;
-            gl->glDrawArrays(GL_POINTS, from, frame.end - from);
+        if (cloud_ && cloud_->buffer.isCreated()) {
+            if (recording_->showMainCloud) {
+                upload(frame.end);
+                bind(cloud_->buffer);
+                const int from = recording_->replace ? frame.first : 0;
+                gl->glDrawArrays(GL_POINTS, from, frame.end - from);
+            }
+            if (scan_ && currentScan_ && recording_->scanTopic == recording_->cloudTopic &&
+                frame.stamp <= stamp_ && stamp_ - frame.stamp < recording_->scanMaximumAge) {
+                upload(frame.end);
+                bind(cloud_->buffer);
+                program_.setUniformValue("solid", true);
+                program_.setUniformValue("fixedColor", QVector3D(1.f, .65f, .39f));
+                program_.setUniformValue("pixelSize", pointSize_ + 1.f);
+                gl->glDepthFunc(GL_LEQUAL);
+                gl->glDrawArrays(GL_POINTS, frame.first, frame.end - frame.first);
+                gl->glDepthFunc(GL_LESS);
+            }
         }
         drawTopicOverlays(gl, camera);
         program_.setUniformValue("tfAxes", false);
@@ -206,7 +220,8 @@ private:
         for (size_t i = 0; i < recording_->topicOverlays.size(); ++i) {
             const auto &overlay = recording_->topicOverlays[i];
             const auto &role = overlay.display.plannerRole;
-            if ((auxiliary_ && overlay.display.mainOnly) || (overlay.display.kind == "laser" && !scan_))
+            if ((auxiliary_ && overlay.display.mainOnly) || (overlay.display.kind == "laser" && !scan_) ||
+                (role == "scan" && (!scan_ || !currentScan_)))
                 continue;
             if ((role == "plan" && !plan_) || (role == "corridor" && !corridor_) || (role == "goal" && !goal_) ||
                 (role == "camera" && !cameraFrustum_))
@@ -299,7 +314,9 @@ private:
             if (cloud_->buffer.create()) {
                 cloud_->buffer.bind();
                 cloud_->buffer.setUsagePattern(QOpenGLBuffer::DynamicDraw);
-                cloud_->buffer.allocate(recording_->showMainCloud ? int(recording_->points.size() * sizeof(Point)) : 0);
+                const bool useCloud = recording_->showMainCloud ||
+                    (!recording_->scanTopic.isEmpty() && recording_->scanTopic == recording_->cloudTopic);
+                cloud_->buffer.allocate(useCloud ? int(recording_->points.size() * sizeof(Point)) : 0);
                 sharedVertices = cloud_;
             }
         }
@@ -394,7 +411,7 @@ private:
     std::vector<OverlayBuffer> overlays_, comparisons_;
     bool initialized_ = false, ready_ = false, needsStorage_ = false, showPath_ = true, transparent_ = false;
     int camera_ = 0;
-    bool auxiliary_ = false, scan_ = true;
+    bool auxiliary_ = false, scan_ = true, currentScan_ = false;
     bool plan_ = true, corridor_ = true, goal_ = true, cameraFrustum_ = true, comparePlans_ = false;
     qint64 stamp_ = 0;
     float yaw_ = 0, pitch_ = 0, scale_ = 1, pointSize_ = 2, panX_ = 0, panY_ = 0;

@@ -98,8 +98,14 @@ qsizetype fixedSize(const QString &type)
     return 0;
 }
 
+struct DecodePage {
+    quint32 offset = 0;
+    quint32 largestArray = 0;
+    qsizetype remaining = 12'000;
+};
+
 QJsonValue decodeValue(Reader &input, const Definitions &schema, const QString &type, int depth,
-                       qsizetype &remaining, bool collect)
+                       DecodePage &page, bool collect)
 {
     if (depth > 24)
         throw std::runtime_error("ROS schema nesting is too deep.");
@@ -128,11 +134,11 @@ QJsonValue decodeValue(Reader &input, const Definitions &schema, const QString &
     for (const auto &field : *fields) {
         const auto fieldType = fixedSize(field.type) || field.type == "string" || field.type.contains('/')
             ? field.type : type.section('/', 0, -2) + '/' + field.type;
-        const bool output = collect && remaining > 0;
+        const bool output = collect && page.remaining > 0;
         if (field.count == -2) {
             if (output)
-                --remaining;
-            auto value = decodeValue(input, schema, fieldType, depth+1, remaining, output);
+                --page.remaining;
+            auto value = decodeValue(input, schema, fieldType, depth + 1, page, output);
             if (output)
                 object.insert(field.name, value);
             continue;
@@ -141,21 +147,31 @@ QJsonValue decodeValue(Reader &input, const Definitions &schema, const QString &
         const auto width = fixedSize(fieldType);
         if (!width && count > 1'000'000)
             throw std::runtime_error("ROS message contains too many nested values.");
+        const auto start = count > ArrayPage ? std::min(count, page.offset) : 0u;
+        const auto stop = start + std::min(count - start, ArrayPage);
         QJsonArray items;
         quint32 index = 0;
-        for (; output && index < count && index < ArrayPage && remaining > 0; ++index) {
-            --remaining;
-            items.append(decodeValue(input, schema, fieldType, depth+1, remaining, true));
-        }
-        if (width) {
-            input.take(qsizetype(count - index) * width);
-        } else {
-            for (auto i = index; i < count; ++i)
-                decodeValue(input, schema, fieldType, depth+1, remaining, false);
-        }
         if (output) {
-            if (index < count)
-                object.insert(field.name, QJsonObject{{"total", qint64(count)}, {"firstItems", items}});
+            page.largestArray = std::max(page.largestArray, count);
+            if (width)
+                input.take(qsizetype(start) * width);
+            else
+                for (; index < start; ++index)
+                    decodeValue(input, schema, fieldType, depth + 1, page, false);
+            index = start;
+            for (; index < stop && page.remaining > 0; ++index) {
+                --page.remaining;
+                items.append(decodeValue(input, schema, fieldType, depth + 1, page, true));
+            }
+        }
+        if (width)
+            input.take(qsizetype(count - index) * width);
+        else
+            for (; index < count; ++index)
+                decodeValue(input, schema, fieldType, depth + 1, page, false);
+        if (output) {
+            if (start > 0 || items.size() < count)
+                object.insert(field.name, QJsonObject{{"total", qint64(count)}, {"offset", qint64(start)}, {"items", items}});
             else
                 object.insert(field.name, items);
         }
@@ -209,7 +225,8 @@ QImage decodeImage(const QString &type, QByteArrayView bytes)
 }
 }
 
-TopicMessage decodeTopicMessage(const QByteArray &type, const QByteArray &definition, QByteArrayView bytes, qint64 stamp)
+TopicMessage decodeTopicMessage(const QByteArray &type, const QByteArray &definition, QByteArrayView bytes, qint64 stamp,
+                                int arrayPage)
 {
     TopicMessage result{QString::fromUtf8(type), {}, {}, stamp};
     try {
@@ -220,8 +237,10 @@ TopicMessage decodeTopicMessage(const QByteArray &type, const QByteArray &defini
     try {
         const auto schema = parseDefinition(result.type, definition);
         Reader reader(bytes);
-        qsizetype remaining = 12'000;
-        const auto parsed = decodeValue(reader, schema, result.type, 0, remaining, true);
+        DecodePage page{quint32(std::clamp<qint64>(qint64(arrayPage) * ArrayPage, 0,
+                                                  std::numeric_limits<quint32>::max()))};
+        const auto parsed = decodeValue(reader, schema, result.type, 0, page, true);
+        result.arrayPageCount = std::max(1, int((quint64(page.largestArray) + ArrayPage - 1) / ArrayPage));
         result.fields = QString::fromUtf8(QJsonDocument(parsed.toObject()).toJson(QJsonDocument::Indented));
     } catch (const std::runtime_error &) {
         const auto prefix = bytes.first(std::min(bytes.size(), qsizetype(512))).toByteArray().toHex(' ');

@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 import tkinter as tk
 
+from .desktop_style import BLUE, HAIRLINE, INK, MUTED, PANEL, SELECTED, SURFACE
+
 
 TRACK_COLORS = {
     "video": ("#D9E7FD", "#3872CB"),
@@ -30,7 +32,7 @@ class Timeline(tk.Canvas):
 
     def __init__(self, parent, seek, apply_interval, font, jump=None, *, select, marker_menu, add_marker, scrub, move_layout, layout_menu, clip_menu):
         super().__init__(parent, height=self.track_top + self.row_height*self.visible_tracks + 3,
-                         bg="#FFFFFF", highlightthickness=0)
+                         bg=PANEL, highlightthickness=0)
         self.seek, self.jump = seek, jump or seek
         self.select, self.apply_interval = select, apply_interval
         self.marker_menu, self.add_marker = marker_menu, add_marker
@@ -83,13 +85,13 @@ class Timeline(tk.Canvas):
     def draw(self):
         self.delete("all")
         x0, x1 = self.x(self.start), self.x(self.start+self.duration)
-        self.create_text(9, 13, anchor="w", text="合成时间轴", font=(self.face, 9, "bold"), fill="#34445C")
-        self.create_text(x1, 13, anchor="e", font=(self.face, 9), fill="#34445C", tags="playhead-time")
-        self.create_line(x0, 39, x1, 39, fill="#DCE7F6", width=5)
+        self.create_text(9, 13, anchor="w", text="合成时间轴", font=(self.face, 9, "bold"), fill=INK)
+        self.create_text(x1, 13, anchor="e", font=(self.face, 9), fill=INK, tags="playhead-time")
+        self.create_line(x0, 39, x1, 39, fill=HAIRLINE, width=4, capstyle="round")
         for index in range(6):
             value = self.start + self.duration*index/5
-            self.create_text(self.x(value), 27, text=f"{value:.2f}", font=(self.face, 8), fill="#61758E")
-        self.create_text(9, 52, anchor="w", text="事件 / 布局", font=(self.face, 8), fill="#61758E")
+            self.create_text(self.x(value), 27, text=f"{value:.2f}", font=(self.face, 8), fill=MUTED)
+        self.create_text(9, 52, anchor="w", text="事件 / 布局", font=(self.face, 8), fill=MUTED)
         for time, label in self.events:
             if self.visible(time):
                 x = self.x(time)
@@ -104,7 +106,7 @@ class Timeline(tk.Canvas):
                 x = self.x(marker.time)
                 self.create_polygon(x-5, 50, x, 46, x+5, 50, x, 56, fill="#FFB849", outline="#9F580E")
         if self.motions:
-            self.create_text(9, 72, anchor="w", text="图层缩窗", font=(self.face, 8), fill="#61758E")
+            self.create_text(9, 72, anchor="w", text="图层缩窗", font=(self.face, 8), fill=MUTED)
         for motion in self.motions:
             time = self.draft if self.layout_drag == motion else motion.time
             shift = time - motion.time
@@ -118,12 +120,12 @@ class Timeline(tk.Canvas):
             self.draw_track(track, row, x0, x1)
         if not self.tracks:
             self.create_text(x0, self.track_top + 15, anchor="w", text="导入视频后，拖动片段两端裁剪。",
-                             font=(self.face, 9), fill="#61758E")
+                             font=(self.face, 9), fill=MUTED)
         elif len(self.tracks) > self.visible_tracks:
             self.create_text(9, self.track_top+self.row_height*self.visible_tracks-1,
-                             anchor="sw", text="滚轮查看更多", font=(self.face, 7), fill="#61758E")
-        self.create_line(0, 0, 0, 0, fill="#2165D9", width=1, tags="playhead-line")
-        self.create_oval(0, 0, 0, 0, fill="#2165D9", outline="#FFFFFF", tags="playhead-dot")
+                             anchor="sw", text="滚轮查看更多", font=(self.face, 7), fill=MUTED)
+        self.create_line(0, 0, 0, 0, fill=BLUE, width=1, tags="playhead-line")
+        self.create_oval(0, 0, 0, 0, fill=BLUE, outline=PANEL, tags="playhead-dot")
         self.update_playhead(self.time)
 
     def update_playhead(self, time):
@@ -138,9 +140,9 @@ class Timeline(tk.Canvas):
         y = self.track_top + row*self.row_height
         selected = track.key == self.selected
         self.create_rectangle(2, y, x1, y+self.row_height-2, outline="",
-                              fill="#F1F5FD" if selected else "#F7F8FB")
+                              fill=SELECTED if selected else SURFACE)
         name = track.title if len(track.title) <= 12 else track.title[:11]+"…"
-        self.create_text(9, y+11, text=name, anchor="w", font=(self.face, 8), fill="#34445C")
+        self.create_text(9, y+11, text=name, anchor="w", font=(self.face, 8), fill=INK)
         segments = track.segments or ((track.start, track.end),)
         for i, (first, last) in enumerate(segments):
             active = selected and (self.active_segment == (track.key, i) or len(segments) == 1)
@@ -150,10 +152,14 @@ class Timeline(tk.Canvas):
             if right <= left:
                 continue
             fill, stroke = TRACK_COLORS[track.key[0]]
-            self.create_rectangle(left, y+3, right, y+20, fill=fill, outline=stroke if active else "",
-                                  width=2 if active else 1)
+            top, bottom = y+3, y+20
+            radius = min(5., (right-left)/2)
+            self.create_polygon(left+radius, top, right-radius, top, right, top, right, top+radius,
+                                right, bottom-radius, right, bottom, right-radius, bottom, left+radius, bottom,
+                                left, bottom, left, bottom-radius, left, top+radius, left, top,
+                                smooth=True, fill=fill, outline=stroke if active else "", width=2 if active else 1)
             if right-left > 76:
-                self.create_text((left+right)/2, y+11, text=name, font=(self.face, 8), fill="#263950")
+                self.create_text((left+right)/2, y+11, text=name, font=(self.face, 8), fill=INK)
             if active:
                 for x in (left, right):
                     self.create_line(x, y+6, x, y+17, fill=stroke, width=3)

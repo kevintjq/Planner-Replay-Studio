@@ -9,6 +9,7 @@ from tkinter import messagebox, ttk
 
 from PIL import Image, ImageTk
 
+from .desktop_style import FOCUS, PREVIEW
 from .footage import FULL_FRAME, VideoEdit, VideoReader
 
 
@@ -157,7 +158,7 @@ class VideoEditor:
             self.save()
 
     def make_canvas(self, content, column):
-        canvas = tk.Canvas(content, bg="#0b1321", highlightthickness=0, width=320, height=240)
+        canvas = tk.Canvas(content, bg=PREVIEW, highlightthickness=0, width=320, height=240)
         canvas.grid(row=1, column=column, sticky="nsew", padx=(0, 5) if column == 0 else (5, 0))
         canvas.bind("<Configure>", lambda _: self.draw())
         return canvas
@@ -414,7 +415,7 @@ class VideoEditor:
         x, y, w, h = self.clip_bounds
         left, top, right, bottom = box
         self.clip_canvas.create_rectangle(x + left*w, y + top*h, x + right*w, y + bottom*h,
-                                          width=2, outline="#62e3f4", tags="crop")
+                                          width=2, outline=FOCUS, tags="crop")
 
     def reset_crop(self):
         self.edit = replace(self.edit, crop=FULL_FRAME)

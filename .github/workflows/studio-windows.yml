@@ -200,4 +200,25 @@ jobs:
           gh release create "$tag" installer/PlannerReplayStudio-Setup.exe \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest \
             --title "Planner Replay Studio v$VERSION — Complete Windows Workspace" \
-            --notes "Edit fixed-camera motion ghosts in the workspace, remove or restore individual samples, and adjust interval or opacity without retracking. Layer, topic, and export settings now open inline."
+            --notes "Unified light workspace, inline settings, and faster motion-ghost editing. Remove or restore individual samples and adjust interval or opacity without retracking."
+      - name: Retire superseded downloads after the new installer is available
+        if: needs.package.outputs.version == '0.4.2'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.package.outputs.version }}
+        run: |
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
+          test "$current" = "$GITHUB_SHA"
+          tag="studio-v$VERSION"
+          expected=$(stat -c %s installer/PlannerReplayStudio-Setup.exe)
+          uploaded=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" \
+            --jq 'select(.draft == false) | .assets[] | select(.name == "PlannerReplayStudio-Setup.exe" and .state == "uploaded") | .size')
+          test "$expected" = "$uploaded"
+          releases=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[].tag_name')
+          for older in native-v0.1.1 studio-v0.2.1 studio-v0.3.0 studio-v0.3.1 studio-v0.3.2 studio-v0.4.0 studio-v0.4.1; do
+            if grep -Fxq "$older" <<< "$releases"; then
+              gh release delete "$older" --repo "$GITHUB_REPOSITORY" --yes
+            fi
+          done
+          remaining=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[].tag_name')
+          test "$remaining" = "$tag"

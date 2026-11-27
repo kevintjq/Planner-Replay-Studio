@@ -21,7 +21,7 @@ from .composition import (
     LAYOUT_NAMES, VIDEO_LAYOUTS, INSET_TRANSITION_SECONDS, MAX_CAMERA_ZOOM, MIN_CAMERA_ZOOM, Composition, LayerMotion, LayoutCue, TimelineMarker, compose,
     inset_placement, placement_axis, rounded_mask, view_overlays,
 )
-from .desktop_style import INK, desktop_style
+from .desktop_style import INK, PANEL, SURFACE, desktop_style
 from .timeline import Timeline
 from .topic_panel import TopicPanel
 from .topic_displays import DISPLAY_TYPES, INSPECTOR_TYPES
@@ -89,22 +89,24 @@ class RendererApp(LayerControls):
         self.disabled_controls = []
 
         root.title("Planner Replay Studio")
-        root.geometry("1310x850")
+        root.geometry("1360x880")
         root.minsize(1000, 720)
         root.protocol("WM_DELETE_WINDOW", self.close)
         self.font, self.style_photos = desktop_style(root)
 
-        workspace = ttk.Frame(root, padding=18, style="Shell.TFrame")
+        workspace = ttk.Frame(root, padding=(18, 14), style="Shell.TFrame")
         workspace.pack(fill="both", expand=True)
         workspace.columnconfigure(1, weight=1)
         workspace.rowconfigure(1, weight=1)
         header = ttk.Frame(workspace, style="Shell.TFrame")
         header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 15))
-        ttk.Label(header, text="Planner Replay", style="Title.TLabel").pack(side="left")
-        ttk.Label(header, text="无人机规划回放与视频合成", style="Subtitle.TLabel").pack(side="left", padx=13)
+        identity = ttk.Frame(header, style="Shell.TFrame")
+        identity.pack(side="left")
+        ttk.Label(identity, text="Planner Replay Studio", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(identity, text="无人机规划回放与视频合成", style="Subtitle.TLabel").pack(anchor="w")
         ttk.Button(header, text="导出项目文件夹", command=self.export_workspace,
                    style="Shell.TButton").pack(side="right")
-        ttk.Button(header, text="保存项目", command=self.save_workspace, style="Shell.TButton").pack(side="right", padx=6)
+        ttk.Button(header, text="保存项目", command=self.save_workspace, style="Shell.Primary.TButton").pack(side="right", padx=6)
         ttk.Button(header, text="打开项目", command=self.open_workspace, style="Shell.TButton").pack(side="right")
 
         self.form = ttk.Frame(workspace, style="Shell.TFrame")
@@ -117,14 +119,13 @@ class RendererApp(LayerControls):
         preview_header.pack(fill="x", pady=(0, 8))
         self.preview_label = ttk.Label(preview_header, text="画面预览", style="PanelTitle.TLabel")
         self.preview_label.pack(side="left")
-        ttk.Label(preview_header, text="点云画面上滚轮缩放", style="Quiet.TLabel").pack(side="left", padx=10)
         self.transparent_canvas = tk.BooleanVar(value=False)
         ttk.Checkbutton(preview_header, text="透明画布", variable=self.transparent_canvas,
                         command=self.toggle_canvas).pack(side="right")
         self.overlay_label = ttk.Label(viewer, textvariable=self.overlay_status, style="Quiet.TLabel",
                                        justify="left", wraplength=700)
         self.overlay_label.pack(fill="x", pady=(0, 4))
-        self.canvas = tk.Canvas(viewer, bg="#F8F9FB", highlightthickness=0, width=460, height=365)
+        self.canvas = tk.Canvas(viewer, bg=SURFACE, highlightthickness=0, width=460, height=365)
         self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Configure>", self.resize_preview)
         self.canvas.bind("<ButtonPress-1>", self.start_drag)
@@ -504,6 +505,9 @@ class RendererApp(LayerControls):
             widget.destroy()
 
     def make_form(self):
+        sidebar_title = ttk.Frame(self.form, style="Shell.TFrame")
+        sidebar_title.pack(fill="x", pady=(0, 6))
+        ttk.Label(sidebar_title, text="工作台", style="ShellSection.TLabel").pack(side="left")
         shortcuts = ttk.Frame(self.form, style="Shell.TFrame")
         shortcuts.pack(fill="x", pady=(0, 8))
         for label, command in (("线条与标记", self.edit_render_marks),
@@ -512,35 +516,40 @@ class RendererApp(LayerControls):
             ttk.Button(shortcuts, text=label, command=command,
                        style="Shell.TButton").pack(side="left", padx=(0, 5))
 
-        nav = ttk.Notebook(self.form)
+        segments = ttk.Frame(self.form, style="Shell.TFrame")
+        segments.pack(fill="x", pady=(0, 6))
+        nav = ttk.Notebook(self.form, style="Workbench.TNotebook")
         nav.pack(fill="both", expand=True)
         self.nav = nav
         self.settings_page = ttk.Frame(nav, padding=12)
         self.settings_return = None
         data = ttk.Frame(nav, padding=(6, 8))
         quality, camera, footage = (ttk.Frame(nav, padding=12) for _ in range(3))
+        section_buttons = {}
         for panel, name in zip((data, quality, camera, footage), ("数据", "画质", "相机", "图层")):
             nav.add(panel, text=name)
             panel.columnconfigure(1, weight=1)
+            button = ttk.Button(segments, text=name, style="Segment.TButton", command=lambda page=panel: nav.select(page))
+            button.pack(side="left", fill="x", expand=True, padx=(0, 3))
+            section_buttons[str(panel)] = button
+
+        def active_section(_event=None):
+            selected = nav.select()
+            for page, button in section_buttons.items():
+                button.state(["selected" if page == selected else "!selected"])
+
+        nav.bind("<<NotebookTabChanged>>", active_section)
+        active_section()
         self.data_nav = ttk.Notebook(data)
         self.data_nav.pack(fill="both", expand=True)
-        source = ttk.Frame(self.data_nav, padding=(8, 5))
-        source.columnconfigure(1, weight=1)
-        self.data_nav.add(source, text="数据来源")
+        source_tab = ttk.Frame(self.data_nav)
+        self.data_nav.add(source_tab, text="数据来源")
         self.spatial_tab = ttk.Frame(self.data_nav)
         self.data_nav.add(self.spatial_tab, text="空间叠加")
         self.topic_panel = TopicPanel(self.data_nav, self)
         self.data_nav.add(self.topic_panel, text="话题显示")
-        spatial_canvas = tk.Canvas(self.spatial_tab, bg="#FFFFFF", highlightthickness=0, width=1, height=1)
-        spatial_scroll = ttk.Scrollbar(self.spatial_tab, orient="vertical", command=spatial_canvas.yview)
-        spatial_canvas.configure(yscrollcommand=spatial_scroll.set)
-        spatial_scroll.pack(side="right", fill="y")
-        spatial_canvas.pack(side="left", fill="both", expand=True)
-        spatial = ttk.Frame(spatial_canvas, padding=(8, 5))
-        spatial.columnconfigure(1, weight=1)
-        spatial_window = spatial_canvas.create_window(0, 0, anchor="nw", window=spatial)
-        spatial.bind("<Configure>", lambda _: spatial_canvas.configure(scrollregion=spatial_canvas.bbox("all")))
-        spatial_canvas.bind("<Configure>", lambda event: spatial_canvas.itemconfigure(spatial_window, width=event.width))
+        source, source_canvas = self.scrolling_form(source_tab)
+        spatial, spatial_canvas = self.scrolling_form(self.spatial_tab)
 
         self.bag_name = tk.StringVar(value="未选择 ROS1 bag")
         ttk.Button(source, text="打开 .bag", command=self.select_bag).grid(
@@ -612,19 +621,33 @@ class RendererApp(LayerControls):
 
         self.make_layer_panel(footage)
         self.make_spatial_panel(spatial)
-        for widget in (spatial_canvas, spatial, *spatial.winfo_children()):
-            if not isinstance(widget, ttk.Combobox):
-                widget.bind("<MouseWheel>", lambda event: spatial_canvas.yview_scroll(
-                    -1 if event.delta > 0 else 1, "units"))
+        for panel, scroll_canvas in ((spatial, spatial_canvas), (source, source_canvas)):
+            for widget in (scroll_canvas, panel, *panel.winfo_children()):
+                if not isinstance(widget, ttk.Combobox):
+                    widget.bind("<MouseWheel>", lambda event, canvas=scroll_canvas: canvas.yview_scroll(
+                        -1 if event.delta > 0 else 1, "units"))
 
-        actions = ttk.Frame(self.form, style="Shell.TFrame")
-        actions.pack(fill="x", pady=(10, 0))
+        actions = self.form_actions = ttk.Frame(self.form, style="Shell.TFrame")
+        actions.pack(side="bottom", fill="x", pady=(8, 0), before=nav)
         ttk.Button(actions, text="生成预览", style="Shell.TButton", command=lambda: self.start_render(True)).pack(side="left")
         ttk.Button(actions, text="导出 1080p · 60 fps", style="Shell.Primary.TButton",
                    command=lambda: self.start_render(False)).pack(side="right")
         ttk.Button(actions, text="更多设置", style="Shell.TButton",
                    command=lambda: self.start_render(False, advanced=True)).pack(side="right", padx=3)
         self.sync_odometry()
+
+    def scrolling_form(self, page):
+        canvas = tk.Canvas(page, bg=PANEL, highlightthickness=0, width=1, height=1)
+        scrollbar = ttk.Scrollbar(page, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        panel = ttk.Frame(canvas, padding=(8, 5))
+        panel.columnconfigure(1, weight=1)
+        window = canvas.create_window(0, 0, anchor="nw", window=panel)
+        panel.bind("<Configure>", lambda _: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(window, width=event.width))
+        return panel, canvas
 
     def make_spatial_panel(self, panel):
         self.spatial_panel = panel
@@ -1653,7 +1676,7 @@ class RendererApp(LayerControls):
         self.resize_handle = None
         width, height = self.canvas.winfo_width(), self.canvas.winfo_height()
         if self.frame is None:
-            self.canvas.create_rectangle(14, 18, width-14, height-18, fill="#F3F6FB", width=0)
+            self.canvas.create_rectangle(14, 18, width-14, height-18, fill=SURFACE, width=0)
             self.canvas.create_text(width / 2, height / 2, text="打开 bag 或使用模拟数据",
                                     fill=INK, font=(self.font, 12))
             return

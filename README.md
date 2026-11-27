@@ -24,7 +24,7 @@
 
 ## Quick start
 
-1. [Download the Windows x64 installer](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.4.1/PlannerReplayStudio-Setup.exe), run it, and open **Planner Replay Studio Full** from the Start menu. The default folder is `%LOCALAPPDATA%\Programs\Planner Replay Studio Full`. You can change it during setup and opt in to a desktop shortcut.
+1. [Download the Windows x64 installer](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.4.2/PlannerReplayStudio-Setup.exe), run it, and open **Planner Replay Studio Full** from the Start menu. The default folder is `%LOCALAPPDATA%\Programs\Planner Replay Studio Full`. You can change it during setup and opt in to a desktop shortcut.
 2. In **Data**, open a ROS1 `.bag` or choose **Use simulated data**. Confirm the cloud and pose topics, select views, and generate a preview.
 3. Add footage, images, or text under **Layers**. Drag to place and resize layers in the preview. Set visibility intervals and transitions on the timeline.
 

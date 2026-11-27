@@ -6,7 +6,7 @@
 
 ## Quick start
 
-[Download the complete Windows setup EXE](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.4.1/PlannerReplayStudio-Setup.exe) and open **Planner Replay Studio Full** from the Start menu.
+[Download the complete Windows setup EXE](https://github.com/kevintjq/Planner-Replay-Studio/releases/download/studio-v0.4.2/PlannerReplayStudio-Setup.exe) and open **Planner Replay Studio Full** from the Start menu.
 
 Open a ROS1 `.bag` under **Data** or choose **Use simulated data**. Pick views and layers, then generate a preview.
 

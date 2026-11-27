@@ -6,23 +6,34 @@ from tkinter import ttk
 from PIL import Image, ImageDraw, ImageTk
 
 
-SHELL = "#F2F2F7"
+SHELL = "#EAEDF3"
 PANEL = "#FFFFFF"
-INK = "#1D1D1F"
-MUTED = "#626268"
-BLUE = "#007AFF"
+INK = "#20232C"
+MUTED = "#5F6878"
+BLUE = "#1769DE"
+SURFACE = "#F4F6FA"
+HAIRLINE = "#DCE3EE"
+SELECTED = "#E3EEFF"
+PREVIEW = "#131924"
+FOCUS = "#69DCFF"
 
 
 def desktop_style(root):
     style = ttk.Style(root)
     style.theme_use("clam")
+    root.configure(background=SHELL)
+    root.option_add("*Menu.background", PANEL)
+    root.option_add("*Menu.foreground", INK)
+    root.option_add("*Menu.activeBackground", SELECTED)
+    root.option_add("*Menu.activeForeground", INK)
     font = "Microsoft YaHei UI" if sys.platform == "win32" else "Noto Sans CJK SC"
     style.configure(".", font=(font, 10), background=PANEL, foreground=INK)
     style.configure("Shell.TFrame", background=SHELL)
     style.configure("Shell.TLabel", background=SHELL, foreground=MUTED)
-    style.configure("Title.TLabel", background=SHELL, foreground=INK, font=(font, 23, "bold"))
+    style.configure("ShellSection.TLabel", background=SHELL, foreground=INK, font=(font, 11, "bold"))
+    style.configure("Title.TLabel", background=SHELL, foreground=INK, font=(font, 24, "bold"))
     style.configure("Subtitle.TLabel", background=SHELL, foreground=MUTED, font=(font, 10))
-    style.configure("PanelTitle.TLabel", font=(font, 12, "bold"), foreground=INK)
+    style.configure("PanelTitle.TLabel", font=(font, 13, "bold"), foreground=INK)
     style.configure("Quiet.TLabel", foreground=MUTED, font=(font, 9))
     style.configure("LayerReady.TLabel", foreground="#17734A", font=(font, 9))
     style.configure("LayerWarning.TLabel", foreground="#9B4E13", font=(font, 9))
@@ -30,12 +41,20 @@ def desktop_style(root):
     style.configure("TNotebook.Tab", padding=(11, 5), borderwidth=0, background=SHELL, foreground=MUTED)
     style.map("TNotebook.Tab", background=[("selected", PANEL), ("active", "#E7E9EE")],
               foreground=[("selected", BLUE)])
-    style.configure("TEntry", padding=4, bordercolor="#DADCE2", lightcolor=PANEL, darkcolor=PANEL)
-    style.configure("TCombobox", padding=4, bordercolor="#DADCE2", lightcolor=PANEL, darkcolor=PANEL)
-    style.map("TCombobox", fieldbackground=[("readonly", "#F5F5F8")])
-    style.configure("TProgressbar", background=BLUE, troughcolor="#E4E5EA", borderwidth=0)
-    style.configure("Treeview", borderwidth=0, rowheight=35, background="#F7F7FA", fieldbackground="#F7F7FA")
-    style.map("Treeview", background=[("selected", "#DCEAFF")], foreground=[("selected", "#174485")])
+    for widget in ("TEntry", "TCombobox"):
+        style.configure(widget, padding=5, bordercolor=HAIRLINE, lightcolor=PANEL, darkcolor=PANEL)
+        style.map(widget, bordercolor=[("focus", BLUE)], fieldbackground=[("readonly", SURFACE)])
+    style.configure("TCombobox", arrowcolor=MUTED, arrowsize=12)
+    style.configure("TProgressbar", background=BLUE, troughcolor=HAIRLINE, borderwidth=0)
+    style.configure("Treeview", borderwidth=0, rowheight=32, background=PANEL, fieldbackground=PANEL)
+    style.configure("Treeview.Heading", relief="flat", background=SURFACE, foreground=MUTED,
+                    padding=(8, 5), font=(font, 9, "bold"))
+    style.map("Treeview.Heading", background=[("active", HAIRLINE), ("pressed", SELECTED)])
+    style.map("Treeview", background=[("selected", SELECTED)], foreground=[("selected", "#124B9B")])
+    style.configure("TScale", troughcolor=HAIRLINE, background=BLUE, lightcolor=BLUE, darkcolor=BLUE,
+                    bordercolor=BLUE, sliderrelief="flat", sliderlength=14)
+    style.configure("TScrollbar", troughcolor=PANEL, background="#C9D3E2", bordercolor=PANEL,
+                    lightcolor="#C9D3E2", darkcolor="#C9D3E2", arrowcolor=MUTED, arrowsize=11)
 
     photos = []
 
@@ -71,7 +90,10 @@ def desktop_style(root):
     style.element_create("Workspace.card", "image", card, border=15, sticky="nsew")
     style.layout("Workspace.TFrame", [("Workspace.card", {"sticky": "nsew"})])
     style.layout("TNotebook", [("Workspace.card", {"sticky": "nsew"})])
-    idle, picked, hover = map(chip, (SHELL, PANEL, "#E9EBF1"))
+    style.layout("Workbench.TNotebook", [("Workspace.card", {"sticky": "nsew"})])
+    style.layout("Workbench.TNotebook.Tab", [])
+    style.configure("Workbench.TNotebook", tabmargins=0)
+    idle, picked, hover = map(chip, (SURFACE, SELECTED, HAIRLINE))
     style.element_create("Workspace.tab", "image", idle, ("selected", picked), ("active", hover),
                          border=8, sticky="nsew")
     style.layout("TNotebook.Tab", [("Workspace.tab", {"sticky": "nsew", "children": [
@@ -79,8 +101,8 @@ def desktop_style(root):
     ]})])
     style.layout("Treeview", [("Treeview.treearea", {"sticky": "nsew"})])
     for button, fills, foreground in (
-        ("TButton", ("#F0F0F5", "#E7E9F0", "#DDE0E7", "#F4F4F7"), INK),
-        ("Primary.TButton", (BLUE, "#0069E5", "#005DC8", "#BED7FB"), "#FFFFFF"),
+        ("TButton", (SURFACE, "#E8EDF7", "#DCE5F3", "#F3F5F8"), INK),
+        ("Primary.TButton", (BLUE, "#135CC7", "#104DA6", "#DCE8F9"), "#FFFFFF"),
     ):
         idle, hover, press, disabled = map(chip, fills)
         element = button.split(".")[0] + ".pill"
@@ -91,6 +113,14 @@ def desktop_style(root):
         ]})])
         style.configure(button, padding=(11, 5), foreground=foreground)
         style.map(button, foreground=[("disabled", "#848489"), ("!disabled", foreground)])
+    idle, selected, hover, pressed = map(chip, (SHELL, "#FFFFFF", "#E0E6F0", SELECTED))
+    style.element_create("Workspace.segment", "image", idle, ("selected", selected),
+                         ("pressed", pressed), ("active", hover), border=8, sticky="nsew")
+    style.layout("Segment.TButton", [("Workspace.segment", {"sticky": "nsew", "children": [
+        ("Button.padding", {"sticky": "nsew", "children": [("Button.label", {"sticky": "nsew"})]})
+    ]})])
+    style.configure("Segment.TButton", padding=(9, 7), foreground=MUTED, font=(font, 10, "bold"))
+    style.map("Segment.TButton", foreground=[("selected", BLUE), ("active", INK)])
     style.configure("Shell.TButton", background=SHELL)
     style.configure("Shell.Primary.TButton", background=SHELL)
     return font, photos

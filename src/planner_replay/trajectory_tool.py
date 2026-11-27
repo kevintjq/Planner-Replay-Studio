@@ -8,6 +8,7 @@ from tkinter import filedialog, ttk
 
 import av
 
+from .desktop_style import FOCUS, PREVIEW
 from .export_media import publish_output
 from .footage import VideoReader
 from .trajectory_image import TrajectoryComposer, track_motion
@@ -56,7 +57,7 @@ class TrajectoryTool:
         ttk.Button(frame_list, text="恢复全部", command=self.restore_frames).pack(fill="x")
         self.frame_list.bind("<Delete>", lambda _: self.remove_frame())
         self.frame_list.bind("<Double-1>", lambda _: self.toggle_frame())
-        self.canvas = tk.Canvas(split, bg="#101824", highlightthickness=0)
+        self.canvas = tk.Canvas(split, bg=PREVIEW, highlightthickness=0)
         self.canvas.pack(side="left", fill="both", expand=True)
         self.canvas.bind("<Configure>", lambda _: self.draw())
         self.canvas.bind("<ButtonPress-1>", self.press)
@@ -118,7 +119,7 @@ class TrajectoryTool:
         if self.result is None and self.bounds and region:
             x, y, w, h = self.bounds
             a, b, c, d = region
-            self.canvas.create_rectangle(x+a*w, y+b*h, x+c*w, y+d*h, outline="#70ECF1", width=2, tags="region")
+            self.canvas.create_rectangle(x+a*w, y+b*h, x+c*w, y+d*h, outline=FOCUS, width=2, tags="region")
 
     def point(self, event):
         x, y, w, h = self.bounds

@@ -268,6 +268,13 @@ ApplicationWindow {
                         }
                     }
 
+                    PanelTitle { text: "图片与文字"; Layout.topMargin: 8 }
+                    SceneLayerEditor {
+                        id: sceneLayerEditor
+                        Layout.fillWidth: true
+                        controller: replay
+                    }
+
                     PanelTitle { text: "视口"; Layout.topMargin: 8 }
                     ComboBox {
                         Layout.fillWidth: true
@@ -369,6 +376,12 @@ ApplicationWindow {
                     }
                 }
 
+                SceneOverlays {
+                    anchors.fill: parent
+                    controller: replay
+                    onSelected: (id) => sceneLayerEditor.selectedId = id
+                }
+
                 Rectangle {
                     anchors.left: parent.left
                     anchors.top: parent.top
@@ -413,12 +426,17 @@ ApplicationWindow {
 
                     VideoTimeline {
                         Layout.fillWidth: true
-                        visible: replay.videoLayers.length > 0
+                        visible: replay.videoLayers.length + replay.sceneLayers.length > 0
                         controller: replay
                         selectedIndex: videoPicker.currentIndex
+                        selectedLayer: sceneLayerEditor.selectedId
                         ink: window.ink
                         accent: window.accent
-                        onSelected: (index) => window.selectedVideo = index
+                        onSelected: (index) => {
+                            window.selectedVideo = index
+                            sceneLayerEditor.selectedId = ""
+                        }
+                        onLayerSelected: (id) => sceneLayerEditor.selectedId = id
                     }
 
                     RowLayout {
@@ -442,8 +460,8 @@ ApplicationWindow {
                             enabled: !replay.loading && videoPicker.currentIndex >= 0
                             onClicked: replay.deleteVideoSegment(videoPicker.currentIndex, replay.position)
                         }
-                        Button { text: "撤销"; visible: replay.videoLayers.length > 0; enabled: !replay.loading && replay.canUndo; onClicked: replay.undo() }
-                        Button { text: "重做"; visible: replay.videoLayers.length > 0; enabled: !replay.loading && replay.canRedo; onClicked: replay.redo() }
+                        Button { text: "撤销视频"; visible: replay.videoLayers.length > 0; enabled: !replay.loading && replay.canUndo; onClicked: replay.undo() }
+                        Button { text: "重做视频"; visible: replay.videoLayers.length > 0; enabled: !replay.loading && replay.canRedo; onClicked: replay.redo() }
                         ColumnLayout {
                             spacing: 3
                             Layout.fillWidth: true

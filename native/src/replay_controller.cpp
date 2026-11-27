@@ -80,6 +80,7 @@ void ReplayController::install(std::shared_ptr<const replay::Recording> record, 
         videoDurations_.swap(durations);
         emit editHistoryChanged();
     }
+    refreshSceneLayers();
     refreshVideoLayers();
     emit recordingChanged();
     emit positionChanged();
@@ -403,6 +404,87 @@ int ReplayController::pointCount() const
     return frame.end - (record_->replace ? frame.first : 0);
 }
 
+double ReplayController::duration() const
+{
+    const auto recorded = record_->duration();
+    if (recorded > 0. || !project_)
+        return recorded;
+
+    double end = 6.;
+    for (const auto &clip : clips_) {
+        const auto media = videoDurations_.value(clip.path);
+        if (media > 0.)
+            end = std::max(end, clip.timing.replaySeconds(media));
+    }
+    for (const auto &value : sceneLayers_)
+        end = std::max(end, value.toMap().value("end").toDouble());
+    return end;
+}
+
+void ReplayController::refreshSceneLayers()
+{
+    sceneLayers_ = project_ ? project_->sceneLayers() : QVariantList();
+    emit sceneLayersChanged();
+}
+
+void ReplayController::addSceneLayer(const QString &kind, const QString &content)
+{
+    if (loading_)
+        return;
+    try {
+        auto document = projectSnapshot();
+        const double end = duration() > 0. ? std::min(duration(), position_ + 3.) : position_ + 3.;
+        const double start = end <= position_ ? std::max(0., end - 3.) : position_;
+        document.addSceneLayer(kind, content, start, end);
+        project_ = std::move(document);
+        refreshSceneLayers();
+        emit recordingChanged();
+        status_ = tr("已添加合成图层。");
+    } catch (const std::exception &error) {
+        status_ = QString::fromUtf8(error.what());
+    }
+    emit stateChanged();
+}
+
+void ReplayController::addSceneImage(const QUrl &file)
+{
+    if (file.isLocalFile())
+        addSceneLayer(QStringLiteral("images"), file.toLocalFile());
+}
+
+void ReplayController::addSceneText(const QString &text)
+{
+    addSceneLayer(QStringLiteral("texts"), text);
+}
+
+void ReplayController::editSceneLayer(const QString &id, const QVariantMap &changes)
+{
+    if (loading_ || !project_)
+        return;
+    try {
+        project_->editSceneLayer(id, QJsonObject::fromVariantMap(changes));
+        refreshSceneLayers();
+        setPosition(position_);
+        emit recordingChanged();
+        status_ = tr("合成图层已更新。");
+    } catch (const std::exception &error) {
+        status_ = QString::fromUtf8(error.what());
+    }
+    emit stateChanged();
+}
+
+void ReplayController::removeSceneLayer(const QString &id)
+{
+    if (loading_ || !project_)
+        return;
+    project_->removeSceneLayer(id);
+    refreshSceneLayers();
+    setPosition(position_);
+    emit recordingChanged();
+    status_ = tr("已移除合成图层。");
+    emit stateChanged();
+}
+
 void ReplayController::refreshVideoLayers()
 {
     clips_ = project_ ? project_->videos() : std::vector<replay::VideoClip>();
@@ -545,7 +627,10 @@ void ReplayController::setVideoDuration(int index, const QUrl &url, double secon
         return;
     videoDurations_.insert(path, seconds);
     // Media metadata may arrive while QML is creating the delegates.
-    QMetaObject::invokeMethod(this, [this] { refreshVideoLayers(); }, Qt::QueuedConnection);
+    QMetaObject::invokeMethod(this, [this] {
+        refreshVideoLayers();
+        emit recordingChanged();
+    }, Qt::QueuedConnection);
 }
 
 void ReplayController::storeVideoSpans(int index, const std::vector<replay::VideoTiming::Range> &ranges)

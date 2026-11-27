@@ -2,6 +2,7 @@
 #include "replay_controller.h"
 
 #include <QGuiApplication>
+#include <QImage>
 #include <QFileInfo>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -67,6 +68,35 @@ int main(int argc, char **argv)
                     app.exit(1);
                     return;
                 }
+                const auto logoUrl = QUrl::fromLocalFile(scratch.filePath(QStringLiteral("image.png")));
+                QImage logo(64, 32, QImage::Format_ARGB32);
+                logo.fill(Qt::red);
+                if (!logo.save(logoUrl.toLocalFile())) {
+                    qWarning("Could not create the image fixture");
+                    app.exit(1);
+                    return;
+                }
+                replay.addSceneImage(logoUrl);
+                replay.addSceneText(QStringLiteral("原生合成"));
+                if (replay.sceneLayers().size() != 2) {
+                    qWarning("Could not add the scene layers");
+                    app.exit(1);
+                    return;
+                }
+                const auto textId = replay.sceneLayers().at(1).toMap().value("id").toString();
+                replay.editSceneLayer(textId, {{QStringLiteral("position"), QVariantList{.3, .4}},
+                                               {QStringLiteral("start"), .5}, {QStringLiteral("end"), 2.}});
+                const auto sceneUrl = QUrl::fromLocalFile(scratch.filePath(QStringLiteral("scene.slamfpv")));
+                replay.saveProjectAs(sceneUrl);
+                replay.openProject(sceneUrl);
+                if (replay.sceneLayers().size() != 2 ||
+                    replay.sceneLayers().at(0).toMap().value("url").toUrl() != logoUrl ||
+                    replay.sceneLayers().at(1).toMap().value("horizontal").toDouble() != .3) {
+                    qWarning("Scene layer settings did not survive reopening");
+                    app.exit(1);
+                    return;
+                }
+
                 const int fixtureIndex = app.arguments().indexOf("--smoke") + 1;
                 if (fixtureIndex == app.arguments().size()) {
                     app.exit(0);

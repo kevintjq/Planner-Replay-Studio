@@ -6,10 +6,12 @@
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QUrl>
 #include <QSaveFile>
 #include <QTemporaryDir>
 #include <QUuid>
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 #include <utility>
 
@@ -136,6 +138,125 @@ void ProjectDocument::setValue(const QString &key, const QString &value)
     auto settings = values();
     settings.insert(key, value);
     root_.insert("values", settings);
+}
+
+namespace {
+void validateSceneLayer(const QJsonObject &layer, const QString &kind)
+{
+    const auto start = layer.value("start").toDouble(-1.);
+    const auto end = layer.value("end").toDouble(-1.);
+    if (!std::isfinite(start) || !std::isfinite(end) || start < 0. || end <= start)
+        fail(QStringLiteral("图层结束时间须晚于非负的开始时间。"));
+    if (kind == "texts") {
+        const auto text = layer.value("text").toString();
+        const int size = layer.value("size").toInt(0);
+        if (text.trimmed().isEmpty() || text.toUcs4().size() > 160)
+            fail(QStringLiteral("请输入 1–160 个字符。"));
+        if (size < 12 || size > 120 || !QColor(layer.value("color").toString()).isValid())
+            fail(QStringLiteral("字号应为 12–120，并填写有效颜色。"));
+    } else {
+        const auto width = layer.value("width").toDouble();
+        if (width < .05 || width > 1.)
+            fail(QStringLiteral("图片宽度须为 5–100%。"));
+    }
+
+    const auto position = layer.value("position").toArray();
+    if (position.size() != 2 || std::any_of(position.begin(), position.end(), [](const auto &coordinate) {
+            const double value = coordinate.toDouble(-1.);
+            return !std::isfinite(value) || value < 0. || value > 1.;
+        }))
+        fail(QStringLiteral("图层位置须为 0–100%。"));
+}
+}
+
+QVariantList ProjectDocument::sceneLayers() const
+{
+    const auto composition = root_.value("composition").toObject();
+    QVariantList result;
+    for (const auto &kind : {QStringLiteral("images"), QStringLiteral("texts")}) {
+        const auto layers = composition.value(kind).toArray();
+        for (const auto &value : layers) {
+            const auto layer = value.toObject();
+            auto view = layer.toVariantMap();
+            const auto source = absoluteMedia(layer.value("path").toString());
+            const auto position = layer.value("position").toArray();
+            view.insert("kind", kind);
+            view.insert("url", source.isEmpty() ? QUrl() : QUrl::fromLocalFile(source));
+            view.insert("label", kind == "images" ? QFileInfo(source).fileName() : layer.value("text").toString().simplified());
+            view.insert("horizontal", position.size() == 2 ? position[0].toDouble() : .05);
+            view.insert("vertical", position.size() == 2 ? position[1].toDouble() : .08);
+            view.insert("size", layer.value("size").toInt(32));
+            view.insert("color", layer.value("color").toString("#f7faff"));
+            view.insert("width", layer.value("width").toDouble(.28));
+            view.insert("transparent", layer.value("transparent").toBool(true));
+            result.append(view);
+        }
+    }
+    return result;
+}
+
+void ProjectDocument::addSceneLayer(const QString &kind, const QString &content, double start, double end)
+{
+    QJsonObject layer{{"id", QUuid::createUuid().toString(QUuid::Id128)},
+                      {"start", start}, {"end", end}, {"transparent", true}};
+    if (kind == "images") {
+        if (!QFileInfo(content).isFile())
+            fail(QStringLiteral("找不到图片：%1").arg(content));
+        layer.insert("path", path_.isEmpty() ? absolutePath(content)
+                                             : referenceFrom(QFileInfo(path_).absolutePath(), absolutePath(content)));
+        layer.insert("position", QJsonArray{.94, .08});
+        layer.insert("width", .28);
+    } else if (kind == "texts") {
+        layer.insert("text", content);
+        layer.insert("position", QJsonArray{.05, .08});
+        layer.insert("size", 32);
+        layer.insert("color", "#f7faff");
+    } else {
+        fail(QStringLiteral("未知的合成图层类型。"));
+    }
+    validateSceneLayer(layer, kind);
+    auto composition = root_.value("composition").toObject();
+    auto layers = composition.value(kind).toArray();
+    layers.append(layer);
+    composition.insert(kind, layers);
+    root_.insert("composition", composition);
+}
+
+void ProjectDocument::editSceneLayer(const QString &id, const QJsonObject &changes)
+{
+    auto composition = root_.value("composition").toObject();
+    for (const auto &kind : {QStringLiteral("images"), QStringLiteral("texts")}) {
+        auto layers = composition.value(kind).toArray();
+        for (qsizetype index = 0; index < layers.size(); ++index) {
+            auto layer = layers.at(index).toObject();
+            if (layer.value("id").toString() != id)
+                continue;
+            for (auto change = changes.begin(); change != changes.end(); ++change)
+                layer.insert(change.key(), change.value());
+            validateSceneLayer(layer, kind);
+            layers.replace(index, layer);
+            composition.insert(kind, layers);
+            root_.insert("composition", composition);
+            return;
+        }
+    }
+    fail(QStringLiteral("找不到所选图层。"));
+}
+
+void ProjectDocument::removeSceneLayer(const QString &id)
+{
+    auto composition = root_.value("composition").toObject();
+    for (const auto &kind : {QStringLiteral("images"), QStringLiteral("texts")}) {
+        auto layers = composition.value(kind).toArray();
+        for (qsizetype index = 0; index < layers.size(); ++index) {
+            if (layers.at(index).toObject().value("id").toString() == id) {
+                layers.removeAt(index);
+                composition.insert(kind, layers);
+                root_.insert("composition", composition);
+                return;
+            }
+        }
+    }
 }
 
 RvizLayout ProjectDocument::topicLayout() const

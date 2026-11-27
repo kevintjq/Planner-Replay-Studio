@@ -33,6 +33,7 @@ class ReplayController : public QObject {
     Q_PROPERTY(QString projectPath READ projectPath NOTIFY recordingChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY editHistoryChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY editHistoryChanged)
+    Q_PROPERTY(QVariantList sceneLayers READ sceneLayers NOTIFY sceneLayersChanged)
     Q_PROPERTY(QVariantList videoLayers READ videoLayers NOTIFY videoLayersChanged)
 public:
     explicit ReplayController(QObject *parent = nullptr);
@@ -40,7 +41,7 @@ public:
 
     bool loading() const { return loading_; }
     bool playing() const { return timer_.isActive(); }
-    double duration() const { return record_->duration(); }
+    double duration() const;
     double position() const { return position_; }
     double progress() const { return progress_; }
     QString status() const { return status_; }
@@ -57,6 +58,11 @@ public:
     std::shared_ptr<const replay::Recording> recording() const { return record_; }
 
     const QVariantList &videoLayers() const { return videoLayers_; }
+    const QVariantList &sceneLayers() const { return sceneLayers_; }
+    Q_INVOKABLE void addSceneImage(const QUrl &file);
+    Q_INVOKABLE void addSceneText(const QString &text);
+    Q_INVOKABLE void editSceneLayer(const QString &id, const QVariantMap &changes);
+    Q_INVOKABLE void removeSceneLayer(const QString &id);
     Q_INVOKABLE double videoSeconds(int index) const;
     Q_INVOKABLE void addVideo(const QUrl &url);
     Q_INVOKABLE void setVideoTrim(int index, const QString &trimIn, const QString &trimOut, const QString &offset);
@@ -93,6 +99,7 @@ signals:
     void positionChanged();
     void recordingChanged();
     void videoLayersChanged();
+    void sceneLayersChanged();
     void editHistoryChanged();
 
 private:
@@ -113,6 +120,8 @@ private:
     void applyTopicLayout(const replay::RvizLayout &layout);
     void setPosition(double seconds);
     void refreshVideoLayers();
+    void refreshSceneLayers();
+    void addSceneLayer(const QString &kind, const QString &content);
     void editVideo(int index, const QJsonObject &changes);
     void changeVideoSegment(int index, double at, bool remove);
     void storeVideoSpans(int index, const std::vector<replay::VideoTiming::Range> &ranges);
@@ -130,7 +139,7 @@ private:
     QFutureWatcher<QString> folderWatcher_;
     std::optional<replay::ProjectDocument> project_;
     std::vector<replay::VideoClip> clips_;
-    QVariantList videoLayers_;
+    QVariantList videoLayers_, sceneLayers_;
     QTimer timer_;
     QElapsedTimer clock_;
     QString path_, status_;

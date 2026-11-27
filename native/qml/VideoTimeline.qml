@@ -6,9 +6,21 @@ ColumnLayout {
     id: timeline
     required property var controller
     required property int selectedIndex
+    required property string selectedLayer
     required property color ink
     required property color accent
     signal selected(int index)
+    signal layerSelected(string id)
+
+    readonly property var trackData: controller.videoLayers.map((video, index) => ({
+        videoIndex: index, label: video.label, segments: video.segments
+    })).concat(controller.sceneLayers.map(layer => ({
+        layerId: layer.id, kind: layer.kind, label: layer.label,
+        segments: layer.start >= duration ? [] : [{
+            first: layer.start, last: Math.min(duration, layer.end), storedEnd: layer.end,
+            leftEdge: true, rightEdge: layer.end <= duration, part: 0
+        }]
+    })))
 
     readonly property real duration: controller.duration
     readonly property real labelWidth: 124
@@ -27,20 +39,30 @@ ColumnLayout {
             spacing: 4
 
             Repeater {
-                model: timeline.controller.videoLayers
+                model: timeline.trackData
 
                 delegate: RowLayout {
                     id: row
                     required property int index
                     required property var modelData
+                    readonly property bool isVideo: modelData.videoIndex !== undefined
+                    readonly property bool isSelected: isVideo ? timeline.selectedIndex === modelData.videoIndex
+                                                               : timeline.selectedLayer === modelData.layerId
                     width: tracks.width
                     spacing: 4
+
+                    function select() {
+                        if (isVideo)
+                            timeline.selected(modelData.videoIndex)
+                        else
+                            timeline.layerSelected(modelData.layerId)
+                    }
 
                     Button {
                         Layout.preferredWidth: timeline.labelWidth
                         Layout.preferredHeight: 24
                         text: row.modelData.label
-                        highlighted: timeline.selectedIndex === row.index
+                        highlighted: row.isSelected
                         id: trackButton
                         contentItem: Label {
                             text: trackButton.text
@@ -48,7 +70,7 @@ ColumnLayout {
                             elide: Text.ElideMiddle
                             verticalAlignment: Text.AlignVCenter
                         }
-                        onClicked: timeline.selected(row.index)
+                        onClicked: row.select()
                     }
 
                     Rectangle {
@@ -69,7 +91,7 @@ ColumnLayout {
                             anchors.fill: parent
                             enabled: !timeline.controller.loading
                             onPressed: (mouse) => {
-                                timeline.selected(row.index)
+                                row.select()
                                 timeline.controller.pause()
                                 timeline.controller.seek(lane.second(mouse.x))
                             }
@@ -95,15 +117,28 @@ ColumnLayout {
                                 y: 3
                                 height: lane.height - 6
                                 radius: 3
-                                color: timeline.selectedIndex === row.index ? "#33668a" : "#294a61"
+                                color: row.isVideo ? (row.isSelected ? "#33668a" : "#294a61")
+                                       : row.modelData.kind === "images" ? "#735042" : "#534168"
                                 border.color: timeline.accent
-                                border.width: timeline.selectedIndex === row.index ? 1 : 0
+                                border.width: row.isSelected ? 1 : 0
 
                                 Menu {
                                     id: actions
                                     property real at
-                                    MenuItem { text: "在此分割"; onTriggered: timeline.controller.splitVideo(row.index, actions.at) }
-                                    MenuItem { text: "删除此片段"; onTriggered: timeline.controller.deleteVideoSegment(row.index, actions.at) }
+                                    MenuItem {
+                                        visible: row.isVideo
+                                        text: "在此分割"
+                                        onTriggered: timeline.controller.splitVideo(row.modelData.videoIndex, actions.at)
+                                    }
+                                    MenuItem {
+                                        text: row.isVideo ? "删除此片段" : "移除图层"
+                                        onTriggered: {
+                                            if (row.isVideo)
+                                                timeline.controller.deleteVideoSegment(row.modelData.videoIndex, actions.at)
+                                            else
+                                                timeline.controller.removeSceneLayer(row.modelData.layerId)
+                                        }
+                                    }
                                 }
 
                                 MouseArea {
@@ -117,7 +152,7 @@ ColumnLayout {
                                     property bool moved: false
 
                                     onPressed: (mouse) => {
-                                        timeline.selected(row.index)
+                                        row.select()
                                         timeline.controller.pause()
                                         pressX = mapToItem(lane, mouse.x, 0).x
                                         if (mouse.button === Qt.RightButton) {
@@ -163,7 +198,13 @@ ColumnLayout {
                                         clip.first = start
                                         clip.last = end
                                         edge = 0
-                                        timeline.controller.trimVideoSegment(row.index, clip.modelData.part, first, last)
+                                        if (row.isVideo) {
+                                            timeline.controller.trimVideoSegment(row.modelData.videoIndex, clip.modelData.part, first, last)
+                                        } else if (first !== start || last !== end) {
+                                            timeline.controller.editSceneLayer(row.modelData.layerId, {
+                                                start: first, end: last === end ? clip.modelData.storedEnd : last
+                                            })
+                                        }
                                     }
                                     onCanceled: {
                                         if (moved) {

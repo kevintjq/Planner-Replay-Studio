@@ -5,6 +5,7 @@
 
 #include <QJsonObject>
 #include <QStringList>
+#include <QVariantList>
 #include <functional>
 
 namespace replay {
@@ -24,6 +25,10 @@ public:
     QJsonObject values() const;
     void setValue(const QString &key, const QString &value);
     std::vector<VideoClip> videos() const;
+    QVariantList sceneLayers() const;
+    void addSceneLayer(const QString &kind, const QString &content, double start, double end);
+    void editSceneLayer(const QString &id, const QJsonObject &changes);
+    void removeSceneLayer(const QString &id);
     RvizLayout topicLayout() const;
     void setTopicLayout(const RvizLayout &layout);
     void addVideo(const QString &file);

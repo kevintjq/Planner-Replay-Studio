@@ -71,8 +71,17 @@ TrajectoryController::TrajectoryController(PreviewImages &images) : images_(imag
 {
     connect(&exportWatcher_, &QFutureWatcher<QString>::finished, this, [this] {
         const auto error = exportWatcher_.result();
+        exporting_ = false;
         status_ = error.isEmpty() ? tr("已导出完整质量画面。 / Full-quality frame exported.") : error;
         emit changed(); emit frameExported(error.isEmpty(), status_);
+        if (pendingSettings_) restoreSettings(*std::exchange(pendingSettings_, std::nullopt));
+    });
+    connect(&batchWatcher_, &QFutureWatcher<replay::TrajectoryBatchResult>::finished, this, [this] {
+        const auto result = batchWatcher_.result();
+        exporting_ = false; exportDirectory_ = result.directory;
+        status_ = result.error.isEmpty() ? tr("已导出 %1 张图片：%2 / Batch exported.").arg(result.completed).arg(result.directory) : result.error;
+        emit changed(); emit batchExported(result.error.isEmpty(), status_);
+        if (pendingSettings_) restoreSettings(*std::exchange(pendingSettings_, std::nullopt));
     });
     previewTimer_.setSingleShot(true);
     previewTimer_.setInterval(50);
@@ -125,6 +134,7 @@ TrajectoryController::~TrajectoryController()
     watcher_.waitForFinished();
     previewWatcher_.waitForFinished();
     exportWatcher_.waitForFinished();
+    batchWatcher_.waitForFinished();
 }
 
 QString TrajectoryController::fileName() const { return QFileInfo(file_).fileName(); }
@@ -178,7 +188,7 @@ void TrajectoryController::clearResult()
 
 void TrajectoryController::open(const QUrl &file)
 {
-    if (working_ || !file.isLocalFile())
+    if (working() || !file.isLocalFile())
         return;
     file_ = file.toLocalFile();
     state_ = {};
@@ -189,7 +199,7 @@ void TrajectoryController::open(const QUrl &file)
 
 void TrajectoryController::preview(double seconds)
 {
-    if (working_ || file_.isEmpty() || !std::isfinite(seconds) || seconds < 0.)
+    if (working() || file_.isEmpty() || !std::isfinite(seconds) || seconds < 0.)
         return;
     start_ = seconds;
     clearResult();
@@ -205,7 +215,7 @@ void TrajectoryController::preview(double seconds)
 
 void TrajectoryController::track(const QRectF &selection, const QString &endSeconds)
 {
-    if (working_ || initial_.isNull())
+    if (working() || initial_.isNull())
         return;
     const bool fixedEnd = !endSeconds.trimmed().isEmpty();
     bool validEnd = false;
@@ -231,7 +241,7 @@ void TrajectoryController::track(const QRectF &selection, const QString &endSeco
 
 void TrajectoryController::commit(State next)
 {
-    if (working_ || next == state_)
+    if (working() || next == state_)
         return;
     if (undo_.size() == 100)
         undo_.erase(undo_.begin());
@@ -299,6 +309,7 @@ void TrajectoryController::toggleFrame(int row)
 
 void TrajectoryController::selectFrame(int row, bool extend, bool toggle)
 {
+    if (working()) return;
     const auto stamp = frames_.stampAt(row);
     if (!stamp)
         return;
@@ -419,14 +430,14 @@ void TrajectoryController::setShowLine(bool enabled)
 }
 void TrajectoryController::undo()
 {
-    if (working_ || undo_.empty()) return;
+    if (working() || undo_.empty()) return;
     redo_.push_back(state_); state_ = undo_.back(); undo_.pop_back();
     if (trajectory_) updatePreview();
     emit settingsEdited(settings()); emit changed();
 }
 void TrajectoryController::redo()
 {
-    if (working_ || redo_.empty()) return;
+    if (working() || redo_.empty()) return;
     undo_.push_back(state_); state_ = redo_.back(); redo_.pop_back();
     if (trajectory_) updatePreview();
     emit settingsEdited(settings()); emit changed();
@@ -440,7 +451,7 @@ void TrajectoryController::restoreFrames()
 }
 void TrajectoryController::resetPreview()
 {
-    if (working_ || initial_.isNull()) return;
+    if (working() || initial_.isNull()) return;
     clearResult(); state_.edits = {}; selectionBox_ = {};
     setImage(initial_); status_ = tr("在起始画面重新框选无人机。");
     emit settingsEdited(settings()); emit changed();
@@ -457,7 +468,7 @@ QVariantMap TrajectoryController::settings() const
 
 void TrajectoryController::restoreSettings(const QVariantMap &settings)
 {
-    if (working_) { pendingSettings_ = settings; cancelled_ = true; return; }
+    if (working()) { pendingSettings_ = settings; cancelled_ = true; return; }
     try {
         State next;
         next.edits = replay::TrajectoryEdits::fromJson(QJsonObject::fromVariantMap(settings.value("edits").toMap()));
@@ -488,7 +499,7 @@ void TrajectoryController::restoreSettings(const QVariantMap &settings)
 
 void TrajectoryController::save(const QUrl &target)
 {
-    if (working_ || !trajectory_ || !target.isLocalFile()) return;
+    if (working() || !trajectory_ || !target.isLocalFile()) return;
     const QString path = target.toLocalFile();
     if (QFileInfo(path).suffix().compare("png", Qt::CaseInsensitive) != 0) return;
     if (QFileInfo(path).exists() && QFileInfo(path).canonicalFilePath() == QFileInfo(file_).canonicalFilePath()) {
@@ -522,6 +533,7 @@ void TrajectoryController::exportFrame(const QUrl &target, const QVariantMap &op
         reject(tr("尺寸 16–8192，最多 4000 万像素，DPI 36–2400；请检查背景颜色。")); return;
     }
     cancelled_ = false;
+    exporting_ = true; progress_ = 0.;
     status_ = tr("正在从源素材重新合成导出… / Rendering source-quality frame…");
     exportWatcher_.setFuture(QtConcurrent::run([this, path, width, height, dpi, background,
         initial = initial_, track = trajectory_, samples = sampled_, state = state_, time = start_] {
@@ -538,6 +550,26 @@ void TrajectoryController::exportFrame(const QUrl &target, const QVariantMap &op
             if (cancelled_) return tr("已取消。 / Cancelled.");
             return replay::writeStillImage(output, path, dpi, time);
         } catch (const std::exception &error) { return QString::fromUtf8(error.what()); }
+    }));
+    emit changed();
+}
+void TrajectoryController::exportFrames(const QUrl &parentDirectory, const QVariantMap &options)
+{
+    if (working() || file_.isEmpty() || (initial_.isNull() && !trajectory_)) return;
+    if (!parentDirectory.isLocalFile()) {
+        status_ = tr("请选择本地输出文件夹。 / Select a local output directory.");
+        emit changed(); emit batchExported(false, status_); return;
+    }
+    cancelled_ = false; exporting_ = true; progress_ = 0.; exportDirectory_.clear();
+    status_ = tr("正在批量合成完整质量画面… / Rendering full-quality batch…");
+    batchWatcher_.setFuture(QtConcurrent::run([this, file = file_, directory = parentDirectory.toLocalFile(),
+        track = trajectory_, samples = sampled_, state = state_, time = start_, options] {
+        return replay::exportTrajectoryBatch(file, directory, track, samples, state.edits, state.opacity, time, options,
+            [this] { return cancelled_.load(); }, [this](double value) {
+                QMetaObject::invokeMethod(this, [this, value] {
+                    if (exporting_) { progress_ = value; emit changed(); }
+                }, Qt::QueuedConnection);
+            });
     }));
     emit changed();
 }

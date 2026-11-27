@@ -1,6 +1,7 @@
 #pragma once
 
 #include "trajectory_frame_model.h"
+#include "trajectory_frame_export.h"
 #include <QCache>
 #include <QFutureWatcher>
 #include <QMutex>
@@ -41,10 +42,11 @@ class TrajectoryController final : public QObject {
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY changed)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY changed)
     Q_PROPERTY(QVariantMap settings READ settings NOTIFY changed)
+    Q_PROPERTY(QString exportDirectory READ exportDirectory NOTIFY changed)
 public:
     explicit TrajectoryController(PreviewImages &images);
     ~TrajectoryController() override;
-    bool working() const { return working_ || exportWatcher_.isRunning(); }
+    bool working() const { return working_ || exporting_; }
     bool previewing() const { return previewWatcher_.isRunning() || previewTimer_.isActive(); }
     bool hasResult() const { return bool(trajectory_); }
     double progress() const { return progress_; }
@@ -59,6 +61,7 @@ public:
     bool canUndo() const { return !undo_.empty(); }
     bool canRedo() const { return !redo_.empty(); }
     QVariantMap settings() const;
+    QString exportDirectory() const { return exportDirectory_; }
     Q_INVOKABLE void open(const QUrl &file);
     Q_INVOKABLE void preview(double seconds);
     Q_INVOKABLE void track(const QRectF &selection, const QString &endSeconds);
@@ -79,12 +82,14 @@ public:
     Q_INVOKABLE void resetPreview();
     Q_INVOKABLE void save(const QUrl &target);
     Q_INVOKABLE void exportFrame(const QUrl &target, const QVariantMap &options);
+    Q_INVOKABLE void exportFrames(const QUrl &parentDirectory, const QVariantMap &options);
     Q_INVOKABLE void cancel();
     void restoreSettings(const QVariantMap &settings);
 signals:
     void changed();
     void settingsEdited(const QVariantMap &settings);
     void frameExported(bool success, const QString &message);
+    void batchExported(bool success, const QString &message);
 private:
     struct State {
         replay::TrajectoryEdits edits;
@@ -110,12 +115,13 @@ private:
     QFutureWatcher<Result> watcher_;
     QFutureWatcher<Preview> previewWatcher_;
     QFutureWatcher<QString> exportWatcher_;
+    QFutureWatcher<replay::TrajectoryBatchResult> batchWatcher_;
     QTimer previewTimer_;
     std::shared_ptr<const replay::FixedCameraTrajectory> trajectory_;
     std::shared_ptr<std::atomic_bool> previewCancelled_;
     std::atomic_bool cancelled_ = false;
     QImage initial_;
-    QString file_, status_, end_;
+    QString file_, status_, end_, exportDirectory_;
     QRectF selectionBox_;
     QSet<qint64> selected_;
     std::vector<State> undo_, redo_;
@@ -123,6 +129,6 @@ private:
     quint64 revision_ = 0, sourceRevision_ = 0, generation_ = 0;
     double start_ = 0., progress_ = 0.;
     int selectionAnchor_ = -1;
-    bool working_ = false, previewDirty_ = false, resumeTracking_ = false;
+    bool working_ = false, exporting_ = false, previewDirty_ = false, resumeTracking_ = false;
     std::optional<QVariantMap> pendingSettings_;
 };

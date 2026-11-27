@@ -37,6 +37,10 @@ void runFrameAcceptance(QGuiApplication &app, QQuickWindow &window, ReplayContro
         QJsonArray trajectoryResults;
         QUrl trajectoryPreview;
         QVariantMap trajectorySettings;
+        int trajectoryBatchIndex = 0, trajectoryHeartbeats = 0;
+        QJsonArray trajectoryBatches;
+        QVariantMap trajectoryBatchOptions;
+        bool trajectoryCancelQueued = false;
     };
     auto state = std::make_shared<State>();
     state->cases = {
@@ -56,37 +60,107 @@ void runFrameAcceptance(QGuiApplication &app, QQuickWindow &window, ReplayContro
     auto next = std::make_shared<std::function<void()>>();
     auto nextBatch = std::make_shared<std::function<void()>>();
     auto nextTrajectory = std::make_shared<std::function<void()>>();
+    auto nextTrajectoryBatch = std::make_shared<std::function<void()>>();
+    auto *heartbeat = new QTimer(&app); heartbeat->setInterval(10);
+    QObject::connect(heartbeat, &QTimer::timeout, &app, [state] { ++state->trajectoryHeartbeats; });
     auto report = [&, state, directory] {
             const QJsonObject report{{"passed", state->valid}, {"real_bag", !replay.demo()},
                 {"video_layers", int(replay.videoClips().size())}, {"cases", state->results},
                 {"batches", state->batchResults},
                 {"trajectory_frames", state->trajectoryResults},
+                {"trajectory_batches", state->trajectoryBatches},
                 {"limitations", "Does not certify exact video PTS, vector scene overlays, tiling or native RViz parity."}};
             QFile file(QDir(directory).filePath("frame-acceptance.json"));
             if (!file.open(QIODevice::WriteOnly) || file.write(QJsonDocument(report).toJson()) < 0) state->valid = false;
             app.exit(state->valid ? 0 : 1);
     };
-    *nextTrajectory = [&, state, report, video, directory] {
+    *nextTrajectory = [&, state, report, video, directory, nextTrajectoryBatch] {
         if (video.isEmpty()) { report(); return; }
         if (state->trajectoryPhase < 0) {
             state->trajectoryPhase = 0; window.setProperty("workspaceIndex", 3);
             trajectory.open(QUrl::fromLocalFile(video)); return;
         }
-        if (state->trajectoryIndex >= 4) { report(); return; }
+        if (state->trajectoryIndex >= 4) { (*nextTrajectoryBatch)(); return; }
         const QStringList formats{"png", "tiff", "pdf", "svg"};
         const bool eightK = state->trajectoryIndex == 1;
         trajectory.exportFrame(QUrl::fromLocalFile(QDir(directory).filePath("trajectory." + formats[state->trajectoryIndex])),
             {{"width", eightK ? 7680 : 3840}, {"height", eightK ? 4320 : 2160}, {"dpi", eightK ? 1200 : 600}, {"background", "transparent"}});
+    };
+    *nextTrajectoryBatch = [&, state, report, directory, heartbeat] {
+        if (state->trajectoryBatchIndex >= 5) {
+            if (auto *scroll = window.findChild<QQuickItem *>("trajectorySourceScroll")) {
+                if (auto *flickable = scroll->property("contentItem").value<QQuickItem *>()) flickable->setProperty("contentY", 650.);
+            }
+            appearance.setMode(AppearanceManager::Light);
+            QTimer::singleShot(250, &app, [&, directory, report] {
+                window.grabWindow().save(QDir(directory).filePath("trajectory-batch-light.png"));
+                appearance.setMode(AppearanceManager::Dark);
+                QTimer::singleShot(250, &app, [&, directory, report] {
+                    window.grabWindow().save(QDir(directory).filePath("trajectory-batch-dark.png")); report();
+                });
+            });
+            return;
+        }
+        QVariantMap options{{"content", "source"}, {"width", 640}, {"height", 360}, {"dpi", 600}, {"background", "transparent"}, {"format", "png"}};
+        const int index = state->trajectoryBatchIndex;
+        if (index == 0) {
+            options.insert("mode", "manual"); options.insert("times", "3.125, 1.25");
+            options.insert("width", 3840); options.insert("height", 2160);
+            options.insert("figure", true); options.insert("figureFormat", "pdf"); options.insert("columns", 2);
+        } else if (index == 1) {
+            options.insert("mode", "manual"); options.insert("times", "7.21");
+            options.insert("width", 7680); options.insert("height", 4320); options.insert("dpi", 1200); options.insert("format", "tiff");
+        } else if (index == 2) {
+            options.insert("mode", "samples"); options.insert("times", "0, 30"); options.insert("sampleFps", 30.);
+            options.insert("figure", true); options.insert("figureFormat", "svg"); options.insert("columns", 2);
+        } else {
+            options.insert("mode", "interval"); options.insert("begin", 1.); options.insert("end", index == 3 ? 1.5 : 20.); options.insert("interval", index == 3 ? .25 : .1);
+            if (index == 4) { options.insert("width", 1920); options.insert("height", 1080); }
+        }
+        state->trajectoryBatchOptions = options; state->trajectoryHeartbeats = 0; heartbeat->start();
+        trajectory.exportFrames(QUrl::fromLocalFile(directory), options);
     };
     QObject::connect(&trajectory, &TrajectoryController::changed, &app, [&, state, nextTrajectory, directory] {
         if (trajectory.working()) return;
         if (state->trajectoryPhase == 0) { state->trajectoryPhase = 1; trajectory.preview(3.125); }
         else if (state->trajectoryPhase == 1) {
             state->trajectoryPhase = 2; state->trajectoryPreview = trajectory.image(); state->trajectorySettings = trajectory.settings();
+            if (auto *pane = window.findChild<QQuickItem *>("trajectoryPane")) pane->setProperty("exportSettingsVisible", true);
             QTimer::singleShot(300, &app, [&, state, nextTrajectory, directory] {
                 window.grabWindow().save(QDir(directory).filePath("trajectory-workspace.png")); (*nextTrajectory)();
             });
         }
+    });
+    QObject::connect(&trajectory, &TrajectoryController::changed, &app, [&, state] {
+        if (state->trajectoryBatchIndex == 4 && trajectory.working() && trajectory.progress() > 0. && !state->trajectoryCancelQueued) {
+            state->trajectoryCancelQueued = true; trajectory.cancel();
+        }
+    });
+    QObject::connect(&trajectory, &TrajectoryController::batchExported, &app, [&, state, nextTrajectoryBatch, directory, heartbeat](bool success, const QString &message) {
+        heartbeat->stop();
+        QFile file(QDir(trajectory.exportDirectory()).filePath("manifest.json"));
+        const bool read = file.open(QIODevice::ReadOnly);
+        const auto manifest = QJsonDocument::fromJson(read ? file.readAll() : QByteArray()).object();
+        const auto completed = manifest["completed"].toArray(); const bool cancelled = state->trajectoryBatchIndex == 4;
+        const QSize size(state->trajectoryBatchOptions["width"].toInt(), state->trajectoryBatchOptions["height"].toInt());
+        bool valid = read && (cancelled ? !success && manifest["status"] == "cancelled" && !completed.isEmpty() && completed.size() < manifest["planned"].toInt() : success && manifest["status"] == "complete" && completed.size() == manifest["planned"].toInt());
+        valid &= trajectory.image() == state->trajectoryPreview && trajectory.settings() == state->trajectorySettings && state->trajectoryHeartbeats > 0;
+        for (const auto &entry : completed) {
+            const auto item = entry.toObject(); const QImage image(QDir(trajectory.exportDirectory()).filePath(item["file"].toString()));
+            valid &= image.size() == size && image.hasAlphaChannel();
+            valid &= std::abs(image.dotsPerMeterX() * .0254 - state->trajectoryBatchOptions["dpi"].toInt()) < .1;
+            valid &= item["source_frame_index"].toInt(-1) >= 0 && item["source_frame_time"].toDouble(-1) >= 0. && item["source_frame_time"].toDouble() <= item["requested_time"].toDouble() + 1.e-8;
+        }
+        if (state->trajectoryBatchOptions.value("figure").toBool()) {
+            QFile figure(QDir(trajectory.exportDirectory()).filePath("figure." + state->trajectoryBatchOptions["figureFormat"].toString()));
+            valid &= figure.open(QIODevice::ReadOnly) && figure.size() > 1000;
+            if (state->trajectoryBatchOptions["figureFormat"] == "svg") {
+                const auto bytes = figure.readAll(); valid &= bytes.contains("<text") && bytes.contains("<image") && bytes.contains("(a)");
+            }
+        }
+        state->valid &= valid;
+        state->trajectoryBatches.append(QJsonObject{{"passed", valid}, {"directory", trajectory.exportDirectory()}, {"options", QJsonObject::fromVariantMap(state->trajectoryBatchOptions)}, {"manifest", manifest}, {"ui_heartbeats", state->trajectoryHeartbeats}, {"message", message}});
+        ++state->trajectoryBatchIndex; QTimer::singleShot(0, &app, *nextTrajectoryBatch);
     });
     QObject::connect(&trajectory, &TrajectoryController::frameExported, &app, [&, state, nextTrajectory, directory](bool success, const QString &message) {
         const QStringList formats{"png", "tiff", "pdf", "svg"};

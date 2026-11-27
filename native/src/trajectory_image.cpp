@@ -386,7 +386,10 @@ QImage renderTrajectory(const FixedCameraTrajectory &trajectory, const std::vect
         painter.setOpacity(std::clamp(opacity, 0., 1.) * edit.opacity);
         const QRectF area(frame.bounds.x() * xScale, frame.bounds.y() * yScale,
                           frame.bounds.width() * xScale, frame.bounds.height() * yScale);
-        painter.drawImage(area, cachedImage(frame));
+        const auto sprite = cachedImage(frame);
+        if (sprite.isNull())
+            throw std::runtime_error("Unable to read a cached trajectory frame. Regenerate the trajectory before exporting.");
+        painter.drawImage(area, sprite);
     }
     painter.end();
     return result;

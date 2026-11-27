@@ -5,6 +5,7 @@ import QtQuick.Layouts
 
 RowLayout {
     id: pane
+    objectName: "trajectoryPane"
     required property var editor
     property rect selection: Qt.rect(0, 0, 0, 0)
     property string rangeId: ""
@@ -14,14 +15,37 @@ RowLayout {
         if (interval.acceptableInput && count.acceptableInput)
             editor.configure(Number(interval.text), opacity.value, strategy.currentIndex, Number(count.text))
     }
+    function frameOptions() {
+        return {width: Number(exportWidth.text), height: Number(exportHeight.text), dpi: Number(exportDpi.text),
+            background: exportBackground.currentIndex === 0 ? "transparent" : exportBackground.currentIndex === 1 ? appearance.outputColors().matteWhite : exportBackground.currentIndex === 2 ? appearance.outputColors().matteBlack : exportColor.text}
+    }
     FileDialog {
         id: frameDialog
         title: "导出轨迹工作区当前画面"
         fileMode: FileDialog.SaveFile
         defaultSuffix: selectedNameFilter.extensions[0] ?? "png"
         nameFilters: ["PNG (*.png)", "JPEG (*.jpg)", "TIFF (*.tiff)", "PDF — embedded raster (*.pdf)", "SVG — embedded raster (*.svg)"]
-        onAccepted: pane.editor.exportFrame(selectedFile, {width: Number(exportWidth.text), height: Number(exportHeight.text), dpi: Number(exportDpi.text),
-            background: exportBackground.currentIndex === 0 ? "transparent" : exportBackground.currentIndex === 1 ? appearance.outputColors().matteWhite : exportBackground.currentIndex === 2 ? appearance.outputColors().matteBlack : exportColor.text})
+        onAccepted: pane.editor.exportFrame(selectedFile, pane.frameOptions())
+    }
+    FolderDialog {
+        id: batchFolder
+        title: "批量画面输出文件夹 / Batch output folder"
+        onAccepted: {
+            const options = pane.frameOptions()
+            options.content = batchContent.currentIndex === 0 ? "source" : "trajectory"
+            options.mode = ["manual", "interval", "samples", "tracked"][batchMode.currentIndex]
+            options.times = batchTimes.text
+            options.sampleFps = Number(batchFps.text)
+            options.begin = Number(batchBegin.text)
+            options.end = Number(batchEnd.text)
+            options.interval = Number(batchInterval.text)
+            options.format = ["png", "jpg", "tiff"][batchFormat.currentIndex]
+            options.pattern = batchPattern.text
+            options.figure = batchFigure.checked
+            options.figureFormat = ["pdf", "svg", "png", "tiff"][figureFormat.currentIndex]
+            options.columns = Number(figureColumns.text)
+            pane.editor.exportFrames(selectedFolder, options)
+        }
     }
     FileDialog {
         id: openDialog
@@ -63,6 +87,7 @@ RowLayout {
         ScrollBar.vertical: StudioScrollBar {}
         ScrollBar.horizontal: StudioScrollBar {}
         id: sourceScroll
+        objectName: "trajectorySourceScroll"
         anchors.fill: parent
         anchors.margins: 12
         contentWidth: availableWidth
@@ -118,6 +143,49 @@ RowLayout {
                 StudioTextField { id: exportColor; visible: exportBackground.currentIndex === 3; text: "#FFFFFF"; Layout.fillWidth: true }
                 StudioLabel { text: "背景设置作用于画布边缘，不自动移除视频背景。PDF/SVG 当前嵌入高分辨率位图。"; wrapMode: Text.Wrap; Layout.fillWidth: true; color: appearance.colors.secondaryText }
                 StudioButton { text: "Save Frame… · 保存当前画面"; Layout.fillWidth: true; enabled: exportWidth.acceptableInput && exportHeight.acceptableInput && exportDpi.acceptableInput && pane.editor.image.toString().length > 0; onClicked: frameDialog.open() }
+                StudioLabel { text: "Export Keyframes · 批量画面"; font.bold: true; Layout.topMargin: 8 }
+                StudioComboBox { id: batchContent; Layout.fillWidth: true; model: ["Source Frames · 源视频帧", "Trajectory Snapshots · 累积轨迹图"] }
+                StudioLabel {
+                    text: batchContent.currentIndex === 0 ? "以源视频秒数选取完整解码帧；清单区分请求时间与实际源帧时间。" : "保留当前背景、采样与编辑，仅合成截至各指定时刻的轨迹；不包含未来拖影。"
+                    wrapMode: Text.Wrap; Layout.fillWidth: true; color: appearance.colors.secondaryText
+                }
+                StudioComboBox { id: batchMode; Layout.fillWidth: true; model: ["Manual Times · 手动时间点", "Time Interval · 时间区间", "Sampling Grid · 采样序号", "Tracked Samples · 当前轨迹采样帧"] }
+                StudioTextField { id: batchTimes; visible: batchMode.currentIndex === 0 || batchMode.currentIndex === 2; text: "0, 1"; placeholderText: batchMode.currentIndex === 0 ? "秒：0, 1.25, 3.5" : "序号：0, 30, 60"; Layout.fillWidth: true }
+                StudioButton { text: "Add Current Time · 添加预览时间"; visible: batchMode.currentIndex === 0; onClicked: batchTimes.text += (batchTimes.text.trim().length > 0 ? ", " : "") + pane.editor.startTime.toFixed(9) }
+                RowLayout {
+                    visible: batchMode.currentIndex === 2
+                    StudioLabel { text: "Grid FPS · 采样率" }
+                    StudioTextField { id: batchFps; text: "30"; Layout.fillWidth: true; validator: DoubleValidator { bottom: .001; top: 10000; locale: "C" } }
+                }
+                StudioLabel { visible: batchMode.currentIndex === 2; text: "序号 ÷ 采样率为请求秒数，不保证与源视频 PTS 序号相同。"; wrapMode: Text.Wrap; Layout.fillWidth: true; color: appearance.colors.secondaryText }
+                GridLayout {
+                    visible: batchMode.currentIndex === 1; columns: 2; Layout.fillWidth: true
+                    StudioLabel { text: "Begin · 秒" }
+                    StudioTextField { id: batchBegin; text: "0"; Layout.fillWidth: true; validator: DoubleValidator { bottom: 0; locale: "C" } }
+                    StudioLabel { text: "End · 秒" }
+                    StudioTextField { id: batchEnd; text: "1"; Layout.fillWidth: true; validator: DoubleValidator { bottom: 0; locale: "C" } }
+                    StudioLabel { text: "Interval · 秒" }
+                    StudioTextField { id: batchInterval; text: "0.5"; Layout.fillWidth: true; validator: DoubleValidator { bottom: .000001; locale: "C" } }
+                }
+                StudioComboBox { id: batchFormat; Layout.fillWidth: true; model: ["PNG", "JPG", "TIFF"] }
+                StudioTextField { id: batchPattern; text: "frame_{index}_{time}"; Layout.fillWidth: true; placeholderText: "{index} · {time} · {view}" }
+                StudioCheckBox { id: batchFigure; text: "Scientific Figure · 生成多联图" }
+                RowLayout {
+                    visible: batchFigure.checked
+                    StudioComboBox { id: figureFormat; Layout.fillWidth: true; model: ["PDF", "SVG", "PNG", "TIFF"] }
+                    StudioLabel { text: "列数" }
+                    StudioTextField { id: figureColumns; text: "2"; Layout.preferredWidth: 42; validator: IntValidator { bottom: 1; top: 32 } }
+                }
+                StudioLabel { visible: batchFigure.checked; text: "统一尺寸、配色及编辑快照，自动编号和时间标签。多联图最多 4000 万像素；PDF/SVG 编号及时间为矢量文字，视频与合成为位图。"; wrapMode: Text.Wrap; Layout.fillWidth: true; color: appearance.colors.secondaryText }
+                StudioButton {
+                    text: "Export Batch… · 批量导出"; Layout.fillWidth: true
+                    enabled: pane.editor.image.toString().length > 0 && exportWidth.acceptableInput && exportHeight.acceptableInput && exportDpi.acceptableInput &&
+                        (batchContent.currentIndex === 0 || pane.editor.hasResult) && (batchMode.currentIndex !== 3 || pane.editor.hasResult) &&
+                        (batchMode.currentIndex !== 2 || batchFps.acceptableInput) && (batchMode.currentIndex !== 1 || (batchBegin.acceptableInput && batchEnd.acceptableInput && batchInterval.acceptableInput)) &&
+                        (!batchFigure.checked || figureColumns.acceptableInput)
+                    onClicked: batchFolder.open()
+                }
+                StudioLabel { text: "每次创建独立子文件夹；取消时保留已完成图片及 manifest.json。科研事件来源尚未接入该工作区。"; wrapMode: Text.Wrap; Layout.fillWidth: true; color: appearance.colors.secondaryText }
             }
             StudioLabel { visible: pane.editor.previewing; text: "正在更新预览…" }
             ColumnLayout {

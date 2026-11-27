@@ -169,6 +169,26 @@ void validateSceneLayer(const QJsonObject &layer, const QString &kind)
 }
 }
 
+QString ProjectDocument::cameraKind() const
+{
+    const auto nativeCamera = values().value("native_camera").toString();
+    if (nativeCamera == "overview")
+        return nativeCamera;
+    return root_.value("composition").toObject().value("main_view").toObject().value("kind").toString();
+}
+
+void ProjectDocument::setCameraKind(const QString &kind)
+{
+    setValue(QStringLiteral("native_camera"), kind == "overview" ? kind : QString());
+    if (kind != "overview") {
+        auto composition = root_.value("composition").toObject();
+        auto mainView = composition.value("main_view").toObject();
+        mainView.insert("kind", kind);
+        composition.insert("main_view", mainView);
+        root_.insert("composition", composition);
+    }
+}
+
 bool ProjectDocument::transparentCanvas() const
 {
     return root_.value("composition").toObject().value("transparent_canvas").toBool(false);

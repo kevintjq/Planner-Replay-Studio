@@ -25,6 +25,8 @@ public:
     QJsonObject values() const;
     void setValue(const QString &key, const QString &value);
     std::vector<VideoClip> videos() const;
+    QString cameraKind() const;
+    void setCameraKind(const QString &kind);
     bool transparentCanvas() const;
     void setTransparentCanvas(bool transparent);
     QJsonArray layoutCues() const;

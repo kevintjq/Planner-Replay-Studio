@@ -38,6 +38,8 @@ class ReplayController : public QObject {
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY editHistoryChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY editHistoryChanged)
     Q_PROPERTY(QVariantList markers READ markers NOTIFY markersChanged)
+    Q_PROPERTY(QStringList cameraLabels READ cameraLabels CONSTANT)
+    Q_PROPERTY(int cameraIndex READ cameraIndex NOTIFY cameraChanged)
     Q_PROPERTY(bool transparentCanvas READ transparentCanvas NOTIFY transparentCanvasChanged)
     Q_PROPERTY(bool capturing READ capturing NOTIFY stateChanged)
     Q_PROPERTY(int captureMatte READ captureMatte NOTIFY stateChanged)
@@ -71,6 +73,9 @@ public:
     QVariantList markers() const;
     QVariantList layoutCues() const { return layouts_.toVariantList(); }
     QVariantMap activeLayout() const;
+    QStringList cameraLabels() const;
+    int cameraIndex() const { return cameraIndex_; }
+    Q_INVOKABLE void setCamera(int index);
     bool transparentCanvas() const { return project_ && project_->transparentCanvas(); }
     bool capturing() const { return capturing_; }
     int captureMatte() const { return captureMatte_; }
@@ -126,6 +131,7 @@ signals:
     void markersChanged();
     void layoutsChanged();
     void transparentCanvasChanged();
+    void cameraChanged();
     void activeLayoutChanged();
     void editHistoryChanged();
 
@@ -179,6 +185,6 @@ private:
     std::optional<replay::MapMode> mapMode_;
     std::atomic_bool cancelRequested_ = false;
     bool loading_ = false, capturing_ = false;
-    int captureMatte_ = 0;
+    int captureMatte_ = 0, cameraIndex_ = 0;
     double position_ = 0., start_ = 0., progress_ = 0.;
 };

@@ -1,5 +1,7 @@
 #include "cloud_view.h"
 
+#include "camera_presets.h"
+
 #include <QMatrix4x4>
 #include <QOpenGLBuffer>
 #include <QOpenGLContext>
@@ -10,6 +12,7 @@
 #include <QQuickOpenGLUtils>
 #include <algorithm>
 #include <cmath>
+#include <string_view>
 
 namespace {
 constexpr auto Vertex = R"glsl(
@@ -224,21 +227,58 @@ private:
     QMatrix4x4 cameraMatrix(const QSize &size, const std::optional<replay::Pose> &pose) const
     {
         constexpr float Radians = .01745329252f;
-        float yaw = (yaw_ + (camera_ == 0 ? -115.f : 180.f)) * Radians;
-        const float pitch = pitch_ * Radians;
+        const auto &preset = replay::CameraPresets[size_t(camera_)];
+        const auto mode = pose ? preset.mode : replay::CameraPreset::OrbitMap;
+        const auto &geometry = mode == replay::CameraPreset::OrbitMap ? replay::CameraPresets.front() : preset;
+        const float ratio = float(size.width()) / std::max(1, size.height());
+        QMatrix4x4 projection, view;
+        if (mode == replay::CameraPreset::FirstPerson || mode == replay::CameraPreset::FirstPersonRaw) {
+            auto orientation = pose->rotation;
+            if (mode == replay::CameraPreset::FirstPerson) {
+                const auto before = recording_->poseAt(stamp_ - 120'000'000);
+                const auto after = recording_->poseAt(stamp_ + 120'000'000);
+                if (before && after)
+                    orientation = QQuaternion::slerp(before->rotation, after->rotation, .5f);
+                auto stabilized = orientation.rotatedVector({1, 0, 0});
+                const QVector3D tangent(-stabilized.y(), stabilized.x(), 0);
+                if (tangent.lengthSquared() > 1e-6f) {
+                    const auto up = QVector3D::crossProduct(stabilized, tangent).normalized();
+                    orientation = QQuaternion::fromAxes(stabilized.normalized(), tangent.normalized(), up);
+                }
+            }
+            const auto baseForward = orientation.rotatedVector({1, 0, 0});
+            auto up = orientation.rotatedVector({0, 0, 1});
+            auto forward = QQuaternion::fromAxisAndAngle(up, yaw_).rotatedVector(baseForward);
+            const auto side = QVector3D::crossProduct(up, forward);
+            const auto tilt = QQuaternion::fromAxisAndAngle(side, -pitch_);
+            forward = tilt.rotatedVector(forward);
+            up = tilt.rotatedVector(up);
+            const auto eye = pose->position + .12f * baseForward + .4f * (-side * panX_ + up * panY_);
+            projection.perspective(std::clamp(65.f * scale_, 12.f, 120.f), ratio, .035f,
+                                   std::max(70.f, recording_->radius * 8.f));
+            view.lookAt(eye, eye + forward, up);
+            return projection * view;
+        }
+
+        float yaw = (yaw_ + geometry.yaw) * Radians;
+        const float pitch = std::clamp(geometry.pitch + pitch_, -75.f, 86.f) * Radians;
         auto center = recording_->center;
         float distance = recording_->radius * 2.65f * scale_;
-        if (camera_ == 1 && pose) {
+        if (mode != replay::CameraPreset::OrbitMap) {
             const auto forward = pose->rotation.rotatedVector({1, 0, 0});
             yaw += std::atan2(forward.y(), forward.x());
-            center = pose->position + forward * 3.f;
+            if (mode == replay::CameraPreset::OrbitAircraft) {
+                constexpr double Circle = 6.283185307179586;
+                const double elapsed = double(stamp_ - recording_->frames.front().stamp) / 1.e9;
+                yaw += float(std::fmod(elapsed, 9.) * Circle / 9.);
+            }
+            center = pose->position + forward * (geometry.id == std::string_view("rear") ? 3.f : 0.f);
             distance = std::clamp(recording_->radius * .5f, 6.f, 20.f) * scale_;
         }
         const QVector3D right(-std::sin(yaw), std::cos(yaw), 0);
         center += distance * (-right * panX_ + QVector3D(0,0,1) * panY_);
         const QVector3D direction(std::cos(yaw) * std::cos(pitch), std::sin(yaw) * std::cos(pitch), std::sin(pitch));
-        QMatrix4x4 projection, view;
-        projection.perspective(46.f, float(size.width()) / std::max(1, size.height()),
+        projection.perspective(46.f, ratio,
                                std::max(.01f, distance * .002f),
                                std::max(50.f, distance + recording_->radius * 5.f));
         view.lookAt(center + direction * distance, center, {0,0,1});
@@ -253,7 +293,7 @@ private:
     bool initialized_ = false, ready_ = false, needsStorage_ = false, showPath_ = true, transparent_ = false;
     int uploaded_ = 0, camera_ = 0;
     qint64 stamp_ = 0;
-    float yaw_ = 0, pitch_ = 32, scale_ = 1, pointSize_ = 2, panX_ = 0, panY_ = 0;
+    float yaw_ = 0, pitch_ = 0, scale_ = 1, pointSize_ = 2, panX_ = 0, panY_ = 0;
 };
 
 CloudView::CloudView(QQuickItem *parent) : QQuickFramebufferObject(parent)
@@ -271,7 +311,16 @@ void CloudView::setController(ReplayController *controller)
     controller_ = controller;
     if (controller_) {
         connect(controller_, &ReplayController::positionChanged, this, &CloudView::update);
-        connect(controller_, &ReplayController::recordingChanged, this, &CloudView::resetCamera);
+        currentRecording_ = controller_->recording();
+        connect(controller_, &ReplayController::recordingChanged, this, [this] {
+            const auto recording = controller_->recording();
+            if (recording != currentRecording_.lock()) {
+                currentRecording_ = recording;
+                resetCamera();
+            } else {
+                update();
+            }
+        });
     }
     emit controllerChanged();
     update();
@@ -279,7 +328,7 @@ void CloudView::setController(ReplayController *controller)
 
 void CloudView::setCamera(int camera)
 {
-    if (camera_ != camera) {
+    if (camera >= 0 && size_t(camera) < replay::CameraPresets.size() && camera_ != camera) {
         camera_ = camera;
         resetCamera();
         emit cameraChanged();
@@ -337,7 +386,7 @@ void CloudView::zoom(float steps)
 void CloudView::resetCamera()
 {
     yaw_ = panX_ = panY_ = 0;
-    pitch_ = camera_ == 1 ? 18.f : 32.f;
+    pitch_ = 0.f;
     scale_ = 1;
     update();
 }

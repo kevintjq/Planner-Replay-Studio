@@ -130,6 +130,7 @@ int main(int argc, char **argv)
                     app.exit(1);
                     return;
                 }
+                replay.setCamera(4);
                 replay.addSceneImage(logoUrl);
                 replay.addSceneText(QStringLiteral("原生合成"));
                 if (replay.sceneLayers().size() != 2) {
@@ -149,7 +150,7 @@ int main(int argc, char **argv)
                 const auto sceneUrl = QUrl::fromLocalFile(scratch.filePath(QStringLiteral("scene.slamfpv")));
                 replay.saveProjectAs(sceneUrl);
                 replay.openProject(sceneUrl);
-                if (replay.sceneLayers().size() != 2 ||
+                if (replay.sceneLayers().size() != 2 || replay.cameraIndex() != 4 ||
                     replay.sceneLayers().at(0).toMap().value("url").toUrl() != logoUrl ||
                     replay.sceneLayers().at(1).toMap().value("horizontal").toDouble() != .3 ||
                     replay.markers().size() != 1 ||

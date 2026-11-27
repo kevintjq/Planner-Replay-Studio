@@ -41,7 +41,8 @@ signals:
 private:
     friend class CloudRenderer;
     QPointer<ReplayController> controller_;
-    float yaw_ = 0, pitch_ = 32, scale_ = 1, pointSize_ = 1.5f;
+    std::weak_ptr<const replay::Recording> currentRecording_;
+    float yaw_ = 0, pitch_ = 0, scale_ = 1, pointSize_ = 1.5f;
     float panX_ = 0, panY_ = 0;
     int camera_ = 0;
     bool showPath_ = true, transparent_ = false;

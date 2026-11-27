@@ -296,8 +296,10 @@ ApplicationWindow {
                     PanelTitle { text: "视口"; Layout.topMargin: 8 }
                     ComboBox {
                         Layout.fillWidth: true
-                        model: ["地图总览", "跟随机体"]
-                        onActivated: cloud.camera = currentIndex
+                        model: replay.cameraLabels
+                        currentIndex: replay.cameraIndex
+                        enabled: !replay.loading
+                        onActivated: replay.setCamera(currentIndex)
                     }
                     CheckBox {
                         text: "显示已飞轨迹"
@@ -389,6 +391,7 @@ ApplicationWindow {
                                      && (window.activeLayout.backdropId.length > 0 || window.activeLayout.progress === 0))
                         anchors.fill: parent
                         controller: replay
+                        camera: replay.cameraIndex
                         MouseArea {
                             anchors.fill: parent
                             acceptedButtons: Qt.LeftButton | Qt.RightButton

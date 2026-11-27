@@ -1,5 +1,7 @@
 #include "replay_controller.h"
 
+#include "camera_presets.h"
+
 #include <QtConcurrentRun>
 #include <QDir>
 #include <QFileInfo>
@@ -75,6 +77,11 @@ void ReplayController::install(std::shared_ptr<const replay::Recording> record, 
     record_ = std::move(record);
     position_ = keepSession ? std::min(position_, duration()) : 0.;
     if (!keepSession) {
+        const auto camera = project_ ? project_->cameraKind() : QString();
+        const auto match = std::find_if(replay::CameraPresets.begin(), replay::CameraPresets.end(),
+            [&](const auto &preset) { return camera == QString::fromLatin1(preset.id); });
+        cameraIndex_ = match != replay::CameraPresets.end() ? int(match - replay::CameraPresets.begin()) : 0;
+        emit cameraChanged();
         undo_.clear();
         redo_.clear();
         const auto nextClips = project_ ? project_->videos() : std::vector<replay::VideoClip>();
@@ -230,6 +237,7 @@ replay::ProjectDocument ReplayController::projectSnapshot() const
     if (project_)
         return *project_;
     auto project = replay::ProjectDocument::create(demo() ? QStringLiteral("demo") : QStringLiteral("bag"), path_);
+    project.setCameraKind(QString::fromLatin1(replay::CameraPresets[size_t(cameraIndex_)].id));
     project.setValue("cloud_topic", cloudTopic());
     project.setValue("odom_topic", odometryTopic());
     project.setValue("cloud_mode", replacing() ? QStringLiteral("替换整图") : QStringLiteral("累积扫描"));
@@ -428,6 +436,26 @@ double ReplayController::duration() const
     for (const auto &value : sceneLayers_)
         end = std::max(end, value.toMap().value("end").toDouble());
     return end;
+}
+
+QStringList ReplayController::cameraLabels() const
+{
+    QStringList labels;
+    for (const auto &preset : replay::CameraPresets)
+        labels.append(QString::fromUtf8(preset.label));
+    return labels;
+}
+
+void ReplayController::setCamera(int index)
+{
+    if (loading_ || index < 0 || size_t(index) >= replay::CameraPresets.size() || cameraIndex_ == index)
+        return;
+
+    auto project = projectSnapshot();
+    project.setCameraKind(QString::fromLatin1(replay::CameraPresets[size_t(index)].id));
+    project_ = std::move(project);
+    cameraIndex_ = index;
+    emit cameraChanged();
 }
 
 void ReplayController::setTransparentCanvas(bool transparent)

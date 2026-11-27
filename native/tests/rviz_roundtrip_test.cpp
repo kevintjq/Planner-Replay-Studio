@@ -41,6 +41,7 @@ Visualization Manager:
     - Class: rviz/TF
       Name: Transforms
       Enabled: true
+      Value: true
       Color: 80; 90; 100
       Frames: {All Enabled: false, body: {Value: true}}
   Tools:
@@ -91,8 +92,15 @@ Window Geometry: {Width: 1440, Height: 900, QMainWindow State: preserved-state}
         expectRejected(invalid, "Plugin class edit silently ignored");
         invalid = layout; invalid.displays.push_back(invalid.displays[0]);
         expectRejected(invalid, "Duplicate source display silently collapsed");
+        invalid.displays.back().topic = "/another_topic";
+        expectRejected(invalid, "Duplicate source with different topics silently overwrote a display");
         invalid = layout; invalid.displays[0].enabled = true;
         expectRejected(invalid, "Enabled child below disabled group silently exported");
+        auto disabledTf = layout;
+        disabledTf.displays[1].enabled = false; disabledTf.displays[2].enabled = false;
+        const auto disabledYaml = YAML::Load(replay::serializeRviz(disabledTf).toStdString());
+        const auto tf = disabledYaml["Visualization Manager"]["Displays"][2];
+        expect(!tf["Enabled"].as<bool>() && !tf["Value"].as<bool>(), "RViz boolean Value retained a stale checkbox state");
         std::cout << "Byte-identical unedited RViz, project persistence, nested unknown plugins/QoS/views/tools, targeted edits and TF conflict passed.\n";
         return 0;
     } catch (const std::exception &error) { std::cerr << error.what() << '\n'; return 1; }

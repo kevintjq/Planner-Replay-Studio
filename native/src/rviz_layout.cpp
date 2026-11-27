@@ -217,7 +217,11 @@ QByteArray serializeRviz(const RvizLayout &layout)
                 throw std::runtime_error("不能在保真导出时静默更改插件类型。 / Changing a source plugin class is unsupported.");
             if (std::count_if(layout.displays.begin(), layout.displays.end(), [&](const auto &other) {
                     return other.sourcePath == display.sourcePath && other.kind == display.kind && other.topic == display.topic;
-                }) > 1)
+                }) > 1 || std::count_if(layout.displays.begin(), layout.displays.end(), [&](const auto &other) {
+                    return other.sourcePath == display.sourcePath;
+                }) != std::count_if(baseline.displays.begin(), baseline.displays.end(), [&](const auto &other) {
+                    return other.sourcePath == display.sourcePath;
+                }))
                 throw std::runtime_error("多个显示映射到同一源属性，已停止导出。 / Duplicate RViz source mapping.");
             if (display.kind == "tf") {
                 // 原生模型暂将 TF 的动态/静态话题拆开；单个 RViz TF 插件无法表达互相冲突的设置。
@@ -238,7 +242,12 @@ QByteArray serializeRviz(const RvizLayout &layout)
                 }
             }
             if (display.name != original->name) { node["Name"] = display.name.toStdString(); changed = true; }
-            if (display.enabled != original->enabled) { node["Enabled"] = display.enabled; changed = true; }
+            if (display.enabled != original->enabled) {
+                node["Enabled"] = display.enabled;
+                const auto value = scalar(field(node, "Value")).toLower();
+                if (value == "true" || value == "false") node["Value"] = display.enabled;
+                changed = true;
+            }
             if (display.color != original->color) { node["Color"] = colorText(display.color); changed = true; }
             if (display.kind != "tf" && display.topic != original->topic) {
                 const char *key = field(node, "Topic").IsNull() && !field(node, "Marker Topic").IsNull() ? "Marker Topic" : "Topic";

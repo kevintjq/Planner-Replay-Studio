@@ -4,9 +4,9 @@ import json
 
 import pytest
 
-from slam_fpv.composition import Composition, ImageLayer, LayerMotion, LayoutCue, PointCloudView, TimelineMarker, VideoLayer
-from slam_fpv.footage import VideoEdit
-from slam_fpv.project_file import ProjectFile, load_project, save_project, save_workspace_folder
+from planner_replay.composition import Composition, ImageLayer, LayerMotion, LayoutCue, PointCloudView, TimelineMarker, VideoLayer
+from planner_replay.footage import VideoEdit
+from planner_replay.project_file import ProjectFile, load_project, save_project, save_workspace_folder
 
 
 def test_round_trip_keeps_per_clip_anchors_and_per_view_overlays(tmp_path):
@@ -122,7 +122,7 @@ def test_cancelled_copy_preserves_existing_project_and_new_location_is_clean(tmp
 def test_staged_output_can_publish_across_drives(tmp_path, monkeypatch):
     from errno import EXDEV
 
-    from slam_fpv.export_media import publish_output
+    from planner_replay.export_media import publish_output
 
     cache = tmp_path / "cache"
     cache.mkdir()

@@ -5,7 +5,7 @@ from tempfile import TemporaryDirectory
 import sys
 import traceback
 
-from slam_fpv.gui import main
+from planner_replay.gui import main
 
 
 def smoke():
@@ -20,9 +20,9 @@ def smoke():
     from rosbags.highlevel import AnyReader
     from rosbags.rosbag1 import Writer
     from rosbags.typesys import Stores, get_typestore
-    from slam_fpv.composition import Composition, ImageLayer, TextLayer, VideoLayer, compose
-    from slam_fpv.gui import RendererApp
-    from slam_fpv.project_file import ProjectFile, load_project, save_project, save_workspace_folder
+    from planner_replay.composition import Composition, ImageLayer, TextLayer, VideoLayer, compose
+    from planner_replay.gui import RendererApp
+    from planner_replay.project_file import ProjectFile, load_project, save_project, save_workspace_folder
 
     assert vtk.vtkVersion.GetVTKMajorVersion() >= 9
     assert cv2.TrackerCSRT_create() is not None

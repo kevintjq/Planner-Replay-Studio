@@ -2,7 +2,7 @@ from types import SimpleNamespace as NS
 import struct
 import numpy as np
 import pytest
-from slam_fpv.cloud import decode,CloudMap
+from planner_replay.cloud import decode,CloudMap
 
 
 @pytest.mark.parametrize('endian',['<','>'])
@@ -26,7 +26,7 @@ def test_map_voxel_bound_replace():
 
 
 def test_scan_palette_is_stable_and_zero_voxel_keeps_raw_samples():
-    from slam_fpv.cloud import CloudMap
+    from planner_replay.cloud import CloudMap
 
     cloud = CloudMap(0, 5, scan_height=True, height_limits=(-1, 3))
     points = np.array([[0, 0, 0], [.001, 0, 0], [0, 0, 2]], dtype=float)
@@ -53,7 +53,7 @@ def test_range_palette_recolors_existing_points_from_current_body_position():
 
 @pytest.mark.parametrize("extent", [7., 2**22])
 def test_voxel_keys_preserve_the_first_point_across_signed_cells(extent):
-    from slam_fpv.cloud import first_voxel_indices
+    from planner_replay.cloud import first_voxel_indices
 
     points = np.array([[-extent, 1., 2.], [-extent + .25, 1., 2.],
                        [.25, -1.1, 2.], [.75, -.9, 2.], [.5, -.8, 2.],

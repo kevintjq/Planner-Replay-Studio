@@ -1,7 +1,7 @@
 import imageio.v2 as imageio
 import numpy as np
 
-from slam_fpv.trajectory_image import timed_ghost_indices, track_trajectory
+from planner_replay.trajectory_image import timed_ghost_indices, track_trajectory
 
 
 def test_timed_ghost_sampling_uses_video_timestamps_and_skips_missing_frames():

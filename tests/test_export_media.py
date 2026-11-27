@@ -4,9 +4,9 @@ import av
 from imageio_ffmpeg import get_ffmpeg_exe
 import numpy as np
 
-from slam_fpv.composition import VideoLayer
-from slam_fpv.export_media import mux_audio
-from slam_fpv.footage import VideoEdit
+from planner_replay.composition import VideoLayer
+from planner_replay.export_media import mux_audio
+from planner_replay.footage import VideoEdit
 
 
 def test_mux_preserves_aligned_audio_after_silence_and_keeps_video(tmp_path):

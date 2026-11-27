@@ -1,6 +1,6 @@
 import numpy as np
 
-from slam_fpv.alignment import motion_candidates
+from planner_replay.alignment import motion_candidates
 
 
 def test_alignment_candidates_find_a_turn_with_wrapped_yaw():

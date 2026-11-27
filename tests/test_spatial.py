@@ -3,9 +3,9 @@ from contextlib import ExitStack
 import numpy as np
 import pytest
 
-from slam_fpv.cli import parser
-from slam_fpv.sources import DemoSource
-from slam_fpv.spatial import CameraView, SpatialOverlays, camera_edges
+from planner_replay.cli import parser
+from planner_replay.sources import DemoSource
+from planner_replay.spatial import CameraView, SpatialOverlays, camera_edges
 
 
 def test_camera_geometry_and_scan_expiry():
@@ -34,8 +34,8 @@ def test_camera_geometry_and_scan_expiry():
 
 
 def test_suggested_scan_prefers_raw_livox_over_world_and_unlabelled_cloud():
-    from slam_fpv.sensor_topics import LIVOX_TYPES, suggested_topic
-    from slam_fpv.spatial import CLOUD
+    from planner_replay.sensor_topics import LIVOX_TYPES, suggested_topic
+    from planner_replay.spatial import CLOUD
     topics = [{"type": CLOUD, "topic": "/cloud_registered", "frame": "map"},
               {"type": CLOUD, "topic": "/cloud", "frame": "sensor"},
               {"type": LIVOX_TYPES[0], "topic": "/livox/lidar", "frame": "livox"}]

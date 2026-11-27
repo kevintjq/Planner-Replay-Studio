@@ -3,8 +3,8 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "slam-fpv-renderer"
-version = "0.3.0"
+name = "planner-replay-studio"
+version = "0.3.1"
 description = "Planner Replay Studio for ROS1 UAV planning, point clouds and flight footage"
 requires-python = ">=3.10"
 dependencies = ["numpy>=1.24,<3", "vtk>=9.3,<10", "rosbags>=0.10,<0.12", "imageio>=2.34,<3", "imageio-ffmpeg>=0.5,<1", "Pillow>=10,<14", "av>=15,<19", "opencv-contrib-python-headless>=4.11,<5"]
@@ -13,12 +13,10 @@ dependencies = ["numpy>=1.24,<3", "vtk>=9.3,<10", "rosbags>=0.10,<0.12", "imagei
 test = ["pytest>=8,<10"]
 
 [project.scripts]
-planner-replay = "slam_fpv.cli:main"
-slam-fpv = "slam_fpv.cli:main"
+planner-replay = "planner_replay.cli:main"
 
 [project.gui-scripts]
-planner-replay-gui = "slam_fpv.gui:main"
-slam-fpv-gui = "slam_fpv.gui:main"
+planner-replay-gui = "planner_replay.gui:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

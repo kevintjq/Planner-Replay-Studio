@@ -1419,7 +1419,7 @@ class RendererApp(LayerControls):
             destination.parent.mkdir(parents=True, exist_ok=True)
             cache = self.export_cache(destination)
             cache.mkdir(parents=True, exist_ok=True)
-            with TemporaryDirectory(prefix=".slam-fpv-", dir=cache) as staging:
+            with TemporaryDirectory(prefix=".planner-replay-", dir=cache) as staging:
                 temporary_output = Path(staging) / destination.name
                 render(args, source, staging=temporary_output, project=project,
                        progress=lambda done, total: self.events.put(("progress", (done, total))),

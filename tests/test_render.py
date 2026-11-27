@@ -4,13 +4,13 @@ import sys
 import imageio.v2 as imageio
 import numpy as np
 import vtk
-from slam_fpv.renderer import Renderer, view_camera
-from slam_fpv.cloud import CloudMap
-from slam_fpv.sources import DemoSource
+from planner_replay.renderer import Renderer, view_camera
+from planner_replay.cloud import CloudMap
+from planner_replay.sources import DemoSource
 
 
 def test_world_path_crossing_camera_is_clipped_without_a_bridge():
-    from slam_fpv.renderer import clip_near_plane
+    from planner_replay.renderer import clip_near_plane
 
     points = np.array([[0., 0., 2.], [0., 0., -1.], [4., 0., -1.], [4., 0., 2.]])
     left, right = clip_near_plane(points, points[:, 2], .1)
@@ -20,7 +20,7 @@ def test_world_path_crossing_camera_is_clipped_without_a_bridge():
 
 def test_range_colors_follow_body_without_a_new_cloud():
     from vtk.util.numpy_support import vtk_to_numpy
-    from slam_fpv.geometry import matrix
+    from planner_replay.geometry import matrix
 
     cloud = CloudMap(0, range_color=True, range_limits=(0., 10.))
     cloud.add(np.array([[0., 0., 0.], [8., 0., 0.]]))
@@ -57,7 +57,7 @@ def test_edl_two_view_frame_and_rgb_axes():
 
 def test_video_export_frame_count_size_and_motion(tmp_path):
     output=tmp_path/'demo.mp4'
-    subprocess.run([sys.executable,'-m','slam_fpv.cli','demo','--output',str(output),
+    subprocess.run([sys.executable,'-m','planner_replay.cli','demo','--output',str(output),
                     '--seconds','1','--fps','8','--width','640','--height','360'],check=True,capture_output=True)
     r=imageio.get_reader(output)
     try:
@@ -72,7 +72,7 @@ def test_video_export_frame_count_size_and_motion(tmp_path):
 
 
 def test_slam_outline_keeps_tf_and_transparent_inset_background():
-    from slam_fpv.geometry import matrix
+    from planner_replay.geometry import matrix
 
     r = Renderer(640, 360, edl=False, slam_view=True, clean=True)
     try:
@@ -118,7 +118,7 @@ def test_configurable_point_cloud_cameras_are_separate_and_unlabelled():
 
 
 def test_fpv_camera_tracks_body_pitch_and_roll_and_orbit_moves():
-    from slam_fpv.geometry import matrix
+    from planner_replay.geometry import matrix
 
     pose = matrix([3., 4., 5.], [0.12, .16, .3, .93])
     rear, high = (4., 2., 0.), (7., 4., 0.)
@@ -130,7 +130,7 @@ def test_fpv_camera_tracks_body_pitch_and_roll_and_orbit_moves():
 
 
 def test_stabilized_fpv_reduces_jitter_without_wrapping_the_turn():
-    from slam_fpv.geometry import fpv_angles, matrix, stabilized_fpv_pose
+    from planner_replay.geometry import fpv_angles, matrix, stabilized_fpv_pose
 
     class Source:
         first, last = 0, 2_000_000_000
@@ -159,7 +159,7 @@ def test_stabilized_fpv_reduces_jitter_without_wrapping_the_turn():
 
 
 def test_fpv_hides_trajectory_and_indicator_shows_unsmoothed_attitude():
-    from slam_fpv.geometry import matrix
+    from planner_replay.geometry import matrix
 
     pose = matrix([0., 0., 1.], [0., 0., 0., 1.])
     rolled = matrix([0., 0., 1.], [.30, 0., 0., .95])
@@ -178,8 +178,8 @@ def test_fpv_hides_trajectory_and_indicator_shows_unsmoothed_attitude():
 
 
 def test_actual_and_planned_trajectory_use_independent_widths():
-    from slam_fpv.renderer import SPATIAL_COLORS
-    from slam_fpv.spatial import Geometry, SpatialFrame
+    from planner_replay.renderer import SPATIAL_COLORS
+    from planner_replay.spatial import Geometry, SpatialFrame
 
     source = DemoSource(1)
     path = np.array([[.5, 0, 1.], [1., 0, 1.]])
@@ -197,7 +197,7 @@ def test_actual_and_planned_trajectory_use_independent_widths():
 
 
 def test_scan_highlight_preserves_map_colors_when_it_overlaps_the_map():
-    from slam_fpv.spatial import SpatialFrame
+    from planner_replay.spatial import SpatialFrame
 
     source = DemoSource(1)
     stamp, points, _ = next(source.clouds())
@@ -218,7 +218,7 @@ def test_scan_highlight_preserves_map_colors_when_it_overlaps_the_map():
 
 
 def test_per_view_filters_keep_scan_out_of_selected_fpvs():
-    from slam_fpv.spatial import Geometry, SpatialFrame
+    from planner_replay.spatial import Geometry, SpatialFrame
 
     source = DemoSource(1)
     path = np.array([[.5, 0, 1.], [1., 0, 1.]])
@@ -236,8 +236,8 @@ def test_per_view_filters_keep_scan_out_of_selected_fpvs():
 
 
 def test_views_zoom_independently_and_goal_is_a_sized_disk():
-    from slam_fpv.renderer import SPATIAL_COLORS, zoomed_fov
-    from slam_fpv.spatial import Geometry, SpatialFrame
+    from planner_replay.renderer import SPATIAL_COLORS, zoomed_fov
+    from planner_replay.spatial import Geometry, SpatialFrame
 
     source = DemoSource(1)
     pose = source.pose(source.first)
@@ -270,8 +270,8 @@ def test_views_zoom_independently_and_goal_is_a_sized_disk():
 
 
 def test_interactive_preview_keeps_selected_point_cloud_quality():
-    from slam_fpv.cli import parser
-    from slam_fpv.preview_transport import configure_preview
+    from planner_replay.cli import parser
+    from planner_replay.preview_transport import configure_preview
 
     args = parser().parse_args(["demo", "--output", "preview.png", "--width", "3840", "--height", "2160",
                                "--fps", "60", "--voxel", ".015", "--max-points", "850000"])
@@ -284,8 +284,8 @@ def test_interactive_preview_keeps_selected_point_cloud_quality():
 
 
 def test_proxy_stream_delivers_ordered_previews_without_writing_a_file(tmp_path):
-    from slam_fpv.cli import open_source, parser, render
-    from slam_fpv.composition import Composition
+    from planner_replay.cli import open_source, parser, render
+    from planner_replay.composition import Composition
 
     output = tmp_path / "proxy.png"
     args = parser().parse_args([

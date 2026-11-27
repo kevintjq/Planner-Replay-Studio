@@ -13,7 +13,7 @@ def test_loopback_bridge_protocol(tmp_path):
     with socket.socket() as s:
         s.bind(('127.0.0.1',0)); port=s.getsockname()[1]
     output=tmp_path/'stream.mp4'
-    process=subprocess.Popen([sys.executable,'-m','slam_fpv.cli','listen','--output',str(output),
+    process=subprocess.Popen([sys.executable,'-m','planner_replay.cli','listen','--output',str(output),
         '--port',str(port),'--delay','.1','--seconds','.5','--fps','8','--width','640','--height','360'],
         stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
     try:

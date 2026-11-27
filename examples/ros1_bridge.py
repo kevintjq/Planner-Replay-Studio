@@ -19,14 +19,14 @@ def main():
     p.add_argument('--port',type=int,default=8765)
     a=p.parse_args()
     from rospy_message_converter import message_converter
-    rospy.init_node('slam_fpv_bridge',anonymous=True)
+    rospy.init_node('planner_replay_bridge',anonymous=True)
     pending=queue.Queue(maxsize=32)
     def callback(msg,topic):
         value=message_converter.convert_ros_message_to_dictionary(msg)
         # Converter versions differ on uint8[] representation; normalize it.
         if isinstance(msg,PointCloud2): value['data']=base64.b64encode(bytes(msg.data)).decode('ascii')
         try: pending.put_nowait(dict(topic=topic,message=value))
-        except queue.Full: rospy.logwarn_throttle(2,'SLAM FPV bridge queue full: dropping message')
+        except queue.Full: rospy.logwarn_throttle(2,'Planner Replay bridge queue full: dropping message')
     sock=socket.create_connection(('127.0.0.1',a.port),timeout=10); sock.settimeout(None)
     def send():
         try:

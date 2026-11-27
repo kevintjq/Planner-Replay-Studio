@@ -4,10 +4,10 @@ from pathlib import Path
 from PIL import Image
 import numpy as np
 
-from slam_fpv.composition import (
+from planner_replay.composition import (
     Composition, LayoutCue, PointCloudView, SpeedHistory, TextLayer, VideoLayer, compose, estimated_speed,
 )
-from slam_fpv.sources import DemoSource
+from planner_replay.sources import DemoSource
 
 
 def test_layer_blend_bounds_and_intervals():
@@ -143,7 +143,7 @@ def test_inset_marker_sets_its_own_size_position_and_duration():
 
 
 def test_all_visible_windows_shrink_independently_with_eased_geometry():
-    from slam_fpv.composition import LayerMotion
+    from planner_replay.composition import LayerMotion
 
     scene = Image.new("RGBA", (640, 360))
     cloud = Image.new("RGBA", (320, 180), (15, 70, 80, 150))
@@ -174,7 +174,7 @@ def test_all_visible_windows_shrink_independently_with_eased_geometry():
 
 
 def test_timed_image_alpha_fullscreen_and_motion(tmp_path):
-    from slam_fpv.composition import ImageLayer, LayerMotion
+    from planner_replay.composition import ImageLayer, LayerMotion
 
     asset = tmp_path / "logo.png"
     logo = Image.new("RGBA", (40, 20))

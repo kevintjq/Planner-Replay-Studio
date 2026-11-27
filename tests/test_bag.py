@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 from rosbags.rosbag1 import Writer
 from rosbags.typesys import Stores,get_typestore,get_types_from_msg
-from slam_fpv.sources import BagSource
+from planner_replay.sources import BagSource
 
 
 @pytest.fixture
@@ -121,8 +121,8 @@ def test_direct_bag_tf_static_and_header_sync(bag,pose_source):
 
 
 def test_speed_topic_uses_recorded_linear_velocity_even_when_pose_comes_from_tf(bag):
-    from slam_fpv.cli import open_source, parser, render
-    from slam_fpv.composition import Composition
+    from planner_replay.cli import open_source, parser, render
+    from planner_replay.composition import Composition
 
     args = parser().parse_args(["bag", str(bag), "--output", "preview.png", "--cloud-topic", "/points",
                                "--odom-topic", "/odom", "--world", "map", "--pose-source", "tf"])
@@ -153,8 +153,8 @@ def test_native_ego_map_with_zero_header_stamp_replays_on_bag_clock(bag):
 
 def test_overlay_diagnostics_distinguish_first_message_missing_tf_and_removed_corridor(bag):
     from contextlib import ExitStack
-    from slam_fpv.cli import parser
-    from slam_fpv.spatial import SpatialOverlays
+    from planner_replay.cli import parser
+    from planner_replay.spatial import SpatialOverlays
 
     plan = "/planning/bspline"
     args = parser().parse_args(["bag", str(bag), "--output", "preview.png", "--plan-topic", plan,
@@ -183,7 +183,7 @@ def test_missing_cloud_and_frames_rejected(bag):
 def test_export_synthetic_bag_cli(bag,tmp_path):
     import subprocess,sys,json
     output=tmp_path/'bag.png'
-    subprocess.run([sys.executable,'-m','slam_fpv.cli','bag',str(bag),'--cloud-topic','/points',
+    subprocess.run([sys.executable,'-m','planner_replay.cli','bag',str(bag),'--cloud-topic','/points',
                     '--odom-topic','/odom','--world','map','--body','body','--output',str(output),
                     '--width','640','--height','360'],check=True,capture_output=True)
     report=json.loads(output.with_suffix('.json').read_text())
@@ -211,10 +211,10 @@ def test_mission_topics_obey_headers_tf_deletes_and_separate_scans(bag):
 
 
 def test_detect_sensor_topics_and_frames(bag):
-    from slam_fpv.cli import open_source, parser
-    from slam_fpv.sources import inspect_bag
-    from slam_fpv.sensor_topics import pose_frames
-    from slam_fpv.spatial import camera_edges
+    from planner_replay.cli import open_source, parser
+    from planner_replay.sources import inspect_bag
+    from planner_replay.sensor_topics import pose_frames
+    from planner_replay.spatial import camera_edges
 
     metadata = inspect_bag(bag)
     assert pose_frames(metadata["topics"], metadata["tf_pairs"], "/odom", "/points") == ("map", "body")
@@ -233,8 +233,8 @@ def test_detect_sensor_topics_and_frames(bag):
 
 
 def test_super_trajectory_color_and_native_goal_replace_per_replan(bag):
-    from slam_fpv.sensor_topics import suggested_topic
-    from slam_fpv.sources import inspect_bag
+    from planner_replay.sensor_topics import suggested_topic
+    from planner_replay.sources import inspect_bag
 
     topics = inspect_bag(bag)["topics"]
     plan = suggested_topic(topics, "plan")
@@ -257,8 +257,8 @@ def test_super_trajectory_color_and_native_goal_replace_per_replan(bag):
 
 
 def test_ego_bspline_uses_start_time_and_samples_curve_in_chosen_frame(bag):
-    from slam_fpv.sensor_topics import suggested_topic
-    from slam_fpv.sources import inspect_bag
+    from planner_replay.sensor_topics import suggested_topic
+    from planner_replay.sources import inspect_bag
 
     topics = [row for row in inspect_bag(bag)["topics"] if not row["topic"].startswith("/super/")]
     plan = suggested_topic(topics, "plan")

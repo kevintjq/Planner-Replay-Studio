@@ -1,8 +1,8 @@
 import imageio.v2 as imageio
 import numpy as np
 
-from slam_fpv.cli import open_source, parser, render, validate
-from slam_fpv.footage import composite, video_rect
+from planner_replay.cli import open_source, parser, render, validate
+from planner_replay.footage import composite, video_rect
 
 
 def test_video_rect_keeps_aspect_and_clamps_tall_footage():
@@ -49,7 +49,7 @@ def test_pts_crop_trim_and_two_anchor_drift(tmp_path):
 
     import av
 
-    from slam_fpv.footage import FlightVideo, VideoEdit, VideoReader
+    from planner_replay.footage import FlightVideo, VideoEdit, VideoReader
 
     clip = tmp_path / "variable-rate.mp4"
     with av.open(str(clip), mode="w") as output:
@@ -81,7 +81,7 @@ def test_pts_crop_trim_and_two_anchor_drift(tmp_path):
 
 def test_video_edit_inverse_mapping():
     import pytest
-    from slam_fpv.footage import VideoEdit
+    from planner_replay.footage import VideoEdit
 
     for edit in (VideoEdit(offset=.2), VideoEdit(anchors=((1., .2), (11., 10.5)))):
         for time in (0., 3., 7.5):
@@ -89,7 +89,7 @@ def test_video_edit_inverse_mapping():
 
 
 def test_cut_segments_keep_source_timestamps_and_skip_removed_media(tmp_path):
-    from slam_fpv.footage import FlightVideo, VideoEdit
+    from planner_replay.footage import FlightVideo, VideoEdit
 
     clip = tmp_path / "cut.mp4"
     with imageio.get_writer(clip, fps=4, codec="libx264", macro_block_size=2) as writer:

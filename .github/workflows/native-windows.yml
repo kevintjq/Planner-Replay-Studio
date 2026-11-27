@@ -1,4 +1,4 @@
-name: Native Windows preview
+name: Native Windows compatibility build
 
 on:
   workflow_dispatch:
@@ -70,6 +70,9 @@ jobs:
           if ($command -ne ('"' + $uninstaller + '"')) {
             throw 'Windows Apps settings does not have a valid uninstall command.'
           }
+          $pythonRuntime = Get-ChildItem -Path (Join-Path $target 'app') -File -Recurse |
+            Where-Object { $_.Name -match '^python.*\.(dll|exe)$' -or $_.Extension -in '.py', '.pyd', '.pyc' }
+          if ($pythonRuntime) { throw "Unexpected Python runtime: $($pythonRuntime.Name)" }
           $originalPath = $env:PATH
           try {
             $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"

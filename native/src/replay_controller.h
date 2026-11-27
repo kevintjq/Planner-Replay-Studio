@@ -1,5 +1,6 @@
 #pragma once
 
+#include "project_document.h"
 #include "replay_data.h"
 
 #include <QElapsedTimer>
@@ -26,6 +27,7 @@ class ReplayController : public QObject {
     Q_PROPERTY(int pointCount READ pointCount NOTIFY positionChanged)
     Q_PROPERTY(bool replacing READ replacing NOTIFY recordingChanged)
     Q_PROPERTY(bool demo READ demo NOTIFY recordingChanged)
+    Q_PROPERTY(QString projectPath READ projectPath NOTIFY recordingChanged)
 public:
     explicit ReplayController(QObject *parent = nullptr);
     ~ReplayController() override;
@@ -44,11 +46,15 @@ public:
     QStringList odometryTopics() const { return record_->odometryTopics; }
     int pointCount() const;
     bool replacing() const { return record_->replace; }
-    bool demo() const { return path_.isEmpty(); }
+    bool demo() const { return path_.isEmpty() && (!project_ || project_->source() == "demo"); }
+    QString projectPath() const { return project_ ? project_->path() : QString(); }
     std::shared_ptr<const replay::Recording> recording() const { return record_; }
 
     Q_INVOKABLE void openBag(const QUrl &url);
     Q_INVOKABLE void openDemo();
+    Q_INVOKABLE void openProject(const QUrl &url);
+    Q_INVOKABLE void saveProjectAs(const QUrl &url);
+    Q_INVOKABLE void exportProjectFolder(const QUrl &parent);
     Q_INVOKABLE void setCloudTopic(const QString &topic);
     Q_INVOKABLE void setOdometryTopic(const QString &topic);
     Q_INVOKABLE void setReplacing(bool replace);
@@ -69,13 +75,18 @@ private:
         QString path;
         QString issue;
         std::optional<replay::MapMode> mode;
+        std::optional<replay::ProjectDocument> project;
     };
-    void load(const QString &path, const replay::LoadOptions &options);
+    void load(const QString &path, const replay::LoadOptions &options,
+              std::optional<replay::ProjectDocument> project = {});
+    replay::ProjectDocument projectSnapshot() const;
     void install(std::shared_ptr<const replay::Recording> record);
     void setPosition(double seconds);
 
     std::shared_ptr<const replay::Recording> record_;
     QFutureWatcher<Result> watcher_;
+    QFutureWatcher<QString> folderWatcher_;
+    std::optional<replay::ProjectDocument> project_;
     QTimer timer_;
     QElapsedTimer clock_;
     QString path_, status_;

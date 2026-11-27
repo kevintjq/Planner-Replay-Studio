@@ -2,11 +2,14 @@
 #include "replay_controller.h"
 
 #include <QGuiApplication>
+#include <QFileInfo>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickWindow>
 #include <QSurfaceFormat>
+#include <QTemporaryDir>
 #include <QTimer>
+#include <exception>
 
 int main(int argc, char **argv)
 {
@@ -33,9 +36,29 @@ int main(int argc, char **argv)
     engine.load(QUrl(QStringLiteral("qrc:/qml/Main.qml")));
     if (engine.rootObjects().isEmpty())
         return 1;
-    if (smoke)
-        QTimer::singleShot(0, &app, [&app, &replay] { app.exit(replay.duration() > 0 ? 0 : 1); });
-    else if (app.arguments().size() == 2)
-        replay.openBag(QUrl::fromLocalFile(app.arguments().at(1)));
+    if (smoke) {
+        QTimer::singleShot(0, &app, [&app, &replay] {
+            try {
+                QTemporaryDir scratch;
+                if (!scratch.isValid()) {
+                    app.exit(1);
+                    return;
+                }
+                const auto project = replay::ProjectDocument::create(QStringLiteral("demo"))
+                                         .saveAs(scratch.filePath(QStringLiteral("smoke.slamfpv")));
+                replay.openProject(QUrl::fromLocalFile(project.path()));
+                app.exit(replay.duration() > 0. && replay.projectPath() == project.path() ? 0 : 1);
+            } catch (const std::exception &) {
+                app.exit(1);
+            }
+        });
+    } else if (app.arguments().size() == 2) {
+        const auto path = QFileInfo(app.arguments().at(1)).absoluteFilePath();
+        const auto url = QUrl::fromLocalFile(path);
+        if (QFileInfo(path).suffix().compare(QStringLiteral("slamfpv"), Qt::CaseInsensitive) == 0)
+            replay.openProject(url);
+        else
+            replay.openBag(url);
+    }
     return app.exec();
 }

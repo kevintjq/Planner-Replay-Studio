@@ -39,7 +39,27 @@ ApplicationWindow {
         nameFilters: ["ROS1 bag (*.bag)"]
         onAccepted: replay.openBag(selectedFile)
     }
-    Shortcut { sequence: StandardKey.Open; enabled: !replay.loading; onActivated: bagDialog.open() }
+    FileDialog {
+        id: projectDialog
+        title: "打开 Planner Replay 项目"
+        nameFilters: ["Planner Replay 项目 (*.slamfpv)"]
+        onAccepted: replay.openProject(selectedFile)
+    }
+    FileDialog {
+        id: saveDialog
+        title: "保存 Planner Replay 项目"
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "slamfpv"
+        nameFilters: ["Planner Replay 项目 (*.slamfpv)"]
+        onAccepted: replay.saveProjectAs(selectedFile)
+    }
+    FolderDialog {
+        id: packageDialog
+        title: "选择打包项目的上级文件夹"
+        onAccepted: replay.exportProjectFolder(selectedFolder)
+    }
+    Shortcut { sequence: StandardKey.Open; enabled: !replay.loading; onActivated: projectDialog.open() }
+    Shortcut { sequence: StandardKey.SaveAs; enabled: !replay.loading; onActivated: saveDialog.open() }
     Shortcut { sequence: "Space"; onActivated: replay.togglePlayback() }
     Shortcut { sequence: "Left"; onActivated: { replay.pause(); replay.seek(replay.position - 1 / 60) } }
     Shortcut { sequence: "Right"; onActivated: { replay.pause(); replay.seek(replay.position + 1 / 60) } }
@@ -102,6 +122,20 @@ ApplicationWindow {
                         text: replay.name
                         elide: Text.ElideMiddle
                         Layout.bottomMargin: 8
+                    }
+
+                    PanelTitle { text: "项目" }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Button { text: "打开项目"; enabled: !replay.loading; onClicked: projectDialog.open() }
+                        Button { text: "另存为"; enabled: !replay.loading; onClicked: saveDialog.open() }
+                        Button { text: "打包"; enabled: !replay.loading; onClicked: packageDialog.open() }
+                    }
+                    Caption {
+                        Layout.fillWidth: true
+                        visible: replay.projectPath.length > 0
+                        text: replay.projectPath
+                        elide: Text.ElideMiddle
                     }
 
                     PanelTitle { text: "数据来源" }
@@ -183,7 +217,7 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 PanelTitle { text: "点云回放" }
                 Caption { text: "左键旋转 · 右键平移 · 滚轮缩放"; Layout.fillWidth: true }
-                Caption { text: replay.demo ? "模拟数据" : "ROS1 录制"; color: window.accent }
+                Caption { text: replay.demo ? "模拟数据" : replay.cloudTopic.length ? "ROS1 录制" : "无点云数据"; color: window.accent }
             }
             Rectangle {
                 Layout.fillWidth: true

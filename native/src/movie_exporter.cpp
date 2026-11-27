@@ -18,7 +18,6 @@
 #include <stdexcept>
 
 namespace {
-constexpr int FrameRate = 60;
 constexpr int Width = 1920;
 constexpr int Height = 1080;
 
@@ -192,7 +191,7 @@ double MovieExporter::progress() const
 }
 
 void MovieExporter::start(const QUrl &destination, QQuickItem *canvas, double begin, double end,
-                          double speed, int audioIndex)
+                          double speed, int audioIndex, int width, int height, int fps, int quality)
 {
     if (exporting_ || process_.state() != QProcess::NotRunning || watcher_.isRunning() || replay_.loading() || replay_.capturing() || !canvas)
         return;
@@ -211,6 +210,15 @@ void MovieExporter::start(const QUrl &destination, QQuickItem *canvas, double be
         reject(tr("导出文件不能覆盖项目素材。"));
         return;
     }
+    if (width < 320 || width > 3840 || width % 4 || height < 240 || height > 2160 || height % 2 ||
+        fps < 1 || fps > 120 || quality < 0 || quality > 51) {
+        reject(tr("请检查导出尺寸、帧率和 CRF。"));
+        return;
+    }
+    width_ = width;
+    height_ = height;
+    fps_ = fps;
+    quality_ = quality;
     const auto &clips = replay_.videoClips();
     if (audioIndex < -1 || (audioIndex >= 0 && size_t(audioIndex) >= clips.size())) {
         reject(tr("所选音轨已失效。"));
@@ -248,13 +256,13 @@ void MovieExporter::start(const QUrl &destination, QQuickItem *canvas, double be
     speed_ = speed;
     still_ = false;
     index_ = 0;
-    count_ = std::max(qint64(1), qint64(std::ceil((end - begin) * FrameRate / speed - 1e-8)));
+    count_ = std::max(qint64(1), qint64(std::ceil((end - begin) * fps_ / speed - 1e-8)));
     cancelled_ = false;
     awaitingWrite_ = false;
     diagnostic_.clear();
     pendingError_.clear();
     decoder_ = std::make_shared<Decoder>(clips, cancelled_);
-    message_ = tr("正在导出 1080p / 60 fps MP4…");
+    message_ = tr("正在导出 %1 × %2 / %3 fps MP4…").arg(width_).arg(height_).arg(fps_);
     exporting_ = true;
     emit changed();
     process_.start(executable_, encoderArguments());
@@ -291,11 +299,11 @@ void MovieExporter::startStill(const QUrl &destination, QQuickItem *canvas, doub
 QStringList MovieExporter::encoderArguments() const
 {
     QStringList arguments{"-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-copyts",
-                          "-f", "rawvideo", "-pixel_format", "rgb24", "-video_size", "1920x1080",
-                          "-framerate", "60", "-i", "pipe:0"};
+                          "-f", "rawvideo", "-pixel_format", "rgb24", "-video_size", QString::number(width_) + "x" + QString::number(height_),
+                          "-framerate", QString::number(fps_), "-i", "pipe:0"};
     if (audio_) {
         const auto &timing = audio_->timing;
-        const double outputDuration = double(count_) / FrameRate;
+        const double outputDuration = double(count_) / fps_;
         const double sourceStart = timing.sourceSeconds(begin_);
         const double sourceEnd = timing.sourceSeconds(begin_ + outputDuration * speed_);
         std::vector<std::pair<double,double>> spans;
@@ -344,7 +352,7 @@ QStringList MovieExporter::encoderArguments() const
     } else {
         arguments << "-an";
     }
-    arguments << "-c:v" << "libx264" << "-preset" << "veryfast" << "-crf" << "18"
+    arguments << "-c:v" << "libx264" << "-preset" << "veryfast" << "-crf" << QString::number(quality_)
               << "-pix_fmt" << "yuv420p" << "-movflags" << "+faststart" << staging_->filePath("movie.mp4");
     return arguments;
 }
@@ -357,7 +365,7 @@ void MovieExporter::requestNext()
         process_.closeWriteChannel();
         return;
     }
-    const auto time = begin_ + double(index_) * speed_ / FrameRate;
+    const auto time = begin_ + double(index_) * speed_ / fps_;
     watcher_.setFuture(QtConcurrent::run([decoder = decoder_, time]() -> DecodedFrame {
         try {
             return {decoder->decode(time), {}};
@@ -385,7 +393,7 @@ void MovieExporter::collectFrame()
                           + QString::number(i) + '/' + QString::number(revision_));
         frames_.append(QVariantMap{{"url", url}, {"width", image.width()}, {"height", image.height()}});
     }
-    replay_.seek(begin_ + double(index_) * speed_ / FrameRate);
+    replay_.seek(begin_ + double(index_) * speed_ / fps_);
     emit framesChanged();
     QTimer::singleShot(0, this, &MovieExporter::grabFrame);
 }
@@ -402,7 +410,7 @@ void MovieExporter::grabFrame()
         replay_.exportFrame(QUrl::fromLocalFile(destination_), canvas_);
         return;
     }
-    const QSize fit = canvas_->size().toSize().scaled(Width, Height, Qt::KeepAspectRatio);
+    const QSize fit = canvas_->size().toSize().scaled(width_, height_, Qt::KeepAspectRatio);
     grab_ = canvas_->grabToImage(fit);
     if (!grab_) {
         finish(tr("无法获取合成帧。"));
@@ -417,10 +425,10 @@ void MovieExporter::grabFrame()
             finish(tr("合成帧为空。"));
             return;
         }
-        QImage canvas(Width, Height, QImage::Format_RGB888);
+        QImage canvas(width_, height_, QImage::Format_RGB888);
         canvas.fill(Qt::black);
         QPainter draw(&canvas);
-        draw.drawImage(QPoint((Width - frame.width()) / 2, (Height - frame.height()) / 2), frame);
+        draw.drawImage(QPoint((width_ - frame.width()) / 2, (height_ - frame.height()) / 2), frame);
         draw.end();
         const QByteArray data(reinterpret_cast<const char *>(canvas.constBits()), canvas.sizeInBytes());
         awaitingWrite_ = true;

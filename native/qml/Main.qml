@@ -86,13 +86,15 @@ ApplicationWindow {
     }
     FileDialog {
         id: mp4Dialog
-        title: "导出 1080p / 60 fps 视频"
+        title: "导出 MP4 视频"
         fileMode: FileDialog.SaveFile
         defaultSuffix: "mp4"
         nameFilters: ["MP4 视频 (*.mp4)"]
         onAccepted: movie.start(selectedFile, canvas, Number(movieBegin.text),
                                 movieEnd.text.trim() === "" ? replay.duration : Number(movieEnd.text),
-                                [1., .5, .25][movieSpeed.currentIndex], movieAudio.currentIndex - 1)
+                                [1., .5, .25][movieSpeed.currentIndex], movieAudio.currentIndex - 1,
+                                [1280, 1920, 3840][movieSize.currentIndex], [720, 1080, 2160][movieSize.currentIndex],
+                                movieFps.value, movieQuality.value)
     }
     FileDialog {
         id: videoDialog
@@ -431,6 +433,27 @@ ApplicationWindow {
                         }
                     }
 
+                    Button {
+                        Layout.fillWidth: true
+                        text: "查找对齐候选"
+                        enabled: !replay.loading && replay.videoLayers.length > 0
+                        onClicked: {
+                            alignment.model = replay.alignmentCandidates()
+                            alignment.currentIndex = -1
+                        }
+                    }
+                    ComboBox {
+                        id: alignment
+                        Layout.fillWidth: true
+                        visible: replay.videoLayers.length > 0
+                        displayText: currentIndex < 0 ? (count ? "跳转到对齐候选" : "暂无对齐候选") : currentText
+                        textRole: "label"
+                        onActivated: replay.seek(model[currentIndex].time)
+                        Connections {
+                            target: replay
+                            function onRecordingChanged() { alignment.model = [] }
+                        }
+                    }
                     PanelTitle { text: "布局切换"; Layout.topMargin: 8 }
                     LayoutEditor {
                         Layout.fillWidth: true
@@ -544,6 +567,12 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             validator: DoubleValidator { bottom: 0; locale: "C" }
                         }
+                        Label { text: "分辨率" }
+                        ComboBox { id: movieSize; model: ["720p", "1080p", "2160p"]; currentIndex: 1 }
+                        Label { text: "帧率" }
+                        SpinBox { id: movieFps; from: 1; to: 120; value: 60; editable: true }
+                        Label { text: "CRF" }
+                        SpinBox { id: movieQuality; from: 0; to: 51; value: 18; editable: true }
                         Label { text: "速度" }
                         ComboBox {
                             id: movieSpeed
@@ -562,7 +591,7 @@ ApplicationWindow {
                         }
                     }
                     Button {
-                        text: "导出 1080p / 60 fps MP4"
+                        text: "导出 MP4"
                         Layout.fillWidth: true
                         enabled: !replay.loading && !replay.capturing && replay.duration > 0 && movieBegin.acceptableInput
                                  && (movieEnd.text.trim() === "" || movieEnd.acceptableInput)

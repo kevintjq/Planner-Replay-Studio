@@ -1,3 +1,4 @@
+#include <array>
 #include "cloud_view.h"
 #include "movie_exporter.h"
 #include "replay_controller.h"
@@ -224,12 +225,19 @@ int main(int argc, char **argv)
     if (engine.rootObjects().isEmpty())
         return 1;
     if (batch) {
-        if (args.size() != 6)
+        if (args.size() != 6 && args.size() != 10)
             return 2;
         bool beginOk = false, secondsOk = false;
         const double begin = args[4].toDouble(&beginOk), seconds = args[5].toDouble(&secondsOk);
         if (!beginOk || !secondsOk || !std::isfinite(begin) || !std::isfinite(seconds) || begin < 0. || seconds < 0.)
             return 2;
+        std::array<int, 4> videoOptions{1920, 1080, 60, 18};
+        for (int i = 0; args.size() == 10 && i < int(videoOptions.size()); ++i) {
+            bool ok = false;
+            videoOptions[i] = args[6 + i].toInt(&ok);
+            if (!ok)
+                return 2;
+        }
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
         auto *canvas = window ? window->findChild<QQuickItem *>(QStringLiteral("batchCanvas")) : nullptr;
         if (!canvas)
@@ -273,7 +281,8 @@ int main(int argc, char **argv)
             else {
                 const auto prefs = replay.moviePreferences();
                 const auto end = seconds > 0. ? std::min(replay.duration(), begin + seconds) : replay.duration();
-                movie.start(destination, canvas, begin, end, prefs.value("speed").toDouble(), prefs.value("audioIndex").toInt());
+                movie.start(destination, canvas, begin, end, prefs.value("speed").toDouble(), prefs.value("audioIndex").toInt(),
+                            videoOptions[0], videoOptions[1], videoOptions[2], videoOptions[3]);
             }
         };
         bool exportScheduled = false;

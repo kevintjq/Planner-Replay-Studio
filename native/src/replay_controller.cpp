@@ -807,6 +807,47 @@ void ReplayController::setComparePlans(bool compare)
     emit recordingChanged();
 }
 
+QVariantList ReplayController::alignmentCandidates() const
+{
+    if (record_->poses.size() < 5 || duration() < .8)
+        return {};
+    struct Candidate { double score, time; QString label; };
+    std::vector<Candidate> candidates;
+    const double step = std::max(.15, duration() / 1200.);
+    for (double t = step; t + step < duration(); t += step) {
+        const auto a = record_->poseAt(record_->stampAt(t - step));
+        const auto b = record_->poseAt(record_->stampAt(t));
+        const auto c = record_->poseAt(record_->stampAt(t + step));
+        if (!a || !b || !c)
+            continue;
+        const auto forward = [](const QQuaternion &rotation) {
+            const auto v = rotation.rotatedVector({1, 0, 0});
+            return std::atan2(v.y(), v.x());
+        };
+        const double yaw = std::abs(std::remainder(forward(c->rotation) - forward(a->rotation), 6.283185307179586)) / (2 * step);
+        const double dv = ((c->position - b->position).length() - (b->position - a->position).length()) / step;
+        if (yaw >= .25 && yaw / .55 >= std::abs(dv) / .65)
+            candidates.push_back({yaw / .55, t, tr("转弯")});
+        else if (dv < -.20)
+            candidates.push_back({-dv / .4, t, tr("减速／急停")});
+        else if (c->position.z() - a->position.z() > .18 && dv > 0)
+            candidates.push_back({dv / .4 + .5, t, tr("上升／起飞")});
+    }
+    std::stable_sort(candidates.begin(), candidates.end(), [](auto &a, auto &b) { return a.score > b.score; });
+    std::vector<Candidate> selected;
+    for (const auto &entry : candidates) {
+        if (std::none_of(selected.begin(), selected.end(), [&](auto &prior) { return std::abs(prior.time - entry.time) < 1.; }))
+            selected.push_back(entry);
+        if (selected.size() == 8)
+            break;
+    }
+    std::sort(selected.begin(), selected.end(), [](auto &a, auto &b) { return a.time < b.time; });
+    QVariantList result;
+    for (const auto &entry : selected)
+        result.append(QVariantMap{{"time", entry.time}, {"label", QString::number(entry.time, 'f', 2) + " s · " + entry.label}});
+    return result;
+}
+
 QVariantList ReplayController::planningEvents() const
 {
     QVariantList events;

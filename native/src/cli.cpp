@@ -34,7 +34,12 @@ int main(int argc, char **argv)
     const QCommandLineOption pose("pose-source", "Pose source: odom or tf.", "source", "odom");
     const QCommandLineOption gap("max-gap", "Maximum interpolation gap in seconds.", "seconds", "0.5");
     const QCommandLineOption extrinsics("extrinsics", "JSON file with static transforms.", "file");
-    parser.addOptions({output, start, duration, port, delay, cloud, odometry, world, body, pose, gap, extrinsics});
+    const QCommandLineOption width("width", "MP4 width (multiple of four).", "pixels", "1920");
+    const QCommandLineOption height("height", "MP4 height (even).", "pixels", "1080");
+    const QCommandLineOption fps("fps", "MP4 frame rate.", "fps", "60");
+    const QCommandLineOption crf("crf", "H.264 constant rate factor.", "quality", "18");
+    parser.addOptions({output, start, duration, port, delay, cloud, odometry, world, body, pose, gap, extrinsics,
+                       width, height, fps, crf});
     parser.addHelpOption();
     parser.addPositionalArgument("command", "inspect, export, bag, demo, or listen.");
     parser.addPositionalArgument("source", "ROS1 bag or .slamfpv project.", "[source]");
@@ -110,7 +115,8 @@ int main(int argc, char **argv)
         QProcess window;
         window.setProcessChannelMode(QProcess::ForwardedChannels);
         window.start(program, {"--batch", source, destination.absoluteFilePath(),
-                               QString::number(begin, 'g', 17), QString::number(exportSeconds, 'g', 17)});
+                               QString::number(begin, 'g', 17), QString::number(exportSeconds, 'g', 17),
+                               parser.value(width), parser.value(height), parser.value(fps), parser.value(crf)});
         if (!window.waitForStarted() || !window.waitForFinished(-1) || window.exitStatus() != QProcess::NormalExit) {
             QTextStream(stderr) << "Could not run the native export window: " << window.errorString() << Qt::endl;
             return 1;

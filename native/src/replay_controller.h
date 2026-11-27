@@ -106,6 +106,7 @@ public:
     const QVariantList &videoLayers() const { return videoLayers_; }
     QVariantList markers() const;
     QVariantList planningEvents() const;
+    Q_INVOKABLE QVariantList alignmentCandidates() const;
     QVariantMap planningLayers() const;
     bool comparePlans() const { return project_ && project_->comparePlans(); }
     Q_INVOKABLE void setComparePlans(bool compare);

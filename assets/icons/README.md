@@ -1,8 +1,18 @@
-# UAV Studio 图标
+# UAV Studio icon assets
 
-`uav-studio.svg` 为本项目原创矢量设计，与项目采用相同许可证。
-图形由圆角石墨蓝底板、无人机、飞行轨迹及少量点云组成，不含第三方图像。
+These project-authored icons use the repository's MIT license. The vector source is
+`uav-studio.svg`; it combines a graphite-blue rounded tile, a quadrotor and a flight
+path with point samples. No third-party stock image is used.
 
-使用 `UAVStudioAssets assets/icons/uav-studio.svg assets/icons` 重新生成
-16、32、48、64、128、256、512、1024 像素 PNG、Windows ICO 和 macOS ICNS。
-SVG 为唯一设计源；PNG 为栅格派生资源。
+The committed PNG sizes are 16, 32, 48, 64, 128, 256, 512 and 1024 pixels. The ICO
+contains 16 through 256 pixel PNG entries for Windows; the ICNS contains the
+corresponding macOS PNG blocks through 1024 pixels. `native/tools/render_assets.cpp`
+generates these derivatives with Qt SVG rendering.
+
+The same ICO is embedded into the Windows executable, installer and uninstaller.
+Start-menu shortcuts, optional desktop shortcuts and project file associations use
+the installed executable's icon. Linux installs the SVG and PNG assets under the
+standard hicolor icon theme; its desktop entry uses `Icon=uav-studio`.
+
+Icon resource checks do not certify desktop/taskbar appearance or a macOS package.
+Those require running the installed application on the target desktop.

@@ -1,12 +1,14 @@
-# 视频合成工作台
+# 旧版视频合成工作台 · studio-v0.4.3
 
 [项目首页](../README_CN.md) · [English](studio.md)
+
+本指南描述历史 **Planner Replay Studio Full** 应用。当前 C++ / Qt 重构请查看[原生说明](../native/README.md)及[验收矩阵](REBUILD_ACCEPTANCE_CN.md)。
 
 ![视频合成工作台](studio-preview.png)
 
 ## 快速开始
 
-[下载完整工作台 Windows EXE](https://github.com/kevintjq/Planner-Replay-Studio/releases/latest/download/PlannerReplayStudio-Setup.exe)，安装后从开始菜单打开 **Planner Replay Studio Full**。
+[下载历史 studio-v0.4.3 工作台 Windows EXE](https://github.com/kevintjq/uav-studio/releases/download/studio-v0.4.3/PlannerReplayStudio-Setup.exe)，安装后从开始菜单打开 **Planner Replay Studio Full**。
 
 在「数据」打开 ROS1 `.bag`，或点「使用模拟数据」查看效果。选择机位和图层后点「生成预览」。
 

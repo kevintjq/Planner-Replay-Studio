@@ -6,11 +6,21 @@ on:
     branches: [main]
     paths:
       - 'native/**'
-      - '.github/workflows/native-windows.yml'
+      - 'assets/icons/**'
+      - 'docs/**'
+      - 'README.md'
+      - 'README_CN.md'
+      - 'app-metadata.json'
+      - '.github/workflows/**'
   pull_request:
     paths:
       - 'native/**'
-      - '.github/workflows/native-windows.yml'
+      - 'assets/icons/**'
+      - 'docs/**'
+      - 'README.md'
+      - 'README_CN.md'
+      - 'app-metadata.json'
+      - '.github/workflows/**'
 
 permissions:
   contents: read
@@ -65,14 +75,15 @@ jobs:
       - name: Prepare FFmpeg for export regression
         shell: pwsh
         run: |
-          $archive = Join-Path $env:RUNNER_TEMP 'ffmpeg-7.1.1-essentials_build.zip'
-          $url = 'https://github.com/GyanD/codexffmpeg/releases/download/7.1.1/ffmpeg-7.1.1-essentials_build.zip'
+          $archive = Join-Path $env:RUNNER_TEMP 'ffmpeg-7.1.1-full_build-shared.zip'
+          $url = 'https://github.com/GyanD/codexffmpeg/releases/download/7.1.1/ffmpeg-7.1.1-full_build-shared.zip'
           Invoke-WebRequest $url -OutFile $archive
-          if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne '04861d3339c5ebe38b56c19a15cf2c0cc97f5de4fa8910e4d47e5e6404e4a2d4') {
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne '9f28727e8b472a04c1d2e520aaa425dca82721b995139b35710091130ea6e699') {
             throw 'FFmpeg tool archive did not match the pinned SHA-256.'
           }
           Expand-Archive $archive -DestinationPath $env:RUNNER_TEMP
-          (Join-Path $env:RUNNER_TEMP 'ffmpeg-7.1.1-essentials_build/bin') >> $env:GITHUB_PATH
+          (Join-Path $env:RUNNER_TEMP 'ffmpeg-7.1.1-full_build-shared/bin') >> $env:GITHUB_PATH
+          "FFmpeg_ROOT=$(Join-Path $env:RUNNER_TEMP 'ffmpeg-7.1.1-full_build-shared')" >> $env:GITHUB_ENV
       - name: Build and test
         shell: pwsh
         run: |
@@ -84,24 +95,56 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build build-native --config Release --parallel
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ctest --test-dir build-native -C Release --output-on-failure
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Hosted compatibility checks use Qt's software backend. CloudView's
+          # actual OpenGL test remains a separate mandatory release gate; it is
+          # not skipped and then reported as passed here. Keep the unavailable-
+          # GPU timeout and native/stale-frame substitution rejection tests.
+          $savedPlatform = $env:QT_QPA_PLATFORM
+          $savedBackend = $env:QT_QUICK_BACKEND
+          try {
+            $env:QT_QPA_PLATFORM = 'offscreen'
+            $env:QT_QUICK_BACKEND = 'software'
+            ctest --test-dir build-native -C Release --output-on-failure -E '^movie_gpu_preflight$'
+            if ($LASTEXITCODE -ne 0) { throw 'Hosted software compatibility tests failed.' }
+          } finally {
+            $env:QT_QPA_PLATFORM = $savedPlatform
+            $env:QT_QUICK_BACKEND = $savedBackend
+          }
+          ./native/tools/test-windows-runtime-payload.ps1
+          if (!$?) { throw 'Windows standalone payload guard regression failed.' }
+          ./native/tools/test-windows-staging-input.ps1
+          if (!$?) { throw 'Fresh Windows staging regression failed.' }
+          ./native/tools/test-windows-documentation.ps1
+          if (!$?) { throw 'Windows offline documentation regression failed.' }
+          ./native/tools/test-release-gates.ps1
+          if (!$?) { throw 'Artifact-only release policy regression failed.' }
+          ./native/tools/check-windows-packaging.ps1
+          if (!$?) { throw 'Windows packaging source/resource audit failed.' }
       - name: Build the Windows installer
         shell: pwsh
         run: |
-          $match = Select-String -Path native/CMakeLists.txt -Pattern '^project\(UAVStudio VERSION (\d+\.\d+\.\d+) '
-          if (!$match) { throw 'Could not read the native app version.' }
-          $version = $match.Matches[0].Groups[1].Value
+          ./native/tools/sync-project-metadata.ps1
+          if (!$?) { throw 'Product metadata and README are out of sync.' }
+          $metadata = Get-Content app-metadata.json -Raw | ConvertFrom-Json
+          $version = $metadata.version
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid central product version.' }
+          $displayVersion = "$version-development.$($env:GITHUB_SHA.Substring(0, 12))"
           cmake --install build-native --config Release --prefix dist/uav-studio
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ./native/installer/package.ps1 -AppDirectory dist/uav-studio -SetupFile dist/uav-studio-Setup.exe -Version $version -QtVersion $env:QT_VERSION -OpenCvDirectory (Join-Path $env:RUNNER_TEMP 'planner-opencv')
-      - name: Verify install, launch and uninstall
-        timeout-minutes: 3
+          ./native/installer/package.ps1 -AppDirectory dist/uav-studio -SetupFile dist/uav-studio-Setup.exe -Version $version -DisplayVersion $displayVersion -QtVersion $env:QT_VERSION -OpenCvDirectory (Join-Path $env:RUNNER_TEMP 'planner-opencv')
+          $backend = Get-Content dist/uav-studio/native-rviz-backend.json -Raw | ConvertFrom-Json
+          $runtime = Get-Content dist/uav-studio/windows-runtime.json -Raw | ConvertFrom-Json
+          if ($backend.included -or $backend.package_profile -ne 'Standalone' -or $runtime.profile -ne 'Standalone' -or (Test-Path dist/uav-studio/rviz_host)) {
+            throw 'The default Windows installer must contain the standalone profile only.'
+          }
+      # This constrains environment lookup on the runner. It is not a no-WSL clean VM.
+      - name: Verify standalone install, software 2D/codecs and uninstall
+        timeout-minutes: 5
         shell: pwsh
         run: |
           $setup = (Resolve-Path dist/uav-studio-Setup.exe).Path
           $target = Join-Path $env:RUNNER_TEMP 'PlannerReplayInstallerSmoke'
-          $install = Start-Process -FilePath $setup -ArgumentList '/S', "/D=$target" -Wait -PassThru
+          $install = Start-Process -FilePath $setup -ArgumentList '/S', "/D=$target" -WindowStyle Hidden -Wait -PassThru
           if ($install.ExitCode -ne 0) { throw "Installer exited with $($install.ExitCode)." }
           $exe = Join-Path $target 'app/uav-studio.exe'
           $cli = Join-Path $target 'app/uav-studio-cli.exe'
@@ -110,6 +153,7 @@ jobs:
           if (!(Test-Path $exe) -or !(Test-Path $cli) -or !(Test-Path $uninstaller) -or !(Test-Path $shortcut)) {
             throw 'The installed application, uninstaller or Start menu shortcut is missing.'
           }
+          $applicationHash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
           $registry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\UAVStudio'
           $command = Get-ItemPropertyValue -Path $registry -Name UninstallString -ErrorAction Stop
           if ($command -ne ('"' + $uninstaller + '"')) {
@@ -118,71 +162,86 @@ jobs:
           $pythonRuntime = Get-ChildItem -Path (Join-Path $target 'app') -File -Recurse |
             Where-Object { $_.Name -match '^python.*\.(dll|exe)$' -or $_.Extension -in '.py', '.pyd', '.pyc' }
           if ($pythonRuntime) { throw "Unexpected Python runtime: $($pythonRuntime.Name)" }
+          . ./native/installer/native-rviz-host.ps1
+          $payloadAudit = Assert-WindowsRuntimePayload (Join-Path $target 'app')
+          $payloadAudit | ConvertTo-Json -Depth 5 | Set-Content dist/standalone-payload-audit.json
           $fixture = Join-Path $env:RUNNER_TEMP 'planner-replay-video-smoke.mp4'
-          $ffmpeg = Get-Command ffmpeg -ErrorAction SilentlyContinue
-          if (!$ffmpeg) {
-            choco install ffmpeg --no-progress -y
-            if ($LASTEXITCODE -ne 0) { throw 'Could not install FFmpeg to generate the video fixture.' }
-            $ffmpeg = Get-Command "$env:ChocolateyInstall/bin/ffmpeg.exe"
-          }
-          & $ffmpeg.Source -v error -y -f lavfi -i 'testsrc2=size=1920x1080:rate=60:duration=3' -c:v libx264 -preset veryfast -g 180 -bf 2 -pix_fmt yuv420p $fixture
+          $ffmpeg = Join-Path $target 'app/ffmpeg.exe'
+          & $ffmpeg -v error -y -f lavfi -i 'testsrc2=size=1920x1080:rate=60:duration=3' -c:v libx264 -preset veryfast -g 180 -bf 2 -pix_fmt yuv420p $fixture
           if ($LASTEXITCODE -ne 0) { throw 'Could not generate the video smoke fixture.' }
-          $originalPath = $env:PATH
+          $savedEnvironment = @{}
+          $environmentNames = @('PATH', 'QT_PLUGIN_PATH', 'QML_IMPORT_PATH', 'QML2_IMPORT_PATH', 'QT_QPA_PLATFORM', 'QT_QUICK_BACKEND')
+          $environmentNames += @([Environment]::GetEnvironmentVariables('Process').Keys | Where-Object {
+            $_ -match '^(QT|QSG|QML|UAV_STUDIO|ROS|AMENT|COLCON|CATKIN|CONDA)_' -or $_ -match '^PYTHON' -or $_ -in @('VIRTUAL_ENV', 'CMAKE_PREFIX_PATH', 'LD_LIBRARY_PATH')
+          })
+          foreach ($name in @($environmentNames | Select-Object -Unique)) {
+            $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+          }
+          function RunCompatibilitySmoke([string]$program, [string[]]$programArguments, [string]$name, [int]$timeoutSeconds = 45) {
+            $stdout = [IO.Path]::GetFullPath("dist/compatibility-$name.out.log")
+            $stderr = [IO.Path]::GetFullPath("dist/compatibility-$name.err.log")
+            $process = Start-Process -FilePath $program -ArgumentList $programArguments -WorkingDirectory $target -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            if (!$process.WaitForExit($timeoutSeconds * 1000)) {
+              # This process tree belongs only to the current smoke invocation.
+              & "$env:SystemRoot/System32/taskkill.exe" /PID $process.Id /T /F | Out-Null
+              throw "Installed compatibility smoke $name timed out."
+            }
+            $process.WaitForExit()
+            if ($process.ExitCode -ne 0) { throw "Installed compatibility smoke $name exited with $($process.ExitCode). $(Get-Content -LiteralPath $stderr -Raw)" }
+          }
           try {
             $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
-            Remove-Item Env:QT_PLUGIN_PATH, Env:QML_IMPORT_PATH, Env:QML2_IMPORT_PATH -ErrorAction SilentlyContinue
-            $app = Start-Process -FilePath $exe -ArgumentList '--smoke', ('"' + $fixture + '"') -WorkingDirectory $target -Wait -PassThru
-            if ($app.ExitCode -ne 0) { throw "Installed application exited with $($app.ExitCode)." }
-            $env:QT_QPA_PLATFORM = 'windows'
+            foreach ($name in $savedEnvironment.Keys | Where-Object { $_ -ne 'PATH' }) {
+              [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+            }
+            $env:QT_QPA_PLATFORM = 'offscreen'
             $env:QT_QUICK_BACKEND = 'software'
-            $batchPng = Join-Path $env:RUNNER_TEMP 'planner-batch-smoke.png'
-            $batchErr = Join-Path $env:RUNNER_TEMP 'planner-batch-smoke.err'
-            $batch = Start-Process -FilePath $cli -ArgumentList 'demo', '--start', '0.25', '--output', ('"' + $batchPng + '"') -RedirectStandardError $batchErr -PassThru
-            if (!$batch.WaitForExit(45000)) {
-              Stop-Process -Id $batch.Id -Force
-              throw 'The installed CLI did not exit within 45 seconds.'
-            }
-            if ($batch.ExitCode -ne 0 -or !(Test-Path $batchPng)) {
-              throw "The installed CLI did not export a PNG. $(Get-Content $batchErr -Raw)"
-            }
-            Remove-Item Env:QT_QPA_PLATFORM, Env:QT_QUICK_BACKEND -ErrorAction SilentlyContinue
+            # These existing entry points check QML layout, 2D alpha, codec/audio
+            # output, project/video state and CLI startup. None certifies 3D.
+            $layoutPng = [IO.Path]::GetFullPath('dist/compatibility-layout-2d.png')
+            RunCompatibilitySmoke $exe @('--smoke-layout', ('"' + $layoutPng + '"')) 'layout-2d'
+            if (!(Test-Path -LiteralPath $layoutPng -PathType Leaf)) { throw 'The installed 2D layout smoke did not save its image.' }
+            RunCompatibilitySmoke $exe @('--smoke-png') 'alpha-2d'
+            RunCompatibilitySmoke $exe @('--smoke-mp4') 'h264-aac-codecs' 60
+            RunCompatibilitySmoke $exe @('--smoke', ('"' + $fixture + '"')) 'project-video-state'
+            RunCompatibilitySmoke $cli @('--help') 'cli-help'
           } finally {
-            $env:PATH = $originalPath
+            foreach ($entry in $savedEnvironment.GetEnumerator()) {
+              [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, 'Process')
+            }
           }
-          $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru
+          $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/S' -WindowStyle Hidden -Wait -PassThru
           if ($uninstall.ExitCode -ne 0 -or (Test-Path $exe) -or (Test-Path $shortcut) -or (Test-Path $registry)) {
             throw 'The uninstaller did not remove the application, shortcut and registry entry.'
           }
+          [ordered]@{
+            kind = 'standalone-software-compatibility-ci'
+            source_commit = $env:GITHUB_SHA
+            application_sha256 = $applicationHash
+            installer_sha256 = (Get-FileHash -LiteralPath $setup).Hash
+            install_software_smoke_uninstall = $true
+            software_checks = @('qml-layout', '2d-transparent-png', 'h264-aac-codecs', 'project-video-state', 'cli-help')
+            gpu_export_verified = $false; manual_gui_acceptance = $false
+            clean_windows_without_wsl_verified = $false; runnable_distribution_verified = $false
+            required_release_gates = @('Current build core image/video output on real Windows/OpenGL', 'Current installed package new-package-runtime-check.ps1 on real Windows/OpenGL', 'Necessary four-workspace core end-to-end GUI, complete dependencies and safe-upgrade gates in docs/V1_CORE_RELEASE_SCOPE_CN.md')
+            limit = 'Software-only compatibility evidence. Minimal PATH does not prove a clean OS; no CloudView/3D output was accepted.'
+          } | ConvertTo-Json | Set-Content dist/standalone-runtime-check.json
       - uses: actions/upload-artifact@v4
         with:
-          name: uav-studio-Windows-x64
-          path: dist/uav-studio-Setup.exe
+          name: uav-studio-Windows-x64-development
+          path: |
+            dist/uav-studio-Setup.exe
+            dist/standalone-payload-audit.json
+            dist/standalone-runtime-check.json
+            dist/compatibility-*
           if-no-files-found: error
-
-  prerelease:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    needs: package
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    concurrency:
-      group: native-windows-prerelease
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: uav-studio-Windows-x64
-          path: installer
-      - name: Publish the verified C++ Windows preview
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
-          if [ "$current" != "$GITHUB_SHA" ]; then exit 0; fi
-          tag="native-v0.1.1-preview.3"
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            exit 0
-          fi
-          gh release create "$tag" installer/uav-studio-Setup.exe \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
-            --title "UAV Studio C++ Preview (${GITHUB_SHA:0:7})" \
-            --notes "Windows x64 C++ preview. The installer has passed the Windows install, launch, export and uninstall checks. MP4 export requires FFmpeg. Legacy feature parity is still in progress."
+      # Development artifacts only: necessary four-workspace core end-to-end GUI,
+      # real OpenGL output, installed-package dependencies and safe upgrades remain mandatory.
+      # Nonblocking UI details, edge compatibility and exhaustive combinations are
+      # assigned to user post-install testing and follow-up PRs, without claiming passed.
+      # Clean-Windows install/run testing is assigned to the user after release;
+      # its unverified evidence field remains false and is not a release gate.
+      # Run movie_gpu_preflight and native/tools/new-package-runtime-check.ps1
+      # against the same build/package on a real Windows/OpenGL desktop. Their
+      # evidence is separate from this hosted software-only compatibility job.
+      # No preview/stable release is published or existing release retagged here.

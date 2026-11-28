@@ -29,6 +29,16 @@ captures/
 CMakeUserPresets.json
 /aqtinstall.log
 
+# Local diagnostics, crash dumps and editor scratch files.
+*.log
+*.dmp
+*.tmp
+*.bak
+*.user
+/Testing/
+/CMakeFiles/
+/CMakeCache.txt
+
 # In-place C++ extension builds.
 src/planner_replay/_cloud*.so
 src/planner_replay/_cloud*.pyd

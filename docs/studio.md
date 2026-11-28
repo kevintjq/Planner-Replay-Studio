@@ -1,12 +1,14 @@
-# Video composition workspace
+# Legacy video composition workspace · studio-v0.4.3
 
 [Project home](../README.md) · [简体中文](studio.zh-CN.md)
+
+This guide describes the historical **Planner Replay Studio Full** application. For the current C++ / Qt rebuild, use the [native guide](../native/README.md) and its [acceptance matrix](REBUILD_ACCEPTANCE_CN.md).
 
 ![Video composition workspace](studio-preview.png)
 
 ## Quick start
 
-[Download the complete Windows setup EXE](https://github.com/kevintjq/Planner-Replay-Studio/releases/latest/download/PlannerReplayStudio-Setup.exe) and open **Planner Replay Studio Full** from the Start menu.
+[Download the historical studio-v0.4.3 Windows setup EXE](https://github.com/kevintjq/uav-studio/releases/download/studio-v0.4.3/PlannerReplayStudio-Setup.exe) and open **Planner Replay Studio Full** from the Start menu.
 
 Open a ROS1 `.bag` under **Data** or choose **Use simulated data**. Pick views and layers, then generate a preview.
 

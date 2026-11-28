@@ -8,7 +8,9 @@ on:
       - 'src/**'
       - 'tests/**'
       - 'packaging/windows/**'
-      - 'native/installer/windows.nsi'
+      - 'native/installer/**'
+      - 'native/tools/*windows*.ps1'
+      - 'app-metadata.json'
       - 'pyproject.toml'
       - '.github/workflows/studio-windows.yml'
   pull_request:
@@ -16,7 +18,9 @@ on:
       - 'src/**'
       - 'tests/**'
       - 'packaging/windows/**'
-      - 'native/installer/windows.nsi'
+      - 'native/installer/**'
+      - 'native/tools/*windows*.ps1'
+      - 'app-metadata.json'
       - 'pyproject.toml'
       - '.github/workflows/studio-windows.yml'
 
@@ -61,17 +65,29 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $nsis = Get-Command makensis.exe -ErrorAction SilentlyContinue
           $compiler = if ($nsis) { $nsis.Source } else { "${env:ProgramFiles(x86)}\NSIS\makensis.exe" }
-          $product = 'Planner Replay Installer Test'
+          . ./native/installer/windows-package.ps1
+          $metadata = Get-Content app-metadata.json -Raw | ConvertFrom-Json
+          $runId = [Guid]::NewGuid().ToString('N').Substring(0,12)
+          $product = "Planner Replay Installer Test $runId"
+          $productId = "UAVStudioHistoricalInstallerAcceptance$runId"
+          $associationRoot = "Software\UAVStudioHistoricalInstallerAcceptance\$runId\Classes"
           $fixture = New-Item -ItemType Directory (Join-Path $env:RUNNER_TEMP 'planner-installer-fixture')
-          Set-Content (Join-Path $fixture.FullName 'test.exe') 'installer fixture'
+          # Use a real x64 PE only as non-executed installer input. A text file
+          # with an .exe suffix cannot pass staged executable validation.
+          Copy-Item "$env:SystemRoot/System32/whoami.exe" (Join-Path $fixture.FullName 'test.exe')
+          $manifest = Write-WindowsInstallManifest $fixture.FullName $productId '1.0.0' $product 'test.exe'
           $setup = Join-Path $env:RUNNER_TEMP 'planner-installer-test.exe'
+          $desktopDirectory = Join-Path $env:RUNNER_TEMP 'planner-installer-desktop'
+          $startDirectory = Join-Path $env:RUNNER_TEMP 'planner-installer-start'
           $defines = @("/DAPP_DIR=$($fixture.FullName)", "/DSETUP_FILE=$setup", '/DVERSION=1.0.0',
-            "/DPRODUCT=$product", '/DPRODUCT_ID=PlannerReplayInstallerTest', '/DAPP_EXE=test.exe')
+            "/DPRODUCT=$product", "/DPRODUCT_ID=$productId", '/DAPP_EXE=test.exe', "/DASSOCIATION_ROOT=$associationRoot",
+            "/DSTARTMENU_DIRECTORY=$startDirectory", "/DDESKTOP_DIRECTORY=$desktopDirectory",
+            "/DINSTALL_MANIFEST_SHA256=$($manifest.sha256)", "/DAUTHOR=$($metadata.author)", "/DPROJECT_URL=$($metadata.github_url)", "/DCONTACT_EMAIL=$($metadata.email)")
           & $compiler /WX @defines native/installer/windows.nsi
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $desktop = Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) "$product.lnk"
-          $start = Join-Path ([Environment]::GetFolderPath('Programs')) "$product.lnk"
-          $registry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\PlannerReplayInstallerTest'
+          $desktop = Join-Path $desktopDirectory "$product.lnk"
+          $start = Join-Path $startDirectory "$product.lnk"
+          $registry = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$productId"
           $default = Join-Path $env:LOCALAPPDATA "Programs/$product"
           $custom = Join-Path $env:RUNNER_TEMP 'Planner Replay custom location'
 
@@ -104,8 +120,15 @@ jobs:
           Test-Install $default '/S' $false
           Test-Uninstall $default
           Test-Install $custom "/S /DESKTOPSHORTCUT=1 /D=$custom" $true
-          Test-Install $custom '/S /DESKTOPSHORTCUT=1' $true
+          $before = (Get-FileHash (Join-Path $custom 'app/test.exe')).Hash
+          $upgrade = Start-Process $setup -ArgumentList '/S', '/DESKTOPSHORTCUT=0' -WindowStyle Hidden -Wait -PassThru
+          $transaction = Get-Content (Join-Path $custom 'last-install-transaction.json') -Raw | ConvertFrom-Json
+          if ($upgrade.ExitCode -ne 0 -or (Get-FileHash (Join-Path $custom 'app/test.exe')).Hash -ne $before -or (Test-Path $desktop) -or
+              (Get-FileHash (Join-Path $transaction.backup 'app/test.exe')).Hash -ne $before) {
+            throw 'A trusted same-path installation must upgrade with the old payload retained in backup.'
+          }
           Test-Uninstall $custom
+          Remove-Item -LiteralPath "HKCU:\Software\UAVStudioHistoricalInstallerAcceptance\$runId" -Recurse -Force
       - name: Freeze the complete workspace
         id: bundle
         shell: pwsh
@@ -136,8 +159,12 @@ jobs:
           $compiler = if ($nsis) { $nsis.Source } else { "${env:ProgramFiles(x86)}\NSIS\makensis.exe" }
           $bundle = (Resolve-Path dist/PlannerReplayStudio).Path
           $setup = Join-Path (Resolve-Path dist).Path 'PlannerReplayStudio-Setup.exe'
+          . ./native/installer/windows-package.ps1
+          $metadata = Get-Content app-metadata.json -Raw | ConvertFrom-Json
+          $manifest = Write-WindowsInstallManifest $bundle 'PlannerReplayStudio' $version 'Planner Replay Studio Full' 'PlannerReplayStudio.exe'
           $defines = @("/DAPP_DIR=$bundle", "/DSETUP_FILE=$setup", "/DVERSION=$version",
-            '/DPRODUCT=Planner Replay Studio Full', '/DPRODUCT_ID=PlannerReplayStudio', '/DAPP_EXE=PlannerReplayStudio.exe')
+            '/DPRODUCT=Planner Replay Studio Full', '/DPRODUCT_ID=PlannerReplayStudio', '/DAPP_EXE=PlannerReplayStudio.exe',
+            "/DINSTALL_MANIFEST_SHA256=$($manifest.sha256)", "/DAUTHOR=$($metadata.author)", "/DPROJECT_URL=$($metadata.github_url)", "/DCONTACT_EMAIL=$($metadata.email)")
           & $compiler /WX @defines native/installer/windows.nsi
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify installed workspace without system Python on PATH
@@ -167,58 +194,9 @@ jobs:
           path: dist/PlannerReplayStudio-Setup.exe
           if-no-files-found: error
 
-  release:
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: [package, regression]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    concurrency:
-      group: complete-windows-release
-      cancel-in-progress: false
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: PlannerReplayStudio-Windows-x64
-          path: installer
-      - name: Publish the complete workspace installer
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.package.outputs.version }}
-        run: |
-          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
-          if [ "$current" != "$GITHUB_SHA" ]; then
-            echo "A newer main commit superseded this build."
-            exit 0
-          fi
-          tag="studio-v$VERSION"
-          if assets=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name'); then
-            if ! grep -Fxq PlannerReplayStudio-Setup.exe <<< "$assets"; then
-              gh release upload "$tag" installer/PlannerReplayStudio-Setup.exe --repo "$GITHUB_REPOSITORY"
-            fi
-            exit 0
-          fi
-          gh release create "$tag" installer/PlannerReplayStudio-Setup.exe \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest \
-            --title "Planner Replay Studio v$VERSION — Complete Windows Workspace" \
-            --notes "Native PointCloud2 decoding and range coloring, FFmpeg proxy scaling, and background composition for multi-video preview. Existing projects and export settings remain supported."
-      - name: Retire superseded downloads after the new installer is available
-        if: needs.package.outputs.version == '0.4.3'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.package.outputs.version }}
-        run: |
-          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
-          test "$current" = "$GITHUB_SHA"
-          tag="studio-v$VERSION"
-          expected=$(stat -c %s installer/PlannerReplayStudio-Setup.exe)
-          uploaded=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" \
-            --jq 'select(.draft == false) | .assets[] | select(.name == "PlannerReplayStudio-Setup.exe" and .state == "uploaded") | .size')
-          test "$expected" = "$uploaded"
-          releases=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[].tag_name')
-          older=studio-v0.4.2
-          if grep -Fxq "$older" <<< "$releases"; then
-            gh release delete "$older" --repo "$GITHUB_REPOSITORY" --yes
-          fi
-          remaining=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[].tag_name')
-          test "$remaining" = "$tag"
+  # Historical compatibility builds remain available as CI artifacts. Current
+  # necessary four-workspace core end-to-end GUI, package dependencies and safe
+  # upgrade acceptance precede release; nonblocking UI/edge coverage follows via
+  # user post-install testing and PRs, with unverified status retained.
+  # Clean-Windows install/run testing is assigned to the user after release.
+  # This workflow never publishes a release or removes a rollback tag/asset.

@@ -34,6 +34,19 @@ struct Pose {
 
 enum class MapMode { Accumulate, Replace };
 
+struct TopicCatalogEntry {
+    QString name, type, source;
+    qint64 count = 0, firstStampNs = 0, lastStampNs = 0;
+    int connectionCount = 0;
+    bool definitionAvailable = false, schemaConflict = false;
+    QVariantList fields;
+    QStringList numericFields;
+    QString schemaStatus;
+    double durationSeconds() const;
+    double frequencyHz() const;
+    QVariantMap toVariant() const;
+};
+
 struct TopicOverlay {
     enum class Primitive { Default, Points, Lines, LineStrip, Triangles };
 
@@ -67,7 +80,11 @@ struct Recording {
     QStringList odometryTopics;
     QStringList speedTopics;
     QStringList topics;
+    std::vector<TopicCatalogEntry> topicCatalog;
     qint64 recordedOrigin = 0;
+    qint64 timelineFirstStampNs = 0, timelineLastStampNs = 0;
+    bool hasMessages = false, storageTimeFallback = false;
+    QString timelineTimeBasis;
     std::vector<Point> points;
     std::vector<Frame> frames;
     std::vector<Pose> poses;
@@ -104,15 +121,39 @@ struct LoadOptions {
     QString scanTopic;
     double scanMaximumAge = .5;
     bool autoScan = false;
+    // Append options to preserve existing aggregate initializers.
+    // Lazy Display decoding never selects the legacy global cloud/pose roles.
+    bool displayDataOnly = false;
 };
 
 using Cancel = std::function<bool()>;
 using Progress = std::function<void(double)>;
 
 QJsonObject inspectBag(const QString &path, const Cancel &cancel = {});
+std::vector<TopicCatalogEntry> inspectBagCatalog(const QString &path, const Cancel &cancel = {},
+                                                 const Progress &progress = {});
 std::optional<TopicMessage> inspectBagTopic(const QString &path, const QString &topic, qint64 stamp,
-                                            const Cancel &cancel = {}, int arrayPage = 0);
+                                            const Cancel &cancel = {}, int arrayPage = 0,
+                                            const QString &type = {}, const QString &selectionTimeBasis = QStringLiteral("storage"));
+struct NumericTopicSeries {
+    QVariantList samples;
+    QVariantMap statistics;
+    QString status;
+};
+NumericTopicSeries sampleBagTopic(const QString &path, const QString &topic, const QString &fieldPath,
+                                   const QString &timeBasis = QStringLiteral("storage"),
+                                   const QString &firstStampNs = {}, const QString &lastStampNs = {},
+                                   int maxSamples = 20000, const QString &type = {},
+                                   const Cancel &cancel = {});
+// Serialized views are valid only during the callback. Every selected message
+// is visited exactly once; no display decimation or implicit clock mapping.
+using BagTopicVisitor = std::function<void(const QByteArray &type, const QByteArray &definition,
+                                         QByteArrayView serialized, qint64 storageStampNs)>;
+qint64 visitBagTopic(const QString &path, const QString &topic, const BagTopicVisitor &visitor,
+                     const QString &type = {}, const Cancel &cancel = {});
 std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions &options = {},
                                          const Cancel &cancel = {}, const Progress &progress = {});
+std::shared_ptr<const Recording> loadDisplayData(const QString &path, const QString &fixedFrame,
+    const std::vector<TopicDisplay> &displays, const Cancel &cancel = {}, const Progress &progress = {});
 std::shared_ptr<const Recording> makeDemo();
 }

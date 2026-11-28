@@ -3,6 +3,7 @@ import QtQuick.Controls as C
 
 C.TextField {
     id: control
+    palette: StudioPalette {}
     implicitHeight: appearance.metrics.controlHeight
     leftPadding: 9
     rightPadding: 9

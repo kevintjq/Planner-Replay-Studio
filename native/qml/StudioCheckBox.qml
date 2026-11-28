@@ -3,7 +3,7 @@ import QtQuick.Controls as C
 C.CheckBox {
     id: control
     palette: StudioPalette {}
-font.pixelSize: appearance.metrics.body
+    font.pixelSize: appearance.metrics.body
     implicitHeight: appearance.metrics.controlHeight
     spacing: 8
     indicator: Rectangle {

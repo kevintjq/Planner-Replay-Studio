@@ -3,8 +3,9 @@ import QtQuick.Controls as C
 
 C.Button {
     id: control
+    property bool selected: false
     palette: StudioPalette {}
-implicitHeight: appearance.metrics.controlHeight
+    implicitHeight: appearance.metrics.controlHeight
     implicitWidth: Math.max(60, contentItem.implicitWidth + 24)
     horizontalPadding: 12
     font.pixelSize: appearance.metrics.body
@@ -19,6 +20,7 @@ implicitHeight: appearance.metrics.controlHeight
     background: Rectangle {
         radius: appearance.metrics.radius
         color: control.highlighted ? appearance.colors.accentFill : control.down ? appearance.colors.pressed
+             : control.selected || control.checked ? appearance.colors.selection
              : control.hovered ? appearance.colors.hover : appearance.colors.control
         border.width: control.visualFocus ? 2 : 0
         border.color: appearance.colors.accent

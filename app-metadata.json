@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "app_name": "UAV Studio",
+  "project_name": "UAVStudio",
+  "executable_name": "uav-studio",
+  "tagline": "All-in-One Robotics Research Studio",
+  "version": "1.0.0",
+  "release_channel": "stable",
+  "author": "kevin",
+  "email": "jq.tong0610@gmail.com",
+  "github_url": "https://github.com/kevintjq/uav-studio",
+  "repository_full_name": "kevintjq/uav-studio",
+  "license": "MIT"
+}

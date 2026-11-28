@@ -3,10 +3,23 @@
 #include "trajectory_image.h"
 #include <QAbstractListModel>
 
+class TrajectoryCanvasModel final : public QAbstractListModel {
+    Q_OBJECT
+public:
+    enum Role { LayerRow = Qt::UserRole + 1 };
+    explicit TrajectoryCanvasModel(QObject *parent = nullptr) : QAbstractListModel(parent) {}
+    int rowCount(const QModelIndex &parent = {}) const override;
+    QVariant data(const QModelIndex &index, int role) const override;
+    QHash<int, QByteArray> roleNames() const override { return {{LayerRow, "layerRow"}}; }
+    void setLayers(const QVariantList &layers);
+private:
+    QVariantList layers_;
+};
+
 class TrajectoryFrameModel final : public QAbstractListModel {
     Q_OBJECT
 public:
-    enum Role { Seconds = Qt::UserRole + 1, Excluded, Valid, Opacity, Selected, Thumbnail, Manual };
+    enum Role { Seconds = Qt::UserRole + 1, Excluded, Valid, Opacity, Selected, Thumbnail, Manual, ForegroundError, ForegroundFraction };
     explicit TrajectoryFrameModel(QObject *parent = nullptr) : QAbstractListModel(parent) {}
     int rowCount(const QModelIndex &parent = {}) const override;
     QVariant data(const QModelIndex &index, int role) const override;

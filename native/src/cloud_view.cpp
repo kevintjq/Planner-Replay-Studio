@@ -1,6 +1,7 @@
 #include "cloud_view.h"
 
 #include "camera_presets.h"
+#include "camera_follow.h"
 #include "transform_tree.h"
 
 #include <QMatrix4x4>
@@ -13,6 +14,7 @@
 #include <QQuickOpenGLUtils>
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <string_view>
 
 namespace {
@@ -72,6 +74,11 @@ public:
     {
         auto *view = static_cast<CloudView *>(item);
         owner_ = view;
+        // The GUI can clear published status when the controller changes. Read
+        // that state while the GUI thread is blocked so an identical new target
+        // is still published, instead of leaving the view permanently cleared.
+        cameraStatus_ = view->cameraStatus_;
+        followingTarget_ = view->followingTarget_;
         if (captureSize_ != view->captureSize_) {
             captureSize_ = view->captureSize_;
             invalidateFramebufferObject();
@@ -90,6 +97,13 @@ public:
             }
             stamp_ = recording_->stampAt(view->controller_->position());
             displayVisibility_ = view->controller_->topicDisplayVisibility();
+            independentMode_ = view->controller_->independentDisplayModelActive();
+            sceneFixedFrame_ = view->controller_->independentFixedFrame();
+            independentStates_ = view->controller_->independentDisplayStates();
+            const auto displayRecords = view->controller_->independentDisplayRecordings();
+            if (displayRecords != independentRecords_) {
+                independentRecords_ = displayRecords;
+            }
             plan_ = view->controller_->planningLayerEnabled("plan");
             corridor_ = view->controller_->planningLayerEnabled("corridor");
             goal_ = view->controller_->planningLayerEnabled("goal");
@@ -97,6 +111,8 @@ public:
             currentScan_ = view->controller_->planningLayerEnabled("scan");
             comparePlans_ = view->controller_->comparePlans();
             background_ = view->controller_->sceneBackground();
+        } else {
+            recording_.reset();
         }
         yaw_ = view->yaw_;
         pitch_ = view->pitch_;
@@ -113,6 +129,22 @@ public:
         panX_ = view->panX_;
         panY_ = view->panY_;
         camera_ = view->camera_;
+        followSettings_.camera = camera_;
+        followSettings_.yaw = yaw_;
+        followSettings_.pitch = pitch_;
+        followSettings_.scale = scale_;
+        followSettings_.panX = panX_;
+        followSettings_.panY = panY_;
+        followSettings_.targetFrame = view->targetFrame_;
+        followSettings_.followMode = view->followMode_;
+        followSettings_.followLag = view->followLag_;
+        followSettings_.smoothing = view->smoothing_;
+        followSettings_.opticalFrame = view->opticalFrame_;
+        cloudVisible_ = view->cloudVisible_;
+        cloudColor_ = view->cloudColor_.isValid() ? view->cloudColor_ : QColor::fromRgbF(.75f, .82f, .88f);
+        pathColor_ = view->pathColor_.isValid() ? view->pathColor_ : QColor::fromRgbF(1.f, .78f, .35f);
+        hiddenDisplays_ = view->hiddenDisplays_;
+        if (view->viewBackground_.isValid()) background_ = view->viewBackground_;
         showPath_ = view->showPath_ && (!auxiliary_ || view->overlays_.contains("actual"));
         transparent_ = view->transparent_;
         if (view->captureBackground_.isValid()) {
@@ -165,18 +197,44 @@ public:
         const auto &frame = recording_->frameAt(stamp_);
         const auto pose = recording_->poseAt(stamp_);
         const auto body = pose ? pose->position : recording_->center;
-        const auto camera = cameraMatrix(size, pose);
+        const replay::Recording *cameraRecording = recording_.get();
+        if (independentMode_ && sceneFixedFrame_ != recording_->frameId) {
+            referenceRecording_.frameId = sceneFixedFrame_;
+            referenceRecording_.bodyFrame = recording_->bodyFrame;
+            referenceRecording_.center = {};
+            referenceRecording_.radius = 10.f;
+            referenceRecording_.transforms = recording_->transforms;
+            for (const auto &source : independentRecords_) if (source && source->frameId == sceneFixedFrame_) {
+                referenceRecording_.center = source->center;
+                referenceRecording_.radius = source->radius;
+                referenceRecording_.transforms = source->transforms;
+                break;
+            }
+            cameraRecording = &referenceRecording_;
+        }
+        const auto resolved = replay::cameraFollowFrame(*cameraRecording, stamp_, size, followSettings_);
+        if (resolved.status != cameraStatus_ || resolved.following != followingTarget_) {
+            cameraStatus_ = resolved.status;
+            followingTarget_ = resolved.following;
+            QMetaObject::invokeMethod(owner_, [view = owner_, status = cameraStatus_, following = followingTarget_] {
+                if (!view) return;
+                view->cameraStatus_ = status;
+                view->followingTarget_ = following;
+                emit view->cameraStatusChanged();
+            }, Qt::QueuedConnection);
+        }
+        const auto &camera = resolved.matrix;
         program_.setUniformValue("cameraMatrix", camera);
         program_.setUniformValue("opacity", 1.f);
         program_.setUniformValue("bodyPosition", body);
         program_.setUniformValue("colorRange", std::max(5.f, recording_->radius * .65f));
         program_.setUniformValue("pixelSize", pointSize_ * pixelScale_);
-        program_.setUniformValue("fixedColor", QVector3D(.75f, .82f, .88f));
+        program_.setUniformValue("fixedColor", QVector3D(cloudColor_.redF(), cloudColor_.greenF(), cloudColor_.blueF()));
         program_.setUniformValue("solid", true);
         program_.setUniformValue("tfAxes", false);
 
-        if (cloud_ && cloud_->buffer.isCreated()) {
-            if (recording_->showMainCloud) {
+        if (!independentMode_ && cloud_ && cloud_->buffer.isCreated()) {
+            if (recording_->showMainCloud && cloudVisible_) {
                 upload(frame.end);
                 bind(cloud_->buffer);
                 const int from = recording_->replace ? frame.first : 0;
@@ -194,17 +252,18 @@ public:
                 gl->glDepthFunc(GL_LESS);
             }
         }
-        drawTopicOverlays(gl, camera);
+        if (independentMode_) drawIndependentDisplays(gl, camera);
+        else drawTopicOverlays(gl, camera);
         program_.setUniformValue("tfAxes", false);
         program_.setUniformValue("cameraMatrix", camera);
         program_.setUniformValue("opacity", 1.f);
 
-        if (showPath_ && !recording_->poses.empty()) {
+        if (!independentMode_ && showPath_ && !recording_->poses.empty()) {
             const auto &poses = recording_->poses;
             const auto through = std::upper_bound(poses.begin(), poses.end(), stamp_,
                 [](qint64 time, const replay::Pose &sample) { return time < sample.stamp; });
             program_.setUniformValue("solid", true);
-            program_.setUniformValue("fixedColor", QVector3D(1.f, .78f, .35f));
+            program_.setUniformValue("fixedColor", QVector3D(pathColor_.redF(), pathColor_.greenF(), pathColor_.blueF()));
             bind(path_);
             gl->glDrawArrays(GL_LINE_STRIP, 0, int(through - poses.begin()));
             if (pose) {
@@ -228,6 +287,9 @@ private:
         if (!initialized_) {
             initialized_ = true;
             auto *gl = QOpenGLContext::currentContext()->functions();
+            GLfloat lineRange[2]{1.f, 1.f};
+            gl->glGetFloatv(GL_ALIASED_LINE_WIDTH_RANGE, lineRange);
+            lineWidthLimit_ = std::max(1.f, lineRange[1]);
             qInfo() << "UAV Studio OpenGL" << reinterpret_cast<const char *>(gl->glGetString(GL_VENDOR))
                     << reinterpret_cast<const char *>(gl->glGetString(GL_RENDERER))
                     << reinterpret_cast<const char *>(gl->glGetString(GL_VERSION));
@@ -250,13 +312,110 @@ private:
     struct OverlayBuffer {
         QOpenGLBuffer buffer;
         const replay::TopicOverlay::Sample *sample = nullptr;
+        bool uploaded = false;
     };
+
+    bool instanceVisible(const replay::TopicDisplay &display) const
+    {
+        if (!display.enabled || hiddenDisplays_.contains(display.id) || display.alpha <= 0) return false;
+        QString parent = display.parentId;
+        for (size_t depth = 0; !parent.isEmpty() && depth <= independentStates_.size(); ++depth) {
+            const auto found = std::find_if(independentStates_.begin(), independentStates_.end(),
+                [&](const auto &row) { return row.id == parent; });
+            if (found == independentStates_.end()) return false;
+            if (!found->enabled || hiddenDisplays_.contains(found->id)) return false;
+            parent = found->parentId;
+        }
+        return parent.isEmpty();
+    }
+
+    void drawReference(QOpenGLExtraFunctions *gl, const QMatrix4x4 &camera, const replay::TopicDisplay &style)
+    {
+        std::vector<Point> points;
+        if (style.kind == "grid") {
+            const auto cells = std::clamp(style.properties.value("Plane Cell Count").toInt(20), 1, 1000);
+            const auto cell = std::clamp(style.properties.value("Cell Size").toDouble(1), .001, 10000.);
+            const float extent = float(cells * cell / 2.);
+            for (int i = 0; i <= cells; ++i) {
+                const auto p = float(-extent + i * cell);
+                points.insert(points.end(), {{p,-extent,0}, {p,extent,0}, {-extent,p,0}, {extent,p,0}});
+            }
+        } else {
+            const float length = float(std::clamp(style.properties.value("Length").toDouble(1), .001, 10000.));
+            points = {{0,0,0},{length,0,0},{0,0,0},{0,length,0},{0,0,0},{0,0,length}};
+        }
+        if (!reference_.isCreated()) reference_.create();
+        reference_.bind();
+        reference_.allocate(points.data(), int(points.size() * sizeof(Point)));
+        bind(reference_);
+        program_.setUniformValue("cameraMatrix", camera);
+        program_.setUniformValue("solid", true);
+        program_.setUniformValue("tfAxes", style.kind == "axes");
+        program_.setUniformValue("fixedColor", QVector3D(style.color.redF(), style.color.greenF(), style.color.blueF()));
+        const float opacity = float(style.alpha * style.color.alphaF());
+        program_.setUniformValue("opacity", opacity);
+        gl->glEnable(GL_BLEND);
+        gl->glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        gl->glLineWidth(float(std::clamp(style.lineWidth * pixelScale_, 1., double(lineWidthLimit_))));
+        gl->glDrawArrays(GL_LINES, 0, int(points.size()));
+        gl->glLineWidth(1);
+        gl->glDisable(GL_BLEND);
+    }
+
+    void drawIndependentDisplays(QOpenGLExtraFunctions *gl, const QMatrix4x4 &camera)
+    {
+        // Keep buffers for unaffected immutable Topic caches when another
+        // Display is added/removed. Only orphaned cache entries are released.
+        for (auto entry = independentBuffers_.begin(); entry != independentBuffers_.end();) {
+            const auto source = std::find_if(independentRecords_.begin(), independentRecords_.end(),
+                [&](const auto &record) { return record.get() == entry->first.first; });
+            bool keep = false;
+            if (source != independentRecords_.end() && entry->first.second < (*source)->topicOverlays.size()) {
+                const auto &overlay = (*source)->topicOverlays[entry->first.second];
+                keep = std::any_of(independentStates_.begin(), independentStates_.end(), [&](const auto &style) {
+                    return overlay.display.kind == style.kind && (overlay.display.topic == style.topic
+                        || (style.kind == "tf" && overlay.display.topic == "/tf_static"));
+                });
+            }
+            if (keep) ++entry; else entry = independentBuffers_.erase(entry);
+        }
+        for (const auto &style : independentStates_) {
+            if (!instanceVisible(style) || (auxiliary_ && style.mainOnly)) continue;
+            if (style.kind == "grid" || style.kind == "axes") {
+                drawReference(gl, camera, style);
+                continue;
+            }
+            for (const auto &source : independentRecords_) {
+                // All lazy caches use the scene's fixed frame. Never mix spaces
+                // when a source has no valid transform into that frame.
+                if (!source || source->frameId != sceneFixedFrame_) continue;
+                for (size_t i = 0; i < source->topicOverlays.size(); ++i) {
+                    const auto &overlay = source->topicOverlays[i];
+                    if (overlay.display.kind != style.kind || (overlay.display.topic != style.topic
+                        && !(style.kind == "tf" && overlay.display.topic == "/tf_static"))) continue;
+                    const auto *latest = overlay.sampleAt(stamp_);
+                    if (!latest) continue;
+                    auto &gpu = independentBuffers_[{source.get(), i}];
+                    if (style.historySeconds > 0 && (style.kind == "cloud" || style.kind == "laser" || style.kind == "position")) {
+                        const qint64 first = stamp_ - qint64(style.historySeconds * 1.e9);
+                        for (const auto &sample : overlay.samples) {
+                            if (sample.range.stamp < first) continue;
+                            if (sample.range.stamp > stamp_) break;
+                            if (sample.expires && stamp_ >= sample.expires) continue;
+                            drawTopicSample(gl, camera, overlay, &sample, gpu, false, source.get(), &style);
+                        }
+                    } else drawTopicSample(gl, camera, overlay, latest, gpu, false, source.get(), &style);
+                }
+            }
+        }
+    }
 
     void drawTopicOverlays(QOpenGLExtraFunctions *gl, const QMatrix4x4 &camera)
     {
         for (size_t i = 0; i < recording_->topicOverlays.size(); ++i) {
             const auto &overlay = recording_->topicOverlays[i];
-            if (!displayVisibility_.value(overlay.display.id, overlay.display.enabled))
+            if (hiddenDisplays_.contains(overlay.display.id)
+                || !displayVisibility_.value(overlay.display.id, overlay.display.enabled))
                 continue;
             const auto &role = overlay.display.plannerRole;
             if ((auxiliary_ && overlay.display.mainOnly) || (overlay.display.kind == "laser" && !scan_) ||
@@ -280,13 +439,15 @@ private:
     }
 
     void drawTopicSample(QOpenGLExtraFunctions *gl, const QMatrix4x4 &camera, const replay::TopicOverlay &overlay,
-                         const replay::TopicOverlay::Sample *sample, OverlayBuffer &gpu, bool comparison)
+                         const replay::TopicOverlay::Sample *sample, OverlayBuffer &gpu, bool comparison,
+                         const replay::Recording *source = nullptr, const replay::TopicDisplay *style = nullptr)
     {
+        if (!source) source = recording_.get();
         auto transform = camera;
-        if (sample->frameLocked && sample->frameId != recording_->frameId) {
-            if (!recording_->transforms)
+        if (sample->frameLocked && sample->frameId != source->frameId) {
+            if (!source->transforms)
                 return;
-            const auto pose = recording_->transforms->lookup(recording_->frameId, sample->frameId, stamp_);
+            const auto pose = source->transforms->lookup(source->frameId, sample->frameId, stamp_);
             if (!pose)
                 return;
             transform.translate(pose->translation);
@@ -301,17 +462,22 @@ private:
         }
         bind(buffer);
         const int count = sample->range.end - sample->range.first;
-        if (gpu.sample != sample) {
+        int first = 0;
+        if (style && !gpu.uploaded) {
+            buffer.allocate(overlay.points.data(), int(overlay.points.size() * sizeof(Point)));
+            gpu.uploaded = true;
+        } else if (!style && gpu.sample != sample) {
             buffer.allocate(overlay.points.data() + sample->range.first, count * int(sizeof(Point)));
             gpu.sample = sample;
         }
+        if (style) first = sample->range.first;
         const auto color = comparison ? QColor("#c5aaed") :
-            (sample->color.isValid() ? sample->color : overlay.display.color);
-        const float opacity = comparison ? .35f : float(color.alphaF());
+            (sample->color.isValid() && (!style || style->useMessageColor) ? sample->color : style ? style->color : overlay.display.color);
+        const float opacity = comparison ? .35f : float(color.alphaF() * (style ? style->alpha : 1.));
         program_.setUniformValue("solid", true);
         program_.setUniformValue("tfAxes", overlay.display.kind == "tf");
         program_.setUniformValue("fixedColor", QVector3D(color.redF(), color.greenF(), color.blueF()));
-        program_.setUniformValue("pixelSize", sample->size > 0.f ? sample->size
+        program_.setUniformValue("pixelSize", style ? float(style->pointSize) * pixelScale_ : sample->size > 0.f ? sample->size
                                  : overlay.display.plannerRole == "goal" ? 12.f : overlay.display.kind == "position" ? 8.f : pointSize_);
         program_.setUniformValue("opacity", opacity);
         GLenum primitive = overlay.display.kind == "path" ? GL_LINE_STRIP
@@ -324,13 +490,15 @@ private:
         case replay::TopicOverlay::Primitive::Triangles: primitive = GL_TRIANGLES; break;
         }
         if (opacity > 0.f) {
+            gl->glLineWidth(style ? float(std::clamp(style->lineWidth * pixelScale_, 1., double(lineWidthLimit_))) : 1.f);
             const bool blend = opacity < 1.f;
             if (blend) {
                 gl->glEnable(GL_BLEND);
                 gl->glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
                 gl->glDepthMask(GL_FALSE);
             }
-            gl->glDrawArrays(primitive, 0, count);
+            gl->glDrawArrays(primitive, first, count);
+            gl->glLineWidth(1.f);
             if (blend) {
                 gl->glDepthMask(GL_TRUE);
                 gl->glDisable(GL_BLEND);
@@ -381,73 +549,20 @@ private:
         cloud_->uploaded = through;
     }
 
-    QMatrix4x4 cameraMatrix(const QSize &size, const std::optional<replay::Pose> &pose) const
-    {
-        constexpr float Radians = .01745329252f;
-        const auto &preset = replay::CameraPresets[size_t(camera_)];
-        const auto mode = pose ? preset.mode : replay::CameraPreset::OrbitMap;
-        const auto &geometry = mode == replay::CameraPreset::OrbitMap ? replay::CameraPresets.front() : preset;
-        const float ratio = float(size.width()) / std::max(1, size.height());
-        QMatrix4x4 projection, view;
-        if (mode == replay::CameraPreset::FirstPerson || mode == replay::CameraPreset::FirstPersonRaw) {
-            auto orientation = pose->rotation;
-            if (mode == replay::CameraPreset::FirstPerson) {
-                const auto before = recording_->poseAt(stamp_ - 120'000'000);
-                const auto after = recording_->poseAt(stamp_ + 120'000'000);
-                if (before && after)
-                    orientation = QQuaternion::slerp(before->rotation, after->rotation, .5f);
-                auto stabilized = orientation.rotatedVector({1, 0, 0});
-                const QVector3D tangent(-stabilized.y(), stabilized.x(), 0);
-                if (tangent.lengthSquared() > 1e-6f) {
-                    const auto up = QVector3D::crossProduct(stabilized, tangent).normalized();
-                    orientation = QQuaternion::fromAxes(stabilized.normalized(), tangent.normalized(), up);
-                }
-            }
-            const auto baseForward = orientation.rotatedVector({1, 0, 0});
-            auto up = orientation.rotatedVector({0, 0, 1});
-            auto forward = QQuaternion::fromAxisAndAngle(up, yaw_).rotatedVector(baseForward);
-            const auto side = QVector3D::crossProduct(up, forward);
-            const auto tilt = QQuaternion::fromAxisAndAngle(side, -pitch_);
-            forward = tilt.rotatedVector(forward);
-            up = tilt.rotatedVector(up);
-            const auto eye = pose->position + .12f * baseForward + .4f * (-side * panX_ + up * panY_);
-            projection.perspective(std::clamp(65.f * scale_, 12.f, 120.f), ratio, .035f,
-                                   std::max(70.f, recording_->radius * 8.f));
-            view.lookAt(eye, eye + forward, up);
-            return projection * view;
-        }
-
-        float yaw = (yaw_ + geometry.yaw) * Radians;
-        const float pitch = std::clamp(geometry.pitch + pitch_, -75.f, 86.f) * Radians;
-        auto center = recording_->center;
-        float distance = recording_->radius * 2.65f * scale_;
-        if (mode != replay::CameraPreset::OrbitMap) {
-            const auto forward = pose->rotation.rotatedVector({1, 0, 0});
-            yaw += std::atan2(forward.y(), forward.x());
-            if (mode == replay::CameraPreset::OrbitAircraft) {
-                constexpr double Circle = 6.283185307179586;
-                const double elapsed = double(stamp_ - recording_->frames.front().stamp) / 1.e9;
-                yaw += float(std::fmod(elapsed, 9.) * Circle / 9.);
-            }
-            center = pose->position + forward * (geometry.id == std::string_view("rear") ? 3.f : 0.f);
-            distance = std::clamp(recording_->radius * .5f, 6.f, 20.f) * scale_;
-        }
-        const QVector3D right(-std::sin(yaw), std::cos(yaw), 0);
-        center += distance * (-right * panX_ + QVector3D(0,0,1) * panY_);
-        const QVector3D direction(std::cos(yaw) * std::cos(pitch), std::sin(yaw) * std::cos(pitch), std::sin(pitch));
-        projection.perspective(46.f, ratio,
-                               std::max(.01f, distance * .002f),
-                               std::max(50.f, distance + recording_->radius * 5.f));
-        view.lookAt(center + direction * distance, center, {0,0,1});
-        return projection * view;
-    }
-
     std::shared_ptr<const replay::Recording> recording_;
     QOpenGLShaderProgram program_;
     QOpenGLVertexArrayObject vao_;
     std::shared_ptr<SharedCloudVertices> cloud_;
     QOpenGLBuffer path_, marker_;
     std::vector<OverlayBuffer> overlays_, comparisons_;
+    std::vector<replay::TopicDisplay> independentStates_;
+    std::vector<std::shared_ptr<const replay::Recording>> independentRecords_;
+    std::map<std::pair<const replay::Recording *, size_t>, OverlayBuffer> independentBuffers_;
+    QOpenGLBuffer reference_;
+    bool independentMode_ = false;
+    QString sceneFixedFrame_;
+    replay::Recording referenceRecording_;
+    float lineWidthLimit_ = 1;
     bool initialized_ = false, ready_ = false, needsStorage_ = false, showPath_ = true, transparent_ = false;
     int camera_ = 0;
     bool auxiliary_ = false, scan_ = true, currentScan_ = false;
@@ -456,6 +571,11 @@ private:
     float yaw_ = 0, pitch_ = 0, scale_ = 1, pointSize_ = 2, panX_ = 0, panY_ = 0, pixelScale_ = 1;
     QSize captureSize_;
     QPointer<CloudView> owner_;
+    replay::CameraFollowSettings followSettings_;
+    QString cameraStatus_;
+    bool followingTarget_ = false, cloudVisible_ = true;
+    QColor cloudColor_, pathColor_;
+    QStringList hiddenDisplays_;
 };
 
 CloudView::CloudView(QQuickItem *parent) : QQuickFramebufferObject(parent)
@@ -471,15 +591,19 @@ void CloudView::setController(ReplayController *controller)
     if (controller_)
         disconnect(controller_, nullptr, this, nullptr);
     controller_ = controller;
+    followingTarget_ = false;
+    cameraStatus_.clear();
+    emit cameraStatusChanged();
     if (controller_) {
         connect(controller_, &ReplayController::positionChanged, this, &CloudView::update);
         connect(controller_, &ReplayController::sceneStyleChanged, this, &CloudView::update);
+        connect(controller_, &ReplayController::independentDisplaysChanged, this, &CloudView::update);
         currentRecording_ = controller_->recording();
         connect(controller_, &ReplayController::recordingChanged, this, [this] {
             const auto recording = controller_->recording();
             if (recording != currentRecording_.lock()) {
                 currentRecording_ = recording;
-                resetCamera();
+                update();
             } else {
                 update();
             }
@@ -500,6 +624,7 @@ void CloudView::setCamera(int camera)
 
 void CloudView::setCameraZoom(float zoom)
 {
+    if (!std::isfinite(zoom)) return;
     zoom = std::clamp(zoom, .5f, 4.f);
     if (cameraZoom_ != zoom) {
         cameraZoom_ = zoom;
@@ -528,11 +653,101 @@ void CloudView::setOverlays(const QStringList &overlays)
 
 void CloudView::setPointSize(float size)
 {
+    if (!std::isfinite(size)) return;
+    size = std::clamp(size, .25f, 20.f);
     if (pointSize_ != size) {
         pointSize_ = size;
         emit pointSizeChanged();
         update();
     }
+}
+
+void CloudView::setTargetFrame(const QString &frame)
+{
+    const auto normalized = frame.trimmed();
+    if (targetFrame_ == normalized) return;
+    targetFrame_ = normalized;
+    emit followSettingsChanged();
+    update();
+}
+
+void CloudView::setFollowMode(int mode)
+{
+    if (mode < 0 || mode > 3 || followMode_ == mode) return;
+    followMode_ = mode;
+    emit followSettingsChanged();
+    update();
+}
+
+void CloudView::setFollowLag(double seconds)
+{
+    if (!std::isfinite(seconds)) return;
+    seconds = std::clamp(seconds, 0., 10.);
+    if (followLag_ == seconds) return;
+    followLag_ = seconds;
+    emit followSettingsChanged();
+    update();
+}
+
+void CloudView::setSmoothing(double seconds)
+{
+    if (!std::isfinite(seconds)) return;
+    seconds = std::clamp(seconds, 0., 10.);
+    if (smoothing_ == seconds) return;
+    smoothing_ = seconds;
+    emit followSettingsChanged();
+    update();
+}
+
+void CloudView::setOpticalFrame(bool optical)
+{
+    if (opticalFrame_ == optical) return;
+    opticalFrame_ = optical;
+    emit followSettingsChanged();
+    update();
+}
+
+void CloudView::setCloudVisible(bool visible)
+{
+    if (cloudVisible_ == visible) return;
+    cloudVisible_ = visible;
+    emit viewStyleChanged();
+    update();
+}
+
+void CloudView::setCloudColor(const QColor &color)
+{
+    if (cloudColor_ == color) return;
+    cloudColor_ = color;
+    emit viewStyleChanged();
+    update();
+}
+
+void CloudView::setPathColor(const QColor &color)
+{
+    if (pathColor_ == color) return;
+    pathColor_ = color;
+    emit viewStyleChanged();
+    update();
+}
+
+void CloudView::setViewBackground(const QColor &color)
+{
+    if (viewBackground_ == color) return;
+    viewBackground_ = color;
+    emit viewStyleChanged();
+    update();
+}
+
+void CloudView::setHiddenDisplays(const QStringList &ids)
+{
+    auto unique = ids;
+    unique.removeDuplicates();
+    unique.removeAll(QString());
+    if (hiddenDisplays_ == unique) return;
+    hiddenDisplays_ = unique;
+    emit viewStyleChanged();
+    update();
 }
 
 void CloudView::setCaptureSize(const QSize &size)
@@ -571,6 +786,7 @@ void CloudView::setShowPath(bool visible)
 
 void CloudView::orbit(float dx, float dy)
 {
+    if (!std::isfinite(dx) || !std::isfinite(dy)) return;
     yaw_ = std::remainder(yaw_ - .34f * dx, 360.f);
     pitch_ = std::clamp(pitch_ + .28f * dy, -75.f, 86.f);
     update();
@@ -578,14 +794,16 @@ void CloudView::orbit(float dx, float dy)
 
 void CloudView::pan(float dx, float dy)
 {
+    if (!std::isfinite(dx) || !std::isfinite(dy)) return;
     const auto pixels = std::max(1., height());
-    panX_ += float(dx / pixels);
-    panY_ += float(dy / pixels);
+    panX_ = std::clamp(panX_ + float(dx / pixels), -100.f, 100.f);
+    panY_ = std::clamp(panY_ + float(dy / pixels), -100.f, 100.f);
     update();
 }
 
 void CloudView::zoom(float steps)
 {
+    if (!std::isfinite(steps)) return;
     scale_ = std::clamp(scale_ * std::pow(.88f, steps), .08f, 8.f);
     update();
 }
@@ -596,4 +814,42 @@ void CloudView::resetCamera()
     pitch_ = 0.f;
     scale_ = 1;
     update();
+}
+
+QString CloudView::exportValidationError(double experimentTime) const
+{
+    if (camera_ == 0) return {}; // Map overview intentionally has no followed target.
+    if (!controller_ || !std::isfinite(experimentTime))
+        return tr("无法解析导出相机。 / Export camera is unavailable.");
+    const auto recording = controller_->recording();
+    if (!recording) return tr("导出相机没有数据源。 / Export camera has no recording.");
+    const replay::Recording *cameraRecording = recording.get();
+    replay::Recording reference;
+    const auto fixedFrame = controller_->independentFixedFrame();
+    if (controller_->independentDisplayModelActive() && fixedFrame != recording->frameId) {
+        // Use the same coordinate reference as CloudRenderer. Export must
+        // reject a missing TF in the selected scene, not validate the old one.
+        reference.frameId = fixedFrame;
+        reference.bodyFrame = recording->bodyFrame;
+        reference.radius = 10.f;
+        reference.transforms = recording->transforms;
+        for (const auto &source : controller_->independentDisplayRecordings()) {
+            if (!source || source->frameId != fixedFrame) continue;
+            reference.center = source->center;
+            reference.radius = source->radius;
+            reference.transforms = source->transforms;
+            break;
+        }
+        cameraRecording = &reference;
+    }
+    replay::CameraFollowSettings settings;
+    settings.camera = camera_; settings.yaw = yaw_; settings.pitch = pitch_;
+    settings.scale = scale_ / cameraZoom_; settings.panX = panX_; settings.panY = panY_;
+    settings.targetFrame = targetFrame_; settings.followMode = followMode_;
+    settings.followLag = followLag_; settings.smoothing = smoothing_; settings.opticalFrame = opticalFrame_;
+    const auto resolved = replay::cameraFollowFrame(*cameraRecording, recording->stampAt(experimentTime),
+        QSize(std::max(1, int(width())), std::max(1, int(height()))), settings);
+    if (resolved.following) return {};
+    return tr("无法导出机位 %1（实验时间 %2 s）：%3 / Camera target unavailable; export stopped.")
+        .arg(property("exportViewId").toString()).arg(experimentTime, 0, 'f', 9).arg(resolved.status);
 }

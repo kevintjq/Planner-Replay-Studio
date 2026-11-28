@@ -7,6 +7,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QSet>
+#include <QUrl>
 #include <QtEndian>
 #include <bzlib.h>
 #include <lz4frame.h>
@@ -115,6 +116,67 @@ struct Connection {
     QString topic;
     QByteArray type;
     QByteArray definition;
+};
+
+class CatalogBuilder {
+public:
+    CatalogBuilder(const QString &path, const std::map<quint32, Connection> &connections)
+        : connections_(connections)
+    {
+        const QFileInfo info(path);
+        source_ = QUrl::fromLocalFile(info.canonicalFilePath().isEmpty() ? info.absoluteFilePath() : info.canonicalFilePath()).toString();
+    }
+
+    void observe(quint32 id, qint64 stamp)
+    {
+        auto &stats = statistics_[id];
+        ++stats.count;
+        stats.first = std::min(stats.first, stamp);
+        stats.last = std::max(stats.last, stamp);
+    }
+
+    std::vector<TopicCatalogEntry> finish() const
+    {
+        std::map<std::pair<QString, QByteArray>, TopicCatalogEntry> merged;
+        QHash<QString, QByteArray> definitions;
+        for (const auto &[id, connection] : connections_) {
+            auto &entry = merged[{connection.topic, connection.type}];
+            entry.name = connection.topic;
+            entry.type = QString::fromUtf8(connection.type);
+            entry.source = source_;
+            const auto key = connection.topic + QChar(0) + entry.type;
+            if (entry.connectionCount && definitions.value(key) != connection.definition)
+                entry.schemaConflict = true;
+            if (!entry.connectionCount || (!entry.definitionAvailable && !connection.definition.trimmed().isEmpty())) {
+                const auto schema = describeTopicSchema(connection.type, connection.definition);
+                entry.definitionAvailable = schema.definitionAvailable;
+                entry.fields = schema.fields;
+                entry.numericFields = schema.numericFields;
+                entry.schemaStatus = schema.status;
+                definitions.insert(key, connection.definition);
+            }
+            ++entry.connectionCount;
+            const auto stats = statistics_.value(id);
+            if (stats.count) {
+                entry.firstStampNs = entry.count ? std::min(entry.firstStampNs, stats.first) : stats.first;
+                entry.lastStampNs = entry.count ? std::max(entry.lastStampNs, stats.last) : stats.last;
+                entry.count += stats.count;
+            }
+        }
+        std::vector<TopicCatalogEntry> result;
+        result.reserve(merged.size());
+        for (auto &[key, entry] : merged) {
+            if (entry.schemaConflict)
+                entry.schemaStatus += QStringLiteral(" Connections for this topic/type have different recorded definitions; each message uses its own connection schema.");
+            result.push_back(std::move(entry));
+        }
+        return result;
+    }
+private:
+    struct Stats { qint64 count = 0, first = std::numeric_limits<qint64>::max(), last = 0; };
+    const std::map<quint32, Connection> &connections_;
+    QHash<quint32, Stats> statistics_;
+    QString source_;
 };
 struct Chunk {
     qint64 offset;
@@ -235,6 +297,7 @@ void readCloud(Recording &record, QByteArrayView data, qint64 recorded, const Ca
     Bytes reader(data);
     const auto header = messageHeader(reader);
     const auto stamp = header.stamp == 0 ? recorded : header.stamp;
+    if (header.stamp == 0) record.storageTimeFallback = true;
     if (!record.frames.empty() && stamp < record.frames.back().stamp)
         fail("点云时间戳倒退，请检查 bag 内的话题时间。");
     if (record.frames.empty())
@@ -890,6 +953,29 @@ std::pair<std::vector<Chunk>, std::map<quint32, Connection>> readBagDirectory(QF
 }
 } // namespace
 
+double TopicCatalogEntry::durationSeconds() const
+{
+    return count ? double(lastStampNs - firstStampNs) / Second : 0.;
+}
+
+double TopicCatalogEntry::frequencyHz() const
+{
+    const auto duration = durationSeconds();
+    return count > 1 && duration > 0. ? double(count - 1) / duration : 0.;
+}
+
+QVariantMap TopicCatalogEntry::toVariant() const
+{
+    return {{"name", name}, {"type", type}, {"source", source}, {"count", count},
+            {"frequencyHz", frequencyHz()}, {"firstStampNs", count ? QString::number(firstStampNs) : QString()},
+            {"lastStampNs", count ? QString::number(lastStampNs) : QString()},
+            {"durationSeconds", durationSeconds()}, {"definitionAvailable", definitionAvailable},
+            {"fields", fields}, {"numericFields", numericFields}, {"schemaStatus", schemaStatus},
+            {"schemaConflict", schemaConflict}, {"connectionCount", connectionCount},
+            {"timeBasis", "bag-storage"},
+            {"frequencyDefinition", "(message count - 1) / (last storage timestamp - first storage timestamp)"}};
+}
+
 const TopicOverlay::Sample *TopicOverlay::sampleAt(qint64 stamp) const
 {
     const auto next = std::upper_bound(samples.begin(), samples.end(), stamp,
@@ -910,17 +996,22 @@ const TopicOverlay::Sample *TopicOverlay::sampleAt(qint64 stamp) const
 
 qint64 Recording::stampAt(double seconds) const
 {
-    return frames.front().stamp + qint64(std::round(std::clamp(seconds, 0., duration()) * Second));
+    const auto start = hasMessages ? timelineFirstStampNs : frames.empty() ? qint64(0) : frames.front().stamp;
+    return start + qint64(std::round(std::clamp(seconds, 0., duration()) * Second));
 }
 
 double Recording::duration() const
 {
+    if (hasMessages) return std::max(0., double(timelineLastStampNs - timelineFirstStampNs) / Second);
+    if (frames.empty()) return 0.;
     const auto end = poses.empty() ? frames.back().stamp : std::max(frames.back().stamp, poses.back().stamp);
     return double(end - frames.front().stamp) / Second;
 }
 
 const Frame &Recording::frameAt(qint64 stamp) const
 {
+    static const Frame empty{0, 0, 0};
+    if (frames.empty()) return empty;
     const auto next = std::upper_bound(frames.begin(), frames.end(), stamp,
                                       [](qint64 t, const Frame &frame) { return t < frame.stamp; });
     return next == frames.begin() ? frames.front() : *std::prev(next);
@@ -983,6 +1074,7 @@ QJsonObject inspectBag(const QString &path, const Cancel &cancel)
 {
     QFile file(path);
     auto [chunks, connections] = readBagDirectory(file, cancel);
+    CatalogBuilder catalog(path, connections);
     struct TopicStats {
         qint64 count = 0;
         QString frame, child;
@@ -1010,6 +1102,7 @@ QJsonObject inspectBag(const QString &path, const Cancel &cancel)
             auto &summary = statistics[id];
             ++summary.count;
             const auto time = Bytes(header.value("time")).time();
+            catalog.observe(id, time);
             first = std::min(first, time);
             last = std::max(last, time);
             const auto &type = entry->second.type;
@@ -1050,29 +1143,63 @@ QJsonObject inspectBag(const QString &path, const Cancel &cancel)
     std::sort(sorted.begin(), sorted.end());
     for (const auto &[parent, child] : sorted)
         pairs.append(QJsonArray{parent, child});
+    QJsonArray catalogRows;
+    for (const auto &entry : catalog.finish()) catalogRows.append(QJsonObject::fromVariantMap(entry.toVariant()));
     return {{"storage_start_ns", first == std::numeric_limits<qint64>::max() ? qint64(0) : first},
-            {"storage_end_ns", last ? last + 1 : qint64(0)}, {"topics", topics}, {"tf_pairs", pairs}};
+            {"storage_end_ns", last ? last + 1 : qint64(0)}, {"topics", topics}, {"tf_pairs", pairs},
+            {"catalog", catalogRows}, {"time_basis", "bag-storage"}};
+}
+
+std::vector<TopicCatalogEntry> inspectBagCatalog(const QString &path, const Cancel &cancel, const Progress &progress)
+{
+    if (progress) progress(0.);
+    const auto inventory = inspectBag(path, cancel);
+    std::vector<TopicCatalogEntry> result;
+    for (const auto &value : inventory.value("catalog").toArray()) {
+        const auto row = value.toObject().toVariantMap();
+        TopicCatalogEntry entry;
+        entry.name = row.value("name").toString(); entry.type = row.value("type").toString();
+        entry.source = row.value("source").toString(); entry.count = row.value("count").toLongLong();
+        entry.firstStampNs = row.value("firstStampNs").toString().toLongLong();
+        entry.lastStampNs = row.value("lastStampNs").toString().toLongLong();
+        entry.connectionCount = row.value("connectionCount").toInt();
+        entry.definitionAvailable = row.value("definitionAvailable").toBool();
+        entry.schemaConflict = row.value("schemaConflict").toBool();
+        entry.fields = row.value("fields").toList(); entry.numericFields = row.value("numericFields").toStringList();
+        entry.schemaStatus = row.value("schemaStatus").toString();
+        result.push_back(std::move(entry));
+    }
+    if (progress) progress(1.);
+    return result;
 }
 
 std::optional<TopicMessage> inspectBagTopic(const QString &path, const QString &topic, qint64 stamp,
-                                            const Cancel &cancel, int arrayPage)
+                                            const Cancel &cancel, int arrayPage, const QString &type, const QString &selectionTimeBasis)
 {
+    if (selectionTimeBasis != "header" && selectionTimeBasis != "storage")
+        fail("消息查询必须明确选择 Header 或存储时间基准。");
     QFile file(path);
     auto [chunks, connections] = readBagDirectory(file, cancel);
     QHash<quint32, const Connection *> selected;
     for (const auto &[id, connection] : connections) {
-        if (connection.topic == topic)
+        if (connection.topic == topic && (type.isEmpty() || connection.type == type.toUtf8()))
             selected.insert(id, &connection);
     }
     if (selected.isEmpty())
         fail("录包中找不到所选话题。");
+    QSet<QByteArray> selectedTypes;
+    for (const auto *connection : selected) selectedTypes.insert(connection->type);
+    if (selectedTypes.size() > 1)
+        fail("同名话题有多种消息类型，请同时选择消息类型。");
 
     QByteArray payload;
     qint64 chosen = -1;
+    qint64 chosenStorage = -1;
+    qint64 missingHeader = 0;
     const Connection *definition = nullptr;
     for (auto chunk = chunks.rbegin(); chunk != chunks.rend(); ++chunk) {
         checkCancel(cancel);
-        if ((chunk->low > 0 && chunk->low > stamp) || (chunk->high > 0 && chunk->high < chosen))
+        if (selectionTimeBasis == "storage" && ((chunk->low > 0 && chunk->low > stamp) || (chunk->high > 0 && chunk->high < chosen)))
             continue;
         if (!file.seek(chunk->offset))
             fail("无法定位 bag 数据块。");
@@ -1088,16 +1215,180 @@ std::optional<TopicMessage> inspectBagTopic(const QString &path, const QString &
             if (!connection)
                 continue;
             const auto recorded = Bytes(metadata.value("time")).time();
-            if (recorded <= stamp && recorded >= chosen) {
+            auto selectedStamp = recorded;
+            if (selectionTimeBasis == "header") {
+                const auto headerStamp = topicMessageHeaderStamp(connection->type, connection->definition, body);
+                if (headerStamp.isEmpty()) { ++missingHeader; continue; }
+                selectedStamp = headerStamp.toLongLong();
+            }
+            if (selectedStamp <= stamp && selectedStamp >= chosen) {
                 payload = body.toByteArray();
-                chosen = recorded;
+                chosen = selectedStamp;
+                chosenStorage = recorded;
                 definition = connection;
             }
         }
     }
+    if (!definition && missingHeader)
+        fail("消息缺少可唯一确定的非零 Header 时间（或缺少定义/内部 Header 不一致）；不会用存储时间冒充实验时间。可显式按存储时间查询原始消息。");
     if (!definition)
         return {};
-    return decodeTopicMessage(definition->type, definition->definition, payload, chosen, arrayPage);
+    auto result = decodeTopicMessage(definition->type, definition->definition, payload, chosenStorage, arrayPage);
+    result.selectionTimeBasis = selectionTimeBasis == "header" ? QStringLiteral("header") : QStringLiteral("bag-storage");
+    result.selectionStampNs = QString::number(chosen);
+    if (selectionTimeBasis == "header") {
+        result.headerStampNs = QString::number(chosen);
+        result.decodeStatus += QStringLiteral(" Selected by real Header time; stampNs remains the recorded bag-storage timestamp.");
+    }
+    return result;
+}
+
+qint64 visitBagTopic(const QString &path, const QString &topic, const BagTopicVisitor &visitor,
+                    const QString &type, const Cancel &cancel)
+{
+    if (!visitor || topic.isEmpty()) fail("请指定真实 Topic 和消息读取回调。");
+    QFile file(path);
+    auto [chunks, connections] = readBagDirectory(file, cancel);
+    QHash<quint32, const Connection *> selected;
+    QSet<QByteArray> selectedTypes;
+    for (const auto &[id, connection] : connections)
+        if (connection.topic == topic && (type.isEmpty() || connection.type == type.toUtf8())) {
+            selected.insert(id, &connection); selectedTypes.insert(connection.type);
+        }
+    if (selected.isEmpty()) fail("录包中找不到所选话题及消息类型。");
+    if (selectedTypes.size() > 1) fail("同名话题有多种消息类型，请同时选择消息类型。");
+    qint64 count = 0;
+    for (const auto &chunk : chunks) {
+        checkCancel(cancel);
+        if (!file.seek(chunk.offset)) fail("无法定位 bag 数据块。");
+        const auto decompressed = unpack(readExactly(file, chunk.size), chunk);
+        Bytes reader(decompressed);
+        while (!reader.empty()) {
+            checkCancel(cancel);
+            const auto header = fields(reader.blob());
+            const auto data = reader.blob();
+            if (opcode(header) != 0x02) continue;
+            const auto *connection = selected.value(number(header, "conn"), nullptr);
+            if (!connection) continue;
+            visitor(connection->type, connection->definition, data, Bytes(header.value("time")).time());
+            ++count;
+        }
+    }
+    return count;
+}
+
+NumericTopicSeries sampleBagTopic(const QString &path, const QString &topic, const QString &fieldPath,
+                                   const QString &timeBasis, const QString &firstStampNs, const QString &lastStampNs,
+                                   int maxSamples, const QString &type, const Cancel &cancel)
+{
+    if (timeBasis != "storage" && timeBasis != "header")
+        fail("数值采样时间基准必须明确选择 storage 或 header。");
+    const auto parseBound = [](const QString &text) -> std::optional<qint64> {
+        if (text.isEmpty()) return {};
+        bool ok = false;
+        const auto value = text.toLongLong(&ok);
+        if (!ok || value < 0) fail("采样区间必须使用非负整数纳秒字符串。");
+        return value;
+    };
+    const auto begin = parseBound(firstStampNs), end = parseBound(lastStampNs);
+    if (begin && end && *begin > *end) fail("数值采样区间的起点晚于终点。");
+    maxSamples = std::clamp(maxSamples, 2, 200000);
+    QFile file(path);
+    auto [chunks, connections] = readBagDirectory(file, cancel);
+    QHash<quint32, const Connection *> selected;
+    QSet<QByteArray> selectedTypes;
+    for (const auto &[id, connection] : connections)
+        if (connection.topic == topic && (type.isEmpty() || connection.type == type.toUtf8())) {
+            selected.insert(id, &connection);
+            selectedTypes.insert(connection.type);
+        }
+    if (selected.isEmpty()) fail("录包中找不到所选话题及消息类型。");
+    if (selectedTypes.size() > 1) fail("同名话题有多种消息类型，请同时选择消息类型。");
+    NumericTopicSeries result;
+    qint64 total = 0, valid = 0, missingHeader = 0, decodeErrors = 0, nonFinite = 0;
+    qint64 first = std::numeric_limits<qint64>::max(), last = 0;
+    quint64 stride = 1;
+    double minimum = std::numeric_limits<double>::infinity(), maximum = -minimum, mean = 0., m2 = 0.;
+    QString firstError, valueType;
+    QVariantMap finalSample;
+    for (const auto &chunk : chunks) {
+        checkCancel(cancel);
+        if (timeBasis == "storage" && ((begin && chunk.high > 0 && chunk.high < *begin) ||
+            (end && chunk.low > 0 && chunk.low > *end))) continue;
+        if (!file.seek(chunk.offset)) fail("无法定位 bag 数据块。");
+        const auto decompressed = unpack(readExactly(file, chunk.size), chunk);
+        Bytes reader(decompressed);
+        while (!reader.empty()) {
+            checkCancel(cancel);
+            const auto header = fields(reader.blob());
+            const auto data = reader.blob();
+            if (opcode(header) != 0x02) continue;
+            const auto *connection = selected.value(number(header, "conn"), nullptr);
+            if (!connection) continue;
+            ++total;
+            const auto stored = Bytes(header.value("time")).time();
+            if (timeBasis == "storage" && ((begin && stored < *begin) || (end && stored > *end))) continue;
+            try {
+                const auto value = decodeTopicNumeric(connection->type, connection->definition, data, fieldPath);
+                if (!value) { ++nonFinite; continue; }
+                if (timeBasis == "header" && value->headerStampNs.isEmpty()) { ++missingHeader; continue; }
+                const auto stamp = timeBasis == "header" ? value->headerStampNs.toLongLong() : stored;
+                if ((begin && stamp < *begin) || (end && stamp > *end)) continue;
+                ++valid;
+                valueType = value->type;
+                first = std::min(first, stamp); last = std::max(last, stamp);
+                minimum = std::min(minimum, value->value); maximum = std::max(maximum, value->value);
+                const auto delta = value->value - mean;
+                mean += delta / double(valid); m2 += delta * (value->value - mean);
+                finalSample = {{"stampNs", QString::number(stamp)}, {"storageStampNs", QString::number(stored)},
+                    {"headerStampNs", value->headerStampNs}, {"timeBasis", timeBasis == "header" ? "header" : "bag-storage"},
+                    {"value", value->value}, {"exactValue", value->exactValue}, {"type", value->type}};
+                if (quint64(valid - 1) % stride == 0) result.samples.append(finalSample);
+                if (result.samples.size() > maxSamples) {
+                    QVariantList compact;
+                    compact.reserve((result.samples.size() + 1) / 2);
+                    for (qsizetype i = 0; i < result.samples.size(); i += 2) compact.append(result.samples[i]);
+                    result.samples = std::move(compact);
+                    stride *= 2;
+                }
+            } catch (const std::runtime_error &error) {
+                ++decodeErrors;
+                if (firstError.isEmpty()) firstError = QString::fromUtf8(error.what());
+            }
+        }
+    }
+    if (!finalSample.isEmpty() && (result.samples.isEmpty() || result.samples.last().toMap() != finalSample)) {
+        if (result.samples.size() >= maxSamples) result.samples.last() = finalSample;
+        else result.samples.append(finalSample);
+    }
+    std::stable_sort(result.samples.begin(), result.samples.end(), [](const auto &a, const auto &b) {
+        return a.toMap().value("stampNs").toString().toLongLong() < b.toMap().value("stampNs").toString().toLongLong();
+    });
+    for (auto &sample : result.samples) {
+        auto row = sample.toMap();
+        row.insert("seconds", double(row.value("stampNs").toString().toLongLong() - first) / Second);
+        sample = row;
+    }
+    const QFileInfo info(path);
+    result.statistics = {{"topic", topic}, {"fieldPath", fieldPath}, {"type", valueType},
+        {"source", QUrl::fromLocalFile(info.canonicalFilePath().isEmpty() ? info.absoluteFilePath() : info.canonicalFilePath()).toString()},
+        {"timeBasis", timeBasis == "header" ? "header" : "bag-storage"}, {"totalTopicMessages", total},
+        {"validCount", valid}, {"returnedCount", result.samples.size()}, {"missingHeaderCount", missingHeader},
+        {"decodeErrorCount", decodeErrors}, {"nonFiniteCount", nonFinite}, {"firstError", firstError},
+        {"firstStampNs", valid ? QString::number(first) : QString()}, {"lastStampNs", valid ? QString::number(last) : QString()},
+        {"requestedFirstStampNs", firstStampNs}, {"requestedLastStampNs", lastStampNs},
+        {"unit", "unspecified by ROS message definition"},
+        {"sampling", stride > 1 ? "bounded display decimation; statistics use every valid sample in the selected interval" : "all valid samples"},
+        {"numericPrecision", "Plots and statistics use float64; exact integer values remain in exactValue."}};
+    if (valid) {
+        result.statistics.insert("minimum", minimum); result.statistics.insert("maximum", maximum);
+        result.statistics.insert("mean", mean); result.statistics.insert("standardDeviation", std::sqrt(std::max(0., m2 / double(valid))));
+        result.statistics.insert("standardDeviationDefinition", "population standard deviation over all valid selected messages");
+    }
+    result.status = valid ? QStringLiteral("%1 valid samples; %2 displayed. Time basis: %3.").arg(valid).arg(result.samples.size()).arg(timeBasis)
+        : QStringLiteral("No valid numeric samples. %1 Missing/zero Header: %2; decode errors: %3; non-finite: %4.")
+            .arg(firstError).arg(missingHeader).arg(decodeErrors).arg(nonFinite);
+    return result;
 }
 
 std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions &options,
@@ -1105,6 +1396,7 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
 {
     QFile file(path);
     auto [chunks, connections] = readBagDirectory(file, cancel);
+    CatalogBuilder catalog(path, connections);
     auto record = std::make_shared<Recording>();
     record->name = QFileInfo(file).fileName();
     if (std::isfinite(options.maximumGap) && options.maximumGap > 0. && options.maximumGap <= 60.)
@@ -1136,15 +1428,13 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
     record->odometryTopics.removeDuplicates();
     record->cloudTopics.sort();
     record->odometryTopics.sort();
-    if (record->cloudTopics.isEmpty())
-        fail("bag 内没有可读取的 PointCloud2 话题。");
     record->cloudTopic = options.cloudTopic;
-    if (record->cloudTopic.isEmpty()) {
+    if (!options.displayDataOnly && record->cloudTopic.isEmpty() && !record->cloudTopics.isEmpty()) {
         const auto preferred = std::find_if(record->cloudTopics.begin(), record->cloudTopics.end(),
             [](const QString &name) { return name.endsWith("/cloud_registered"); });
         record->cloudTopic = preferred == record->cloudTopics.end() ? record->cloudTopics.front() : *preferred;
     }
-    if (!record->cloudTopics.contains(record->cloudTopic))
+    if (!record->cloudTopic.isEmpty() && !record->cloudTopics.contains(record->cloudTopic))
         fail("所选点云话题不存在。");
     if (options.autoScan && record->scanTopic.isEmpty()) {
         QString best;
@@ -1168,13 +1458,13 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
         record->scanTopic.clear();
     }
     record->odometryTopic = options.odometryTopic;
-    if (record->odometryTopic.isEmpty() && !record->odometryTopics.isEmpty()) {
+    if (!options.displayDataOnly && record->odometryTopic.isEmpty() && !record->odometryTopics.isEmpty()) {
         record->odometryTopic = record->odometryTopics.contains("/Odometry") ? "/Odometry" : record->odometryTopics.front();
     }
     if (!record->odometryTopic.isEmpty() && !record->odometryTopics.contains(record->odometryTopic))
         fail("所选里程计话题不存在。");
     record->speedTopic = options.speedTopic;
-    if (record->speedTopic.isEmpty() || record->speedTopic == QStringLiteral("自动识别")) {
+    if (!options.displayDataOnly && (record->speedTopic.isEmpty() || record->speedTopic == QStringLiteral("自动识别"))) {
         record->speedTopic = options.tfPose ? QString() : record->odometryTopic;
         if (record->speedTopic.isEmpty()) {
             for (const auto &suffix : {"/local_position/velocity_local", "/local_position/velocity_body", "/velocity"}) {
@@ -1237,10 +1527,9 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
     TransformTree transforms(record->maximumGap);
     importExtrinsics(transforms, options.extrinsics);
     QHash<size_t, QHash<QString, size_t>> transformLayers;
-    const bool importTransforms = options.tfPose || !options.world.isEmpty() ||
-        !options.topicLayout.fixedFrame.isEmpty() || !overlayIndices.isEmpty();
     size_t overlayPoints = 0, transformCount = 0;
     std::vector<Odometry> odometry;
+    std::optional<std::pair<qint64, qint64>> genericHeaderRange;
     for (size_t i = 0; i < chunks.size(); ++i) {
         checkCancel(cancel);
         const auto &chunk = chunks[i];
@@ -1258,6 +1547,16 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
             if (entry == connections.end())
                 continue;
             const auto &connection = entry->second;
+            catalog.observe(entry->first, Bytes(header.value("time")).time());
+            if (record->cloudTopic.isEmpty()) {
+                if (const auto range = topicMessageHeaderRange(connection.type, connection.definition, data)) {
+                    if (!genericHeaderRange) genericHeaderRange = range;
+                    else {
+                        genericHeaderRange->first = std::min(genericHeaderRange->first, range->first);
+                        genericHeaderRange->second = std::max(genericHeaderRange->second, range->second);
+                    }
+                }
+            }
             if (connection.topic == record->cloudTopic && connection.type == "sensor_msgs/PointCloud2") {
                 const auto recorded = Bytes(header.value("time")).time();
                 if (record->frames.empty())
@@ -1273,7 +1572,9 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
                 }
             }
             const auto layers = overlayIndices.constFind(connection.topic);
-            if (importTransforms && (connection.type == "tf2_msgs/TFMessage" || connection.type == "tf/tfMessage") &&
+            // Target Frame can change after loading, including when pose comes from
+            // Odometry. Cache the bag's real TF tree once for every project.
+            if ((connection.type == "tf2_msgs/TFMessage" || connection.type == "tf/tfMessage") &&
                 (connection.topic == "/tf" || connection.topic == "/tf_static" || layers != overlayIndices.cend())) {
                 try {
                     const auto samples = readTransforms(data, Bytes(header.value("time")).time());
@@ -1411,14 +1712,40 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
             progress(.88 * double(i + 1) / double(chunks.size()));
     }
 
-    if (record->frames.empty())
-        fail("未找到所选话题的点云帧。");
+    record->topicCatalog = catalog.finish();
+    for (const auto &entry : record->topicCatalog) {
+        if (!entry.count) continue;
+        if (!record->hasMessages) {
+            record->recordedOrigin = entry.firstStampNs;
+            record->timelineFirstStampNs = entry.firstStampNs;
+            record->timelineLastStampNs = entry.lastStampNs;
+            record->hasMessages = true;
+        } else {
+            record->recordedOrigin = std::min(record->recordedOrigin, entry.firstStampNs);
+            record->timelineFirstStampNs = std::min(record->timelineFirstStampNs, entry.firstStampNs);
+            record->timelineLastStampNs = std::max(record->timelineLastStampNs, entry.lastStampNs);
+        }
+    }
+    record->timelineTimeBasis = QStringLiteral("bag-storage");
+    if (!record->hasMessages) fail("Bag 内没有可回放的消息。");
+    if (record->frames.empty() && !record->cloudTopic.isEmpty())
+        record->topicWarnings.append(record->cloudTopic);
     std::stable_sort(record->speeds.begin(), record->speeds.end(), [](const auto &a, const auto &b) {
         return a.first < b.first;
     });
     record->speeds.erase(std::unique(record->speeds.begin(), record->speeds.end(),
         [](const auto &a, const auto &b) { return a.first == b.first; }), record->speeds.end());
-    if (!options.tfPose && !overlayIndices.isEmpty()) {
+    if (record->frameId.isEmpty()) {
+        record->frameId = options.topicLayout.fixedFrame;
+        if (record->frameId.isEmpty() && !odometry.empty()) record->frameId = odometry.front().parent;
+        if (record->frameId.isEmpty()) {
+            for (const auto &overlay : record->topicOverlays) {
+                const auto sample = std::find_if(overlay.samples.begin(), overlay.samples.end(), [](const auto &item) { return !item.frameId.isEmpty(); });
+                if (sample != overlay.samples.end()) { record->frameId = sample->frameId; break; }
+            }
+        }
+    }
+    if (!options.tfPose) {
         const auto children = transforms.children();
         const QSet<QString> childrenWithTf(children.cbegin(), children.cend());
         for (const auto &sample : odometry) {
@@ -1497,7 +1824,7 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
         if (!overlay.samples.empty() && overlay.display.kind == "cloud")
             importedCloud = true;
     }
-    record->showMainCloud = options.showMainCloud || !importedCloud;
+    record->showMainCloud = !options.displayDataOnly && (options.showMainCloud || !importedCloud);
     record->topicWarnings.append(unreadableTopics.values());
     record->topicWarnings.removeDuplicates();
     record->topicWarnings.sort();
@@ -1506,10 +1833,48 @@ std::shared_ptr<const Recording> loadBag(const QString &path, const LoadOptions 
     record->planningEvents.erase(std::unique(record->planningEvents.begin(), record->planningEvents.end()),
                                  record->planningEvents.end());
 
-    bounds(*record, cancel);
+    if (!record->frames.empty()) {
+        record->timelineFirstStampNs = record->frames.front().stamp;
+        record->timelineLastStampNs = record->poses.empty() ? record->frames.back().stamp :
+            std::max(record->frames.back().stamp, record->poses.back().stamp);
+        record->timelineTimeBasis = record->storageTimeFallback ? QStringLiteral("header-with-storage-fallback") : QStringLiteral("header");
+    } else if (genericHeaderRange) {
+        record->timelineFirstStampNs = genericHeaderRange->first;
+        record->timelineLastStampNs = genericHeaderRange->second;
+        record->timelineTimeBasis = QStringLiteral("header");
+    }
+    if (!record->points.empty()) bounds(*record, cancel);
+    else if (options.displayDataOnly) {
+        // Compute camera extent once while decoding, without copying geometries
+        // or rebuilding data on ordinary Display edits.
+        std::optional<Point> low, high;
+        for (const auto &overlay : record->topicOverlays) for (size_t i = 0; i < overlay.points.size(); ++i) {
+            if ((i & 65535) == 0) checkCancel(cancel);
+            const auto &p = overlay.points[i];
+            if (!low) { low = high = p; continue; }
+            *low = {std::min(low->x,p.x),std::min(low->y,p.y),std::min(low->z,p.z)};
+            *high = {std::max(high->x,p.x),std::max(high->y,p.y),std::max(high->z,p.z)};
+        }
+        if (low) {
+            record->center = QVector3D(low->x+high->x,low->y+high->y,low->z+high->z) * .5f;
+            record->radius = std::max(1.f,QVector3D(high->x-low->x,high->y-low->y,high->z-low->z).length() * .5f);
+        }
+    }
     if (progress)
         progress(1);
     return record;
+}
+
+std::shared_ptr<const Recording> loadDisplayData(const QString &path, const QString &fixedFrame,
+    const std::vector<TopicDisplay> &displays, const Cancel &cancel, const Progress &progress)
+{
+    LoadOptions options;
+    options.displayDataOnly = true;
+    options.showMainCloud = false;
+    options.showPlan = options.showCorridor = options.showGoal = options.showCamera = false;
+    options.topicLayout.fixedFrame = fixedFrame;
+    options.topicLayout.displays = displays;
+    return loadBag(path, options, cancel, progress);
 }
 
 std::shared_ptr<const Recording> makeDemo()

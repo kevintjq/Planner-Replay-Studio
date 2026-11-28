@@ -1,27 +1,26 @@
 import QtQuick
-import QtMultimedia
+import UAVStudio 1.0
 
-Item {
+CanvasElement {
     id: frame
-    required property var controller
+    layerId: footage.id
+    layerName: footage.label
     required property var footage
     required property int clipIndex
     required property var layout
     required property bool videoOnly
     required property bool cloudOnly
     property bool exporting: false
+    interactive: !exporting && (sceneCanvas.interactive ?? true)
     property bool included: true
     property var exportFrame: null
     property real targetSeconds: -1
-    property real lastSeekAt: -1000
-    property real requestedPosition: -1
-    property bool wasPlaying: false
-    property bool producedFrame: false
-    readonly property real cropWidth: footage.crop[2] - footage.crop[0]
-    readonly property real cropHeight: footage.crop[3] - footage.crop[1]
+    readonly property var crop: layerSettings.crop || footage.crop
+    readonly property real cropWidth: Math.max(.0001, crop[2] - crop[0])
+    readonly property real cropHeight: Math.max(.0001, crop[3] - crop[1])
     readonly property real sourceAspect: exporting && exportFrame && exportFrame.height > 0
-                                         ? exportFrame.width / exportFrame.height : output.sourceRect.height > 0
-                                         ? output.sourceRect.width / output.sourceRect.height : 16 / 9
+                                         ? exportFrame.width / exportFrame.height : output.imageSize.height > 0
+                                         ? output.imageSize.width / output.imageSize.height : 16 / 9
     readonly property real cropAspect: sourceAspect * cropWidth / cropHeight
 
     readonly property bool targetVideo: footage.id === layout.video_id
@@ -38,14 +37,19 @@ Item {
     readonly property real largeHeight: parent.height * footage.backdropScale
     readonly property real largeX: (parent.width - largeWidth) * footage.backdropX
     readonly property real largeY: (parent.height - largeHeight) * footage.backdropY
-    readonly property real targetAspect: width / Math.max(1, height)
-    readonly property real displayedCropWidth: cropWidth * Math.min(1, targetAspect / cropAspect)
-    readonly property real displayedCropHeight: cropHeight * Math.min(1, cropAspect / Math.max(.000001, targetAspect))
+    readonly property real sourceWidth: exporting && exportFrame?.width > 0 ? exportFrame.width : Math.max(1, output.imageSize.width)
+    readonly property real sourceHeight: exporting && exportFrame?.height > 0 ? exportFrame.height : Math.max(1, output.imageSize.height)
+    readonly property string fitMode: layerSettings.fit || "fit"
+    readonly property real fittedScale: fitMode === "original" ? sceneCanvas.width / layerModel.outputWidth
+        : fitMode === "fill" ? Math.max(width / (sourceWidth * cropWidth), height / (sourceHeight * cropHeight))
+        : Math.min(width / (sourceWidth * cropWidth), height / (sourceHeight * cropHeight))
+    readonly property real imageWidth: fitMode === "stretch" ? width / cropWidth : sourceWidth * fittedScale
+    readonly property real imageHeight: fitMode === "stretch" ? height / cropHeight : sourceHeight * fittedScale
 
     function between(a, b) { return a + (b - a) * blend }
 
-    z: backdrop || (inset && blend === 0) ? 0 : 2
-    readonly property rect geometry: {
+    baseZ: backdrop || (inset && blend === 0) ? 0 : 200 + clipIndex
+    baseGeometry: {
         if (full)
             return Qt.rect(0, 0, parent.width, parent.height)
         const base = backdrop ? Qt.rect(largeX, largeY, largeWidth, largeHeight)
@@ -55,119 +59,52 @@ Item {
             ? controller.animatedLayer("video", footage.id, controller.position, base, Qt.size(parent.width, parent.height))
             : base
     }
-    x: geometry.x
-    y: geometry.y
-    width: geometry.width
-    height: geometry.height
-    visible: included && !cloudOnly && (!videoOnly || targetVideo) &&
+    contentAllowed: included && !cloudOnly && (!videoOnly || targetVideo) &&
              (exporting ? (exportFrame && exportFrame.width > 0) :
-                      targetSeconds >= 0 && player.hasVideo && (player.duration <= 0 || targetSeconds * 1000 < player.duration))
-    opacity: full ? 1 : footage.opacity
-    clip: true
+                      targetSeconds >= 0 && (output.ready || output.error.length > 0) && (output.duration <= 0 || targetSeconds < output.duration))
+    baseOpacity: full ? 1 : footage.opacity
 
-    function seekTo(target) {
-        if (!player.seekable || target < 0 || target === requestedPosition)
-            return
-        requestedPosition = target
-        lastSeekAt = Date.now()
-        if (Math.abs(player.position - target) > 12) {
-            producedFrame = false
-            player.position = target
-        }
-    }
-
-    function synchronize(force) {
-        if (exporting) {
-            pausedSeek.stop()
-            if (player.playing)
-                player.pause()
-            return
-        }
-        const wasActive = targetSeconds >= 0 && (player.duration <= 0 || targetSeconds * 1000 < player.duration)
-        targetSeconds = controller.videoSeconds(clipIndex)
-        const target = Math.round(targetSeconds * 1000)
-        const active = targetSeconds >= 0 && (player.duration <= 0 || target < player.duration)
-        const run = active && controller.playing
-        if (!active) {
-            pausedSeek.stop()
-            requestedPosition = -1
-        } else if (run) {
-            pausedSeek.stop()
-            const drift = Math.abs(player.position - target)
-            if (!wasPlaying || !wasActive || requestedPosition < 0
-                    || (producedFrame && drift > 240 && Date.now() - lastSeekAt > 750))
-                seekTo(target)
-        } else if (force || target !== requestedPosition) {
-            // Coalesce scrubs and media-load notifications before restarting a decoder.
-            pausedSeek.restart()
-        }
-
-        wasPlaying = run
-        if (run && !player.playing)
-            player.play()
-        else if (!run && player.playing)
-            player.pause()
-    }
-
-    Timer {
-        id: pausedSeek
-        interval: 50
-        onTriggered: frame.seekTo(Math.round(frame.targetSeconds * 1000))
-    }
-
+    function synchronize() { if (controller) targetSeconds = controller.videoSeconds(clipIndex) }
     Connections {
         target: frame.controller
-        function onPositionChanged() { frame.synchronize(false) }
-        function onPlayingChanged() { frame.synchronize(false) }
+        function onPositionChanged() { frame.synchronize() }
+        function onPlayingChanged() { frame.synchronize() }
     }
-    Connections {
-        target: output.videoSink
-        function onVideoFrameChanged() {
-            if (output.videoSink.videoSize.width > 0)
-                frame.producedFrame = true
-        }
-    }
-    onFootageChanged: synchronize(false)
-    onExportingChanged: synchronize(true)
+    onFootageChanged: synchronize()
+    onClipIndexChanged: synchronize()
+    Component.onCompleted: synchronize()
 
-    MediaPlayer {
-        id: player
-        source: frame.footage.url
-        onSourceChanged: {
-            frame.requestedPosition = -1
-            frame.producedFrame = false
-            frame.lastSeekAt = -1000
-        }
-        playbackRate: frame.footage.rate
-        videoOutput: output
-        onSeekableChanged: if (player.seekable) frame.synchronize(true)
-        onDurationChanged: {
-            frame.controller.setVideoDuration(frame.clipIndex, frame.footage.url, player.duration / 1000)
-            frame.synchronize(false)
-        }
-        onMediaStatusChanged: if (player.mediaStatus === MediaPlayer.LoadedMedia) frame.synchronize(true)
-        Component.onCompleted: frame.synchronize(true)
-    }
-    VideoOutput {
+    ClipPreview {
         id: output
         objectName: "flightClipOutput"
+        source: frame.footage.url
+        sourceSeconds: Math.max(0, frame.targetSeconds)
+        decodingEnabled: !frame.exporting && frame.targetSeconds >= 0 && frame.included && !frame.cloudOnly && frame.layerModel.active(frame.layerId,frame.controller.position)
+        precise: !frame.controller.playing
         visible: !frame.exporting
-        x: -(frame.footage.crop[0] + (frame.cropWidth - frame.displayedCropWidth) / 2) * width
-        y: -(frame.footage.crop[1] + (frame.cropHeight - frame.displayedCropHeight) / 2) * height
-        width: frame.width / Math.max(.000001, frame.displayedCropWidth)
-        height: frame.height / Math.max(.000001, frame.displayedCropHeight)
-        fillMode: VideoOutput.Stretch
+        onDurationChanged: if (duration > 0) frame.controller.setVideoDuration(frame.clipIndex, frame.footage.url, duration)
+        x: (frame.width - frame.imageWidth * frame.cropWidth) / 2 - frame.crop[0] * frame.imageWidth
+        y: (frame.height - frame.imageHeight * frame.cropHeight) / 2 - frame.crop[1] * frame.imageHeight
+        width: frame.imageWidth
+        height: frame.imageHeight
     }
     Image {
         visible: frame.exporting
         source: frame.exporting && frame.exportFrame ? frame.exportFrame.url : ""
-        x: output.x
-        y: output.y
-        width: output.width
-        height: output.height
+        x: output.x; y: output.y; width: output.width; height: output.height
         fillMode: Image.Stretch
         cache: false
         asynchronous: false
     }
-
+    StudioToolTip {
+        text: output.error
+        visible: output.error.length > 0 && errorHover.hovered
+    }
+    HoverHandler { id: errorHover }
+    Rectangle {
+        anchors.fill: parent
+        visible: !frame.exporting && output.error.length > 0 && !output.ready
+        color: appearance.colors.panel
+        StudioLabel { anchors.fill: parent; anchors.margins: 12; text: output.error; wrapMode: Text.Wrap; color: appearance.colors.text }
+    }
 }

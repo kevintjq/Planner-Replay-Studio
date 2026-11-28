@@ -4,8 +4,9 @@ import QtQuick.Layouts
 
 ColumnLayout {
     id: timeline
+    readonly property bool ownsDeleteKey: true
     required property var editor
-    property real cursor: editor.startTime
+    readonly property real cursor: editor.position
     property real inTime: editor.startTime
     property real outTime: editor.lastTime
     property real windowStart: editor.startTime
@@ -16,7 +17,7 @@ ColumnLayout {
 
     function repaint() { overview.requestPaint(); detail.requestPaint() }
     function focusTime(seconds) {
-        cursor = Math.max(editor.startTime, Math.min(editor.lastTime, seconds))
+        editor.seek(Math.max(editor.startTime, Math.min(editor.lastTime, seconds)))
         if (cursor < windowStart || cursor > detailEnd)
             windowStart = Math.max(editor.startTime, cursor - windowSeconds / 2)
         repaint()
@@ -61,7 +62,7 @@ ColumnLayout {
             function move(x) {
                 const time = timeline.editor.startTime + Math.max(0, Math.min(1, x / width)) * timeline.duration
                 timeline.windowStart = Math.max(timeline.editor.startTime, Math.min(timeline.editor.lastTime - timeline.windowSeconds, time - timeline.windowSeconds / 2))
-                timeline.cursor = time; timeline.repaint()
+                timeline.editor.seek(time); timeline.repaint()
             }
             onPressed: mouse => move(mouse.x)
             onPositionChanged: mouse => { if (pressed) move(mouse.x) }
@@ -99,14 +100,14 @@ ColumnLayout {
             property real origin: 0
             function timeAt(x) { return timeline.windowStart + Math.max(0, Math.min(1, x / width)) * (timeline.detailEnd - timeline.windowStart) }
             onPressed: mouse => {
-                origin = timeAt(mouse.x); timeline.cursor = origin
+                origin = timeAt(mouse.x); timeline.editor.seek(origin)
                 timeline.inTime = origin; timeline.outTime = origin; timeline.repaint()
             }
             onPositionChanged: mouse => {
                 if (!pressed) return
                 const current = timeAt(mouse.x)
                 timeline.inTime = Math.min(origin, current); timeline.outTime = Math.max(origin, current)
-                timeline.cursor = current; timeline.repaint()
+                timeline.editor.seek(current); timeline.repaint()
             }
             onWheel: wheel => {
                 if (wheel.modifiers & Qt.ControlModifier)
@@ -119,6 +120,7 @@ ColumnLayout {
     }
     ListView {
         id: filmstrip
+        objectName: "trajectoryFrameFilmstrip"
         Layout.fillWidth: true
         Layout.preferredHeight: 114
         orientation: ListView.Horizontal
@@ -135,6 +137,7 @@ ColumnLayout {
             required property bool selected
             required property real frameOpacity
             required property url thumbnail
+            required property string foregroundError
             width: 126; height: 98
             radius: 5
             color: selected ? appearance.colors.selection : appearance.colors.thumbnail
@@ -152,11 +155,13 @@ ColumnLayout {
             StudioLabel {
                 anchors.bottom: parent.bottom; anchors.bottomMargin: 6
                 anchors.horizontalCenter: parent.horizontalCenter
-                text: seconds.toFixed(3) + (excluded ? " s ×" : " s")
+                text: seconds.toFixed(3) + (foregroundError.length ? " s ⚠" : excluded ? " s ×" : " s")
                 font.pixelSize: 11
             }
             MouseArea {
                 anchors.fill: parent
+                hoverEnabled: true
+                StudioToolTip { visible: parent.containsMouse && foregroundError.length > 0; text: foregroundError }
                 onClicked: mouse => {
                     filmstrip.forceActiveFocus(); filmstrip.currentIndex = index
                     timeline.editor.selectFrame(index, Boolean(mouse.modifiers & Qt.ShiftModifier), Boolean(mouse.modifiers & Qt.ControlModifier))
@@ -165,7 +170,7 @@ ColumnLayout {
                 onDoubleClicked: timeline.editor.toggleFrame(index)
             }
         }
-        Keys.onDeletePressed: timeline.editor.editSelectedFrames(true)
+        Keys.onDeletePressed: timeline.editor.deleteSelectedFrames()
     }
     StudioLabel { text: "拖动精细时间轴选择区间 · Ctrl + 滚轮缩放 · Shift / Ctrl 多选 · 缩略图显示提取后的前景"; font.pixelSize: 11; wrapMode: Text.Wrap; Layout.fillWidth: true }
 }

@@ -1,6 +1,7 @@
 #include "project_document.h"
 #include "design_tokens.h"
 #include <QColor>
+#include <QCryptographicHash>
 
 #include <QDir>
 #include <QFile>
@@ -35,6 +36,34 @@ QString absolutePath(const QString &path)
                                            : QDir(parent).filePath(info.fileName()));
 }
 
+void updateCameraOptions(QJsonObject &view, const QVariantMap &settings)
+{
+    for (const auto &name : {"targetFrame", "name"}) if (settings.contains(name))
+        view.insert(name, settings.value(name).toString());
+    for (const auto &name : {"followLag", "smoothing", "pointSize"}) if (settings.contains(name)) {
+        bool ok = false; const auto value = settings.value(name).toDouble(&ok);
+        const double minimum = QString(name) == "pointSize" ? .25 : 0.;
+        const double maximum = QString(name) == "pointSize" ? 20. : 10.;
+        if (!ok || !std::isfinite(value) || value < minimum || value > maximum)
+            fail(QStringLiteral("相机 %1 超出允许范围。").arg(name));
+        view.insert(name, value);
+    }
+    if (settings.contains("followMode")) {
+        bool ok = false; const auto value = settings.value("followMode").toDouble(&ok);
+        if (!ok || value < 0 || value > 3 || std::floor(value) != value)
+            fail(QStringLiteral("无效 TF 跟随模式。"));
+        view.insert("followMode", int(value));
+    }
+    for (const auto &name : {"opticalFrame", "cloudVisible"}) if (settings.contains(name))
+        view.insert(name, settings.value(name).toBool());
+    for (const auto &name : {"cloudColor", "pathColor", "viewBackground"}) if (settings.contains(name)) {
+        const auto value = settings.value(name).toString();
+        if (!value.isEmpty() && !QColor(value).isValid()) fail(QStringLiteral("无效的机位颜色：%1").arg(name));
+        view.insert(name, value);
+    }
+    if (settings.contains("hiddenDisplays")) view.insert("hiddenDisplays", QJsonArray::fromStringList(settings.value("hiddenDisplays").toStringList()));
+}
+
 void validateRoot(const QJsonObject &root)
 {
     if (root.value("version").toDouble() != 1.)
@@ -58,6 +87,10 @@ void validateRoot(const QJsonObject &root)
         if (!it.value().isBool())
             fail(QStringLiteral("项目开关 %1 必须为布尔值。").arg(it.key()));
     }
+    const auto backend = root.value("composition").toObject().value("render_backend");
+    if (!backend.isUndefined() && (!backend.isString() ||
+        (backend.toString() != "independent" && backend.toString() != "native-rviz")))
+        fail(QStringLiteral("项目渲染后端须为 independent 或 native-rviz。"));
 }
 
 void writeManifest(const QString &path, const QJsonObject &root)
@@ -98,6 +131,47 @@ QString referenceFrom(const QString &directory, const QString &path)
 {
     return QDir::fromNativeSeparators(QDir(directory).relativeFilePath(path));
 }
+
+QVariantMap sourceMetadata(QVariantMap value)
+{
+    // These are derived from the current graph/file system, never project truth.
+    for (const auto &key : {"references", "referenceCount", "url", "exists", "size"}) value.remove(key);
+    return value;
+}
+
+bool sameMediaPath(const QString &a, const QString &b)
+{
+    return a.compare(b,
+#ifdef Q_OS_WIN
+                     Qt::CaseInsensitive
+#else
+                     Qt::CaseSensitive
+#endif
+                     ) == 0;
+}
+
+QVariantMap remapCanvasImages(QVariantMap canvas,const std::function<QString(const QString &)> &map)
+{
+    auto elements=canvas.value("elements").toList();auto items=canvas.value("items").toMap();
+    for(auto &v:elements){auto row=v.toMap();if(row.value("kind")!="image")continue;
+        const auto remap=[&](QVariantMap value){
+            const auto source=value.value("source").toString();if(source.isEmpty())return value;
+            const QUrl url(source);const auto path=QDir::isAbsolutePath(source)?source:url.isLocalFile()?url.toLocalFile():url.scheme().isEmpty()?source:QString();
+            if(path.isEmpty())fail(QStringLiteral("科研图片必须引用本地文件。"));value["source"]=map(path);return value;
+        };
+        row=remap(row);v=row;const auto id=row.value("id").toString();if(items.value(id).toMap().contains("source"))items[id]=remap(items.value(id).toMap());
+    }
+    if(canvas.contains("elements"))canvas["elements"]=elements;if(canvas.contains("items"))canvas["items"]=items;return canvas;
+}
+
+QVariantMap removeCanvasEntries(QVariantMap canvas,const QStringList &ids)
+{
+    auto elements=canvas.value("elements").toList();const auto count=elements.size();
+    elements.removeIf([&](const QVariant &v){return ids.contains(v.toMap().value("id").toString());});
+    if(elements.size()!=count)canvas["elements"]=elements;
+    auto items=canvas.value("items").toMap();const auto itemCount=items.size();for(const auto &id:ids)items.remove(id);
+    if(items.size()!=itemCount)canvas["items"]=items;return canvas;
+}
 }
 
 ProjectDocument::ProjectDocument(QString path, QJsonObject root)
@@ -105,6 +179,18 @@ ProjectDocument::ProjectDocument(QString path, QJsonObject root)
 {
     validateRoot(root_);
     media(); // Validate asset references before changing the active project.
+    // Migrate the previously separate scene/RViz backgrounds once on load.
+    // An explicit project scene choice wins over an older imported setting.
+    auto composition = root_.value("composition").toObject();
+    if (!composition.contains("display_background_color")) {
+        auto color = QColor(composition.value("scene_background").toString());
+        if (!color.isValid()) color = rvizBackgroundColor(composition.value("rviz_source_yaml").toString());
+        if (color.isValid() && color.alpha() == 255) {
+            composition["display_background_color"] = color.name();
+            composition["scene_background"] = color.name();
+            root_["composition"] = composition;
+        }
+    }
 }
 
 ProjectDocument ProjectDocument::load(const QString &manifest)
@@ -131,7 +217,34 @@ ProjectDocument ProjectDocument::create(const QString &source, const QString &ba
 }
 
 QString ProjectDocument::source() const { return root_.value("source").toString(); }
+QVariantMap ProjectDocument::canvasState() const
+{
+    return remapCanvasImages(composition().value("canvas_layers").toObject().toVariantMap(),[this](const QString &path){return absoluteMedia(path);});
+}
+void ProjectDocument::setCanvasState(const QVariantMap &state)
+{
+    const auto existing=composition().value("canvas_layers").toObject().toVariantMap();
+    if(!existing.value("elements").toList().isEmpty())retainSourceCatalog();
+    const auto normalized=remapCanvasImages(state,[this](const QString &path){const auto absolute=absoluteMedia(path);return path_.isEmpty()?absolute:referenceFrom(QFileInfo(path_).absolutePath(),absolute);});
+    auto scene=composition();scene["canvas_layers"]=QJsonObject::fromVariantMap(normalized);setComposition(scene);
+}
 QString ProjectDocument::bag() const { return absoluteMedia(root_.value("bag").toString()); }
+void ProjectDocument::setBagSource(const QString &file)
+{
+    if (!QFileInfo(file).isFile()) fail(QStringLiteral("录包文件不存在。 / Bag file does not exist."));
+    const auto previous = bag();
+    if (!previous.isEmpty()) {
+        for (const auto &value : sources()) {
+            const auto source = value.toMap();
+            if (source.value("kind") == "bag" && sameMediaPath(source.value("path").toString(), previous)) {
+                replaceSource(source.value("id").toString(), file); root_["source"] = "bag"; return;
+            }
+        }
+    }
+    const auto absolute = absolutePath(file);
+    root_["bag"] = path_.isEmpty() ? absolute : referenceFrom(QFileInfo(path_).absolutePath(), absolute);
+    root_["source"] = "bag";
+}
 bool ProjectDocument::isPortable() const { return root_.value("portable").toBool(); }
 QJsonObject ProjectDocument::values() const { return root_.value("values").toObject(); }
 
@@ -165,6 +278,7 @@ void ProjectDocument::setSceneBackground(const QString &color)
         fail(QStringLiteral("场景背景需要有效的不透明颜色。"));
     auto scene = root_.value("composition").toObject();
     scene.insert("scene_background", value.name());
+    scene.insert("display_background_color", value.name());
     root_.insert("composition", scene);
 }
 
@@ -244,6 +358,20 @@ void ProjectDocument::setValue(const QString &key, const QString &value)
     auto settings = values();
     settings.insert(key, value);
     root_.insert("values", settings);
+}
+
+QString ProjectDocument::renderBackend() const
+{
+    return composition().value("render_backend").toString(QStringLiteral("independent"));
+}
+
+void ProjectDocument::setRenderBackend(const QString &backend)
+{
+    if (backend != "independent" && backend != "native-rviz")
+        fail(QStringLiteral("渲染后端须为 independent 或 native-rviz。"));
+    auto scene = composition();
+    scene.insert("render_backend", backend);
+    setComposition(scene);
 }
 
 namespace {
@@ -418,10 +546,20 @@ QVariantMap ProjectDocument::mainView() const
 {
     const auto view = root_.value("composition").toObject().value("main_view").toObject();
     const auto position = view.value("position").toArray();
-    return {{"width", view.value("width").toDouble(1.)},
-            {"x", position.size() == 2 ? position[0].toDouble(.5) : .5},
-            {"y", position.size() == 2 ? position[1].toDouble(.5) : .5},
-            {"zoom", view.value("zoom").toDouble(1.)}};
+    auto fields = view.toVariantMap();
+    fields.insert("width", view.value("width").toDouble(1.));
+    fields.insert("x", position.size() == 2 ? position[0].toDouble(.5) : .5);
+    fields.insert("y", position.size() == 2 ? position[1].toDouble(.5) : .5);
+    fields.insert("zoom", view.value("zoom").toDouble(1.));
+    return fields;
+}
+
+void ProjectDocument::setMainView(const QVariantMap &settings)
+{
+    auto scene = root_.value("composition").toObject();
+    auto view = scene.value("main_view").toObject();
+    updateCameraOptions(view, settings);
+    scene.insert("main_view", view); root_.insert("composition", scene);
 }
 
 void ProjectDocument::setMainViewWidth(double width)
@@ -514,10 +652,6 @@ void ProjectDocument::addCloudView(const QString &kind)
 {
     auto scene = root_.value("composition").toObject();
     auto views = scene.value("views").toArray();
-    if (std::any_of(views.begin(), views.end(), [&](const auto &item) {
-            return item.toObject().value("kind").toString() == kind;
-        }))
-        fail(QStringLiteral("该附加机位已经存在。"));
     const auto row = views.size();
     views.append(QJsonObject{{"id", QUuid::createUuid().toString(QUuid::WithoutBraces)}, {"kind", kind},
                              {"width", .32}, {"zoom", 1.}, {"transparent", true},
@@ -551,6 +685,7 @@ void ProjectDocument::setCloudView(const QString &id, const QVariantMap &setting
             view.insert("transparent", settings.value("transparent").toBool());
         if (settings.contains("overlays"))
             view.insert("overlays", QJsonArray::fromStringList(settings.value("overlays").toStringList()));
+        updateCameraOptions(view, settings);
         views.replace(i, view);
         scene.insert("views", views);
         root_.insert("composition", scene);
@@ -560,24 +695,9 @@ void ProjectDocument::setCloudView(const QString &id, const QVariantMap &setting
 
 void ProjectDocument::removeCloudView(const QString &id)
 {
-    auto scene = root_.value("composition").toObject();
-    auto views = scene.value("views").toArray();
-    for (qsizetype i = 0; i < views.size(); ++i) {
-        if (views[i].toObject().value("id").toString() != id)
-            continue;
-        views.removeAt(i);
-        scene.insert("views", views);
-        const auto motions = scene.value("motions").toArray();
-        QJsonArray retained;
-        for (const auto &motion : motions) {
-            const auto item = motion.toObject();
-            if (item.value("kind").toString() != "view" || item.value("layer_id").toString() != id)
-                retained.append(motion);
-        }
-        scene.insert("motions", retained);
-        root_.insert("composition", scene);
-        return;
-    }
+    const auto views = composition().value("views").toArray();
+    if (!id.isEmpty() && std::any_of(views.begin(), views.end(), [&](const auto &v) { return v.toObject().value("id").toString() == id; }))
+        removeCanvasLayers({id});
 }
 
 QVariantList ProjectDocument::sceneLayers() const
@@ -656,24 +776,11 @@ void ProjectDocument::editSceneLayer(const QString &id, const QJsonObject &chang
 
 void ProjectDocument::removeSceneLayer(const QString &id)
 {
-    auto composition = root_.value("composition").toObject();
+    if (id.isEmpty()) return;
     for (const auto &kind : {QStringLiteral("images"), QStringLiteral("texts")}) {
-        auto layers = composition.value(kind).toArray();
-        for (qsizetype index = 0; index < layers.size(); ++index) {
-            if (layers.at(index).toObject().value("id").toString() == id) {
-                layers.removeAt(index);
-                composition.insert(kind, layers);
-                const QString target = kind == "images" ? QStringLiteral("image") : QStringLiteral("text");
-                QJsonArray retained;
-                for (const auto &motion : composition.value("motions").toArray()) {
-                    const auto item = motion.toObject();
-                    if (item.value("kind").toString() != target || item.value("layer_id").toString() != id)
-                        retained.append(motion);
-                }
-                composition.insert("motions", retained);
-                root_.insert("composition", composition);
-                return;
-            }
+        const auto layers = composition().value(kind).toArray();
+        if (std::any_of(layers.begin(), layers.end(), [&](const auto &v) { return v.toObject().value("id").toString() == id; })) {
+            removeCanvasLayers({id}); return;
         }
     }
 }
@@ -684,10 +791,14 @@ RvizLayout ProjectDocument::topicLayout() const
     RvizLayout layout;
     layout.fixedFrame = composition.value("display_fixed_frame").toString();
     layout.sourceYaml = composition.value("rviz_source_yaml").toString();
+    layout.backgroundColor = QColor(composition.value("display_background_color").toString());
     for (const auto &name : composition.value("rviz_unrendered_plugins").toArray()) layout.skipped.append(name.toString());
     const auto displays = composition.value("topic_displays").toArray();
     for (const auto &display : displays)
         layout.displays.push_back(TopicDisplay::fromJson(display.toObject()));
+    layout.useInstanceModel = composition.value("independent_display_model").toBool(false);
+    for (const auto &display : composition.value("independent_displays").toArray())
+        layout.instances.push_back(TopicDisplay::fromJson(display.toObject()));
     return layout;
 }
 
@@ -703,7 +814,19 @@ void ProjectDocument::setTopicLayout(const RvizLayout &layout)
     composition.insert("topic_displays", displays);
     composition.insert("display_fixed_frame", layout.fixedFrame);
     composition.insert("rviz_source_yaml", layout.sourceYaml);
+    if (layout.backgroundColor.isValid() && layout.backgroundColor.alpha() == 255) {
+        composition.insert("display_background_color", layout.backgroundColor.name());
+        composition.insert("scene_background", layout.backgroundColor.name());
+    } else {
+        const QColor sceneColor(composition.value("scene_background").toString());
+        if (sceneColor.isValid() && sceneColor.alpha() == 255) composition.insert("display_background_color", sceneColor.name());
+        else composition.remove("display_background_color");
+    }
     composition.insert("rviz_unrendered_plugins", QJsonArray::fromStringList(layout.skipped));
+    composition.insert("independent_display_model", layout.useInstanceModel);
+    QJsonArray instances;
+    for (const auto &display : layout.instances) instances.append(display.toJson());
+    composition.insert("independent_displays", instances);
     composition.insert("show_main_cloud", !hasCloud);
     root_.insert("composition", composition);
 }
@@ -791,8 +914,11 @@ void ProjectDocument::replaceVideoTiming(qsizetype index, const QJsonObject &edi
 QJsonObject ProjectDocument::trajectorySettings() const
 {
     auto settings = root_.value("trajectory_studio").toObject();
-    if (!settings.isEmpty())
+    if (!settings.isEmpty()) {
         settings.insert("path", absoluteMedia(settings.value("path").toString()));
+        if(!settings.value("background_file").toString().isEmpty())settings["background_file"]=absoluteMedia(settings.value("background_file").toString());
+        if(settings.contains("canvas"))settings["canvas"]=QJsonObject::fromVariantMap(remapCanvasImages(settings.value("canvas").toObject().toVariantMap(),[this](const QString &path){return absoluteMedia(path);}));
+    }
     return settings;
 }
 
@@ -808,6 +934,10 @@ void ProjectDocument::setTrajectorySettings(const QJsonObject &settings)
         fail(QStringLiteral("轨迹图设置缺少源视频路径。"));
     saved.insert("path", path_.isEmpty() ? absolutePath(source)
         : referenceFrom(QFileInfo(path_).absolutePath(), absolutePath(source)));
+    const auto reference=[this](const QString &path){const auto absolute=absoluteMedia(path);return path_.isEmpty()?absolute:referenceFrom(QFileInfo(path_).absolutePath(),absolute);};
+    if(!saved.value("background_file").toString().isEmpty())saved["background_file"]=reference(saved.value("background_file").toString());
+    if(saved.contains("canvas"))saved["canvas"]=QJsonObject::fromVariantMap(remapCanvasImages(saved.value("canvas").toObject().toVariantMap(),reference));
+    if(!root_.value("trajectory_studio").toObject().value("canvas").toObject().value("elements").toArray().isEmpty())retainSourceCatalog();
     root_.insert("trajectory_studio", saved);
 }
 
@@ -833,7 +963,7 @@ QJsonObject ProjectDocument::remapMedia(const std::function<QString(const QStrin
     }
 
     auto scene = root.value("composition").toObject();
-    for (const auto &kind : {QStringLiteral("videos"), QStringLiteral("images")}) {
+    for (const auto &kind : {QStringLiteral("videos"), QStringLiteral("images"), QStringLiteral("audio")}) {
         if (!scene.contains(kind))
             continue;
         if (!scene.value(kind).isArray())
@@ -849,12 +979,24 @@ QJsonObject ProjectDocument::remapMedia(const std::function<QString(const QStrin
         }
         scene.insert(kind, layers);
     }
+    if(scene.contains("canvas_layers"))scene["canvas_layers"]=QJsonObject::fromVariantMap(remapCanvasImages(scene.value("canvas_layers").toObject().toVariantMap(),[&](const QString &path){return map(absoluteMedia(path));}));
     root.insert("composition", scene);
+    if (root.contains("sources")) {
+        QJsonArray sources;
+        for (const auto &value : root.value("sources").toArray()) {
+            auto source = QJsonObject::fromVariantMap(sourceMetadata(value.toObject().toVariantMap()));
+            if (!source.value("path").toString().isEmpty()) source["path"] = map(absoluteMedia(source.value("path").toString()));
+            sources.append(source);
+        }
+        root["sources"] = sources;
+    }
     if (root.contains("trajectory_studio")) {
         auto trajectory = root.value("trajectory_studio").toObject();
         if (!trajectory.value("path").isString() || trajectory.value("path").toString().isEmpty())
             fail(QStringLiteral("轨迹图项目源视频路径无效。"));
         trajectory.insert("path", map(absoluteMedia(trajectory.value("path").toString())));
+        if(!trajectory.value("background_file").toString().isEmpty())trajectory["background_file"]=map(absoluteMedia(trajectory.value("background_file").toString()));
+        if(trajectory.contains("canvas"))trajectory["canvas"]=QJsonObject::fromVariantMap(remapCanvasImages(trajectory.value("canvas").toObject().toVariantMap(),[&](const QString &path){return map(absoluteMedia(path));}));
         root.insert("trajectory_studio", trajectory);
     }
     return root;
@@ -869,6 +1011,179 @@ QStringList ProjectDocument::media() const
     });
     paths.removeDuplicates();
     return paths;
+}
+
+QVariantList ProjectDocument::sources() const
+{
+    QVariantList catalog;
+    auto add = [&](const QString &path, const QString &kind, const QVariantMap &reference, const QVariantMap &saved = {}) {
+        if (path.isEmpty()) return;
+        const QString absolute = absoluteMedia(path);
+        auto match = std::find_if(catalog.begin(), catalog.end(), [&](const QVariant &v) {
+            return v.toMap().value("path").toString().compare(absolute,
+#ifdef Q_OS_WIN
+                Qt::CaseInsensitive
+#else
+                Qt::CaseSensitive
+#endif
+            ) == 0 && v.toMap().value("kind").toString() == kind;
+        });
+        QVariantMap item = match == catalog.end() ? saved : match->toMap();
+        const QString identity = kind + "\n" + QDir::fromNativeSeparators(absolute)
+#ifdef Q_OS_WIN
+            .toLower()
+#endif
+            ;
+        if (!item.contains("id")) item["id"] = QString::fromLatin1(QCryptographicHash::hash(identity.toUtf8(),QCryptographicHash::Sha256).toHex().left(24));
+        item["path"] = absolute; item["url"] = QUrl::fromLocalFile(absolute); item["kind"] = kind;
+        if (!item.contains("name")) item["name"] = QFileInfo(absolute).fileName();
+        auto references = item.value("references").toList();
+        if (!reference.isEmpty()) references.append(reference);
+        item["references"] = references; item["referenceCount"] = references.size();
+        item["exists"] = QFileInfo(absolute).isFile(); item["size"] = QString::number(QFileInfo(absolute).size());
+        if (match == catalog.end()) catalog.append(item); else *match = item;
+    };
+    for (const auto &v : root_.value("sources").toArray()) {
+        const auto s=sourceMetadata(v.toObject().toVariantMap());
+        add(s.value("path").toString(),s.value("kind").toString(),{},s);
+    }
+    if (!bag().isEmpty()) add(bag(),"bag",{{"id","bag-data"},{"name","ROS Bag"},{"kind","bag"}});
+    if (!extrinsics().isEmpty()) add(extrinsics(),"calibration",{{"id","extrinsics"},{"name","Calibration"},{"kind","calibration"}});
+    const auto scene=composition();
+    for (const auto &key : {"videos","images","audio"}) for (const auto &v : scene.value(key).toArray()) {
+        const auto item=v.toObject();
+        add(item.value("path").toString(),QString(key)=="videos"?"video":QString(key)=="images"?"image":"audio",
+            {{"id",item.value("id").toString()},{"name",item.value("label").toString(QFileInfo(item.value("path").toString()).fileName())},{"kind",key}});
+    }
+    const auto trajectory=root_.value("trajectory_studio").toObject();
+    if(!trajectory.isEmpty())add(trajectory.value("path").toString(),"video",{{"id","trajectory-source"},{"name","Trajectory Studio"},{"kind","trajectory"}});
+    const auto addCanvas=[&](const QVariantMap &canvas,const QString &workspace){
+        const auto items=canvas.value("items").toMap();
+        for(const auto &v:canvas.value("elements").toList()){auto row=v.toMap();if(row.value("kind")!="image")continue;
+            const auto saved=items.value(row.value("id").toString()).toMap();const auto source=saved.value("source",row.value("source")).toString();
+            const QUrl url(source);const auto path=url.isLocalFile()?url.toLocalFile():source;
+            add(path,"image",{{"id",row.value("id")},{"name",row.value("name",QFileInfo(path).fileName())},{"kind","image"},{"workspace",workspace}});
+        }
+    };
+    addCanvas(scene.value("canvas_layers").toObject().toVariantMap(),"editor");
+    addCanvas(trajectory.value("canvas").toObject().toVariantMap(),"trajectory");
+    if(!trajectory.value("background_file").toString().isEmpty())add(trajectory.value("background_file").toString(),"image",{{"id","trajectory-background-file"},{"name","Trajectory background"},{"kind","image"}});
+    return catalog;
+}
+
+void ProjectDocument::retainSourceCatalog()
+{
+    QJsonArray catalog;
+    for(const auto &v:sources()) {
+        auto s=sourceMetadata(v.toMap());const auto path=s.value("path").toString();
+        s["path"]=path_.isEmpty()?path:referenceFrom(QFileInfo(path_).absolutePath(),path);
+        catalog.append(QJsonObject::fromVariantMap(s));
+    }
+    root_["sources"]=catalog;
+}
+QString ProjectDocument::addSource(const QString &file,const QString &kind)
+{
+    if(!QFileInfo(file).isFile())fail(QStringLiteral("素材不存在：%1").arg(file));
+    retainSourceCatalog();
+    const auto absolute=absolutePath(file);
+    for(const auto &v:sources()){const auto s=v.toMap();if(sameMediaPath(s.value("path").toString(),absolute)&&s.value("kind").toString()==kind)return s.value("id").toString();}
+    const auto id=QUuid::createUuid().toString(QUuid::WithoutBraces);auto all=root_.value("sources").toArray();
+    all.append(QJsonObject{{"id",id},{"kind",kind},{"name",QFileInfo(file).fileName()},
+        {"path",path_.isEmpty()?absolute:referenceFrom(QFileInfo(path_).absolutePath(),absolute)}});root_["sources"]=all;return id;
+}
+void ProjectDocument::removeCanvasLayers(const QStringList &ids)
+{
+    auto targets=ids;targets.removeAll(QString());targets.removeDuplicates();if(targets.isEmpty())return;
+    const auto before=composition();auto scene=before;
+    for(const auto &key:{"videos","views","images","texts","audio","speed_meters","plots","annotations","legends","colorbars"}){
+        auto array=scene.value(key).toArray();const auto count=array.size();
+        for(qsizetype i=array.size();i-->0;)if(targets.contains(array[i].toObject().value("id").toString()))array.removeAt(i);
+        if(array.size()!=count)scene[key]=array;
+    }
+    if(targets.contains("main")&&(scene.contains("main_view")||scene.value("has_main_view").toBool(true))){scene.remove("main_view");scene["has_main_view"]=false;}
+    if(targets.contains("speed")&&scene.value("show_speed").toBool())scene["show_speed"]=false;
+    auto cues=scene.value("layouts").toArray();
+    const auto cueCount=cues.size();
+    for(qsizetype i=cues.size();i-->0;)if(targets.contains(cues[i].toObject().value("video_id").toString()))cues.removeAt(i);
+    if(cues.size()!=cueCount)scene["layouts"]=cues;
+    auto motions=scene.value("motions").toArray();
+    const auto motionCount=motions.size();
+    for(qsizetype i=motions.size();i-->0;){const auto motion=motions[i].toObject();
+        if(targets.contains(motion.value("layer_id").toString())||
+           ((motion.value("kind")=="main"||motion.value("kind")=="speed")&&targets.contains(motion.value("kind").toString())))motions.removeAt(i);
+    }
+    if(motions.size()!=motionCount)scene["motions"]=motions;
+    if(targets.contains(scene.value("audio_id").toString()))scene["audio_id"]=QJsonValue(QJsonValue::Null);
+    const auto canvas=scene.value("canvas_layers").toObject().toVariantMap(),removed=removeCanvasEntries(canvas,targets);
+    if(canvas!=removed)scene["canvas_layers"]=QJsonObject::fromVariantMap(removed);
+    const auto trajectoryBefore=root_.value("trajectory_studio").toObject();auto trajectory=trajectoryBefore;
+    const auto trajectoryCanvas=trajectory.value("canvas").toObject().toVariantMap(),trajectoryRemoved=removeCanvasEntries(trajectoryCanvas,targets);
+    if(trajectoryCanvas!=trajectoryRemoved)trajectory["canvas"]=QJsonObject::fromVariantMap(trajectoryRemoved);
+    if(scene==before&&trajectory==trajectoryBefore)return;
+    retainSourceCatalog();setComposition(scene);if(trajectory!=trajectoryBefore)root_["trajectory_studio"]=trajectory;
+}
+bool ProjectDocument::removeSource(const QString &id,bool removeReferences)
+{
+    QVariantMap target;
+    for(const auto &v:sources())if(v.toMap().value("id").toString()==id)target=v.toMap();
+    if(target.isEmpty())return false;
+    const auto references=target.value("references").toList();if(!references.isEmpty()&&!removeReferences)return false;
+    retainSourceCatalog();
+    QStringList layers;
+    for(const auto &v:references){const auto r=v.toMap();const auto key=r.value("id").toString();
+        if(key=="bag-data"){root_["bag"]=QJsonValue(QJsonValue::Null);root_["source"]="none";}
+        else if(key=="trajectory-source")root_.remove("trajectory_studio");
+        else if(key=="trajectory-background-file"){auto trajectory=root_.value("trajectory_studio").toObject();trajectory.remove("background_file");root_["trajectory_studio"]=trajectory;}
+        else if(key=="extrinsics")root_["extrinsics"]=QJsonValue(QJsonValue::Null);
+        else layers.append(key);
+    }
+    removeCanvasLayers(layers);
+    auto all=root_.value("sources").toArray();for(qsizetype i=all.size();i-->0;)if(all[i].toObject().value("id").toString()==id)all.removeAt(i);root_["sources"]=all;return true;
+}
+void ProjectDocument::renameSource(const QString &id,const QString &name)
+{
+    if(name.trimmed().isEmpty())return;retainSourceCatalog();auto all=root_.value("sources").toArray();
+    for(qsizetype i=0;i<all.size();++i){auto s=all[i].toObject();if(s.value("id").toString()==id){s["name"]=name.trimmed();all[i]=s;}}root_["sources"]=all;
+}
+void ProjectDocument::replaceSource(const QString &id,const QString &file)
+{
+    if(!QFileInfo(file).isFile())fail(QStringLiteral("替换素材不存在。"));
+    QVariantMap target;for(const auto &v:sources())if(v.toMap().value("id").toString()==id)target=v.toMap();
+    if(target.isEmpty())return;
+    const auto source=target.value("path").toString(),kind=target.value("kind").toString(),absolute=absolutePath(file);
+    if(sameMediaPath(source,absolute))return;
+    retainSourceCatalog();
+    const auto reference=path_.isEmpty()?absolute:referenceFrom(QFileInfo(path_).absolutePath(),absolute);
+    const auto replacePath=[&](QJsonObject object){
+        if(sameMediaPath(absoluteMedia(object.value("path").toString()),source))object["path"]=reference;
+        return object;
+    };
+    // Path+kind is the source identity: replacing a video's image/audio use of
+    // the same file would otherwise change an independent source silently.
+    auto scene=composition();const QString key=kind=="video"?"videos":kind=="image"?"images":kind=="audio"?"audio":"";
+    if(!key.isEmpty()){
+        QJsonArray array;for(const auto &v:scene.value(key).toArray())array.append(replacePath(v.toObject()));
+        if(scene.contains(key))scene[key]=array;setComposition(scene);
+    }
+    if(kind=="bag"&&sameMediaPath(bag(),source))root_["bag"]=reference;
+    if(kind=="calibration"&&sameMediaPath(extrinsics(),source))root_["extrinsics"]=reference;
+    if(kind=="video"&&root_.contains("trajectory_studio"))root_["trajectory_studio"]=replacePath(root_.value("trajectory_studio").toObject());
+    if(kind=="image"){
+        const auto replaceCanvas=[&](const QVariantMap &canvas){return remapCanvasImages(canvas,[&](const QString &path){const auto previous=absoluteMedia(path);return sameMediaPath(previous,source)?reference:path;});};
+        scene=composition();if(scene.contains("canvas_layers")){scene["canvas_layers"]=QJsonObject::fromVariantMap(replaceCanvas(scene.value("canvas_layers").toObject().toVariantMap()));setComposition(scene);}
+        auto trajectory=root_.value("trajectory_studio").toObject();
+        if(trajectory.contains("canvas"))trajectory["canvas"]=QJsonObject::fromVariantMap(replaceCanvas(trajectory.value("canvas").toObject().toVariantMap()));
+        if(sameMediaPath(absoluteMedia(trajectory.value("background_file").toString()),source))trajectory["background_file"]=reference;
+        if(root_.contains("trajectory_studio"))root_["trajectory_studio"]=trajectory;
+    }
+    QJsonArray catalog;
+    for(const auto &v:root_.value("sources").toArray()){
+        auto item=v.toObject();
+        if(item.value("id").toString()==id)item["path"]=reference;
+        else if(item.value("kind").toString()==kind&&sameMediaPath(absoluteMedia(item.value("path").toString()),absolute))continue;
+        catalog.append(item);
+    }
+    root_["sources"]=catalog;
 }
 
 ProjectDocument ProjectDocument::saveAs(const QString &manifest) const

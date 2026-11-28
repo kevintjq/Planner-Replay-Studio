@@ -5,11 +5,22 @@
 #include "topic_inspector.h"
 #include "trajectory_controller.h"
 #include "appearance_manager.h"
+#include "app_info.h"
+#include "update_manager.h"
 #include "appearance_acceptance.h"
 #include "display_acceptance.h"
 #include "movie_frame_acceptance.h"
 #include "frame_acceptance.h"
+#include "camera_acceptance.h"
+#include "native_rviz_client.h"
+#include "native_replay_acceptance.h"
+#include "native_scene_acceptance.h"
 #include "frame_batch_exporter.h"
+#include "clip_preview.h"
+#include "speed_meter_model.h"
+#include "speed_gauge_item.h"
+#include "trajectory_layer_item.h"
+#include "canvas_scientific_item.h"
 #include <QQuickStyle>
 #include <QIcon>
 
@@ -18,6 +29,8 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QStandardPaths>
+#include <QSettings>
+#include <QScopeGuard>
 #include <QFileInfo>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -35,10 +48,10 @@
 #include <exception>
 
 namespace {
-void videoOutputs(QQuickItem *item, QList<QVideoSink *> &sinks)
+void videoOutputs(QQuickItem *item, QList<ClipPreview *> &sinks)
 {
     if (item->objectName() == QStringLiteral("flightClipOutput")) {
-        if (auto *sink = item->property("videoSink").value<QVideoSink *>())
+        if (auto *sink = qobject_cast<ClipPreview *>(item))
             sinks.append(sink);
     }
     for (auto *child : item->childItems())
@@ -98,6 +111,67 @@ Rectangle {
 int smokeMovie(QGuiApplication &app)
 {
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Software);
+    const auto toneStatistics = [](qsizetype count, const auto &sample) {
+        double mean = 0.;
+        for (qsizetype i = 0; i < count; ++i) mean += sample(i);
+        mean /= double(count);
+        double energy = 0.;
+        for (qsizetype i = 0; i < count; ++i) {
+            const auto value = sample(i) - mean;
+            energy += value * value;
+        }
+        const double rms = std::sqrt(energy / double(count));
+        // A decoded AAC tail can ring around zero after the audible signal ends.
+        // Count a period only after excursions on both sides of a Schmitt band;
+        // retain the interpolated zero crossing for the frequency measurement.
+        const double threshold = rms * .25;
+        qsizetype crossings = 0;
+        double first = 0., last = 0., pending = 0.;
+        bool armed = false, hasPending = false;
+        for (qsizetype i = 1; i < count; ++i) {
+            const auto value = sample(i) - mean;
+            if (value < -threshold) {
+                armed = true;
+                hasPending = false;
+            }
+            if (!armed) continue;
+            const auto previous = sample(i - 1) - mean;
+            if (previous <= 0. && value > 0.) {
+                pending = double(i - 1) - previous / (value - previous);
+                hasPending = true;
+            }
+            if (hasPending && value > threshold) {
+                if (!crossings) first = pending;
+                last = pending;
+                ++crossings;
+                armed = false;
+                hasPending = false;
+            }
+        }
+        const double frequency = crossings > 1 && last > first
+            ? double(crossings - 1) * 48000. / (last - first) : 0.;
+        return std::array<double, 2>{rms, frequency};
+    };
+    const auto audible440 = [](const auto &statistics) {
+        return statistics[0] > .01 && statistics[0] < .2 && std::abs(statistics[1] - 440.) < 15.;
+    };
+    // Exercise the same detector with a short, DC-offset signal plus low-level
+    // high-frequency tail noise. Wrong pitch and silence must still fail.
+    for (const double frequency : {0., 220., 440., 490., 880.}) {
+        const auto statistics = toneStatistics(8320, [frequency](qsizetype i) {
+            const double time = double(i + 960) / 48000.;
+            const double tone = frequency > 0. && time < .185
+                ? .125 * std::sin(2. * 3.14159265358979323846 * frequency * time) : 0.;
+            const double tail = frequency > 0. && time >= .185 && time < .189
+                ? (i % 2 ? .001 : -.001) : 0.;
+            return tone + tail + .003;
+        });
+        if (audible440(statistics) != (frequency == 440.)) {
+            qWarning() << "Audio pitch detector control failed:" << frequency << statistics[0] << statistics[1];
+            return 1;
+        }
+        qInfo() << "Audio pitch detector control:" << frequency << statistics[0] << statistics[1];
+    }
     QTemporaryDir temporary;
     if (!temporary.isValid())
         return 1;
@@ -108,7 +182,8 @@ int smokeMovie(QGuiApplication &app)
     if (ffmpeg.isEmpty() || ffprobe.isEmpty() ||
         QProcess::execute(ffmpeg, {"-v", "error", "-y", "-f", "lavfi", "-i",
             "color=c=blue:size=160x90:rate=24:duration=1", "-f", "lavfi", "-i",
-            "sine=frequency=440:sample_rate=48000:duration=1", "-c:v", "libx264", "-c:a", "aac", input}) != 0)
+            "sine=frequency=440:sample_rate=48000:duration=1", "-vf", "setpts=PTS+5/TB", "-af", "asetpts=PTS+5/TB",
+            "-c:v", "libx264", "-c:a", "aac", input}) != 0)
         return 1;
 
     ReplayController replay;
@@ -182,12 +257,36 @@ Rectangle {
                 blue = rgb.size() == 12 && uchar(rgb[0]) < 60 && uchar(rgb[1]) < 60 && uchar(rgb[2]) > 180;
             }
         }
+        bool audible = false;
+        double audioRms = 0., audioFrequency = 0.;
+        if (audio) {
+            QProcess pcm;
+            pcm.start(ffmpeg, {"-v", "error", "-i", output, "-map", "0:a:0", "-ac", "1", "-ar", "48000",
+                              "-c:a", "pcm_s16le", "-f", "s16le", "pipe:1"});
+            if (pcm.waitForFinished(4000) && pcm.exitStatus() == QProcess::NormalExit && pcm.exitCode() == 0) {
+                const auto bytes = pcm.readAllStandardOutput();
+                const auto sample = [&](qsizetype i) {
+                    const int word = int(uchar(bytes[2*i])) | (int(uchar(bytes[2*i + 1])) << 8);
+                    return double(word >= 32768 ? word - 65536 : word) / 32768.;
+                };
+                const auto samples = bytes.size() / 2;
+                // AAC priming/padding and atempo can alter the edges. Inspect the interior signal.
+                constexpr qsizetype edge = 960; // 20 ms at 48 kHz.
+                if (!(bytes.size() % 2) && samples >= 7200 && samples <= 12480) {
+                    const auto statistics = toneStatistics(samples - 2*edge, [&](qsizetype i) { return sample(i + edge); });
+                    audioRms = statistics[0];
+                    audioFrequency = statistics[1];
+                    audible = audible440(statistics);
+                }
+            }
+            qInfo() << "Decoded exported audio RMS/frequency:" << audioRms << audioFrequency;
+        }
         const bool captureValid = capturedSizes && capturedTimes.size() == 12 && std::abs(capturedTimes.first() - .1) < 1.e-9 &&
             std::abs(capturedTimes.last() - (.1 + 11. / 120.)) < 1.e-9;
         const bool restored = replay.position() == .5 && replay.playing() && canvas->property("captureOptions").toMap() == originalOptions;
-        if (!audio || !video || !blue || !captureValid || !restored)
-            qWarning() << movie.message() << "Expected 12 full-resolution timed frames, decoded pixels, AAC, restored playhead/playback and capture settings";
-        app.exit(audio && video && blue && captureValid && restored ? 0 : 1);
+        if (!audio || !audible || !video || !blue || !captureValid || !restored)
+            qWarning() << movie.message() << "Expected 12 full-resolution timed frames, decoded pixels, audible 440 Hz AAC, restored playhead/playback and capture settings";
+        app.exit(audio && audible && video && blue && captureValid && restored ? 0 : 1);
     });
     window.show();
     QTimer::singleShot(100, &app, [&] { replay.togglePlayback(); movie.start(QUrl::fromLocalFile(output), canvas, .1, .2, .5, 0); });
@@ -207,8 +306,10 @@ int main(int argc, char **argv)
     QSurfaceFormat::setDefaultFormat(format);
 
     QGuiApplication app(argc, argv);
-    app.setApplicationName("UAV Studio");
-    app.setOrganizationName("UAV Studio");
+    AppInfo appInfo;
+    app.setApplicationName(appInfo.appName());
+    app.setApplicationVersion(appInfo.version());
+    app.setOrganizationName(appInfo.appName());
     app.setWindowIcon(QIcon(":/brand/uav-studio.svg"));
     QQuickStyle::setStyle("Basic");
     QFont font;
@@ -219,12 +320,22 @@ int main(int argc, char **argv)
     const int frameArg = app.arguments().indexOf("--acceptance-frame");
     const int displayArg = app.arguments().indexOf("--acceptance-displays");
     const int movieFrameArg = app.arguments().indexOf("--acceptance-movie-frames");
+    const int cameraArg = app.arguments().indexOf("--acceptance-camera");
+    const int nativePlayheadArg = app.arguments().indexOf("--acceptance-native-playhead");
+    const int nativeSceneArg = app.arguments().indexOf("--acceptance-native-scene");
+    if (nativeSceneArg >= 0 && app.arguments().size() <= nativeSceneArg + 5) return 2;
+    if (nativePlayheadArg >= 0 && app.arguments().size() <= nativePlayheadArg + 5) return 2;
+    if (cameraArg >= 0 && (app.arguments().size() <= cameraArg + 2 || app.arguments().value(cameraArg + 1).startsWith("--"))) return 2;
     if (movieFrameArg >= 0 && (app.arguments().size() <= movieFrameArg + 2 || app.arguments().value(movieFrameArg + 1).startsWith("--"))) return 2;
     if (displayArg >= 0 && (app.arguments().size() <= displayArg + 2 || app.arguments().value(displayArg + 1).startsWith("--"))) return 2;
     if (appearanceArg >= 0 && (app.arguments().size() <= appearanceArg + 1 || app.arguments().value(appearanceArg + 1).startsWith("--"))) return 2;
     if (frameArg >= 0 && (app.arguments().size() <= frameArg + 1 || app.arguments().value(frameArg + 1).startsWith("--"))) return 2;
-    const int acceptanceArg = appearanceArg >= 0 ? appearanceArg : frameArg >= 0 ? frameArg : displayArg >= 0 ? displayArg : movieFrameArg;
+    const int acceptanceArg = nativeSceneArg >= 0 ? nativeSceneArg : appearanceArg >= 0 ? appearanceArg : frameArg >= 0 ? frameArg : displayArg >= 0 ? displayArg : movieFrameArg >= 0 ? movieFrameArg : cameraArg >= 0 ? cameraArg : nativePlayheadArg;
     const auto acceptanceDirectory = acceptanceArg >= 0 ? QFileInfo(app.arguments().value(acceptanceArg + 1)).absoluteFilePath() : QString();
+    if (nativePlayheadArg >= 0 || nativeSceneArg >= 0) {
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, acceptanceDirectory);
+    }
     AppearanceManager appearance(nullptr, acceptanceDirectory.isEmpty() ? QString() : acceptanceDirectory + "/appearance.ini");
     QQuickWindow::setDefaultAlphaBuffer(true);
     if (app.arguments().contains("--smoke-png"))
@@ -237,34 +348,105 @@ int main(int argc, char **argv)
     const bool software = layoutSmoke || (batch && qEnvironmentVariable("QT_QUICK_BACKEND") == QStringLiteral("software"));
     QQuickWindow::setGraphicsApi(software ? QSGRendererInterface::Software : QSGRendererInterface::OpenGL);
     qmlRegisterType<CloudView>("UAVStudio", 1, 0, "CloudView");
+    qmlRegisterType<ClipPreview>("UAVStudio", 1, 0, "ClipPreview");
+    qmlRegisterType<SpeedGaugeItem>("UAVStudio", 1, 0, "SpeedGaugeItem");
+    qmlRegisterType<TrajectoryLayerItem>("UAVStudio", 1, 0, "TrajectoryLayerItem");
+    qmlRegisterType<CanvasScientificItem>("UAVStudio", 1, 0, "CanvasScientificItem");
     qmlRegisterUncreatableType<ReplayController>("UAVStudio", 1, 0, "ReplayController",
                                                  "Provided by the application");
 
     ReplayController replay;
+    NativeRvizClient nativeRviz;
+    // The engine owns image providers. Controllers and their worker cleanup
+    // still use those providers while being destroyed, so the engine outlives them.
+    QQmlApplicationEngine engine;
     auto *trajectoryImages = new PreviewImages;
     auto *movieImages = new MovieImages;
     auto *rosImages = new PreviewImages;
     TopicInspector inspector(replay, *rosImages);
+    SpeedMeterModel speedMeterData;
+    std::shared_ptr<const replay::Recording> speedRecording;
+    QSet<QString> speedMeterIds;
+    const auto synchronizeSpeedSources = [&] {
+        const auto current = replay.recording();
+        if (speedRecording != current) {
+            speedMeterData.clear();
+            speedMeterData.setTransforms(current ? current->transforms : nullptr);
+            speedRecording = current;
+            speedMeterIds.clear();
+        }
+        QSet<QString> wanted;
+        for (const auto &value : replay.speedMeters()) {
+            const auto meter = value.toMap();
+            const auto id = meter.value("id").toString();
+            wanted.insert(id);
+            const auto source = meter.value("source").toMap();
+            if (!source.value("topic").toString().isEmpty())
+                speedMeterData.loadSource(id, replay.demo() ? QUrl() : QUrl::fromLocalFile(replay.bagPath()), source);
+            else
+                speedMeterData.useRecording(id, replay.demo() ? nullptr : current);
+        }
+        for (const auto &id : speedMeterIds - wanted) speedMeterData.removeMeter(id);
+        speedMeterIds = wanted;
+    };
+    QObject::connect(&replay, &ReplayController::recordingChanged, &speedMeterData, synchronizeSpeedSources);
+    synchronizeSpeedSources();
     TrajectoryController trajectory(*trajectoryImages);
     QObject::connect(&trajectory, &TrajectoryController::settingsEdited, &replay, &ReplayController::setTrajectorySettings);
     QObject::connect(&replay, &ReplayController::trajectorySettingsLoaded, &trajectory, &TrajectoryController::restoreSettings);
     MovieExporter movie(replay, *movieImages);
+    movie.setNativeClient(&nativeRviz);
     FrameBatchExporter frameBatch(replay, movie);
-    QQmlApplicationEngine engine;
+    UpdateManager updater(appInfo.metadata());
+    engine.rootContext()->setContextProperty("appInfo", &appInfo);
+    engine.rootContext()->setContextProperty("updater", &updater);
     engine.rootContext()->setContextProperty("appearance", &appearance);
     engine.addImageProvider(QStringLiteral("trajectory"), trajectoryImages);
     engine.addImageProvider(QStringLiteral("movie"), movieImages);
     engine.addImageProvider(QStringLiteral("ros-inspector"), rosImages);
     engine.rootContext()->setContextProperty("inspector", &inspector);
+    engine.rootContext()->setContextProperty("speedMeterData", &speedMeterData);
     engine.rootContext()->setContextProperty("trajectory", &trajectory);
     engine.rootContext()->setContextProperty("movie", &movie);
     engine.rootContext()->setContextProperty("frameBatch", &frameBatch);
+    engine.rootContext()->setContextProperty("nativeRviz", &nativeRviz);
     const bool smoke = args.contains("--smoke");
     engine.rootContext()->setContextProperty("replay", &replay);
     engine.rootContext()->setContextProperty("smokeTest", smoke);
+    engine.rootContext()->setContextProperty("automaticNativeBackend", !smoke && !layoutSmoke && acceptanceArg < 0);
     engine.load(QUrl(batch ? QStringLiteral("qrc:/qml/BatchExport.qml") : QStringLiteral("qrc:/qml/Main.qml")));
     if (engine.rootObjects().isEmpty())
         return 1;
+    // Stop QML views/decoders before their context controllers. Providers remain
+    // owned by the still-live engine until every controller has finished cleanup.
+    const auto closeViews = qScopeGuard([&engine] { qDeleteAll(engine.rootObjects()); });
+    // Background network checks only run for an ordinary interactive session.
+    // Offline rendering, acceptance tools and smoke tests never need networking.
+    if (!batch && !smoke && !layoutSmoke && acceptanceArg < 0)
+        updater.startAutomaticCheck();
+    if (nativeSceneArg >= 0) {
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+        if (!window) return 1;
+        window->setProperty("nativeBackendSelected", true);
+        runNativeSceneAcceptance(app, *window, replay, nativeRviz, movie, acceptanceDirectory,
+            args.value(nativeSceneArg+2), args.value(nativeSceneArg+3), args.value(nativeSceneArg+4), args.value(nativeSceneArg+5));
+        return app.exec();
+    }
+    if (nativePlayheadArg >= 0) {
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+        if (!window) return 1;
+        window->setProperty("nativeBackendSelected", true);
+        runNativeReplayAcceptance(app, *window, replay, nativeRviz, acceptanceDirectory,
+            args.value(nativePlayheadArg + 2), args.value(nativePlayheadArg + 3),
+            args.value(nativePlayheadArg + 4), args.value(nativePlayheadArg + 5));
+        return app.exec();
+    }
+    if (cameraArg >= 0) {
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+        if (!window) return 1;
+        runCameraAcceptance(app, *window, replay, movie, acceptanceDirectory, app.arguments().value(cameraArg + 2));
+        return app.exec();
+    }
     if (movieFrameArg >= 0) {
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
         if (!window) return 1;
@@ -331,7 +513,7 @@ int main(int argc, char **argv)
         const QFileInfo source(demo ? QString() : args[2]);
         const auto destination = QUrl::fromLocalFile(QFileInfo(args[3]).absoluteFilePath());
         const bool still = QFileInfo(destination.toLocalFile()).suffix().compare(QStringLiteral("png"), Qt::CaseInsensitive) == 0;
-        const bool project = source.suffix().compare(QStringLiteral("slamfpv"), Qt::CaseInsensitive) == 0;
+        const bool project = QStringList{"uavstudio", "slamfpv"}.contains(source.suffix().toLower());
         const auto completed = [&app](bool success, const QString &message) {
             QTextStream stream(success ? stdout : stderr);
             stream << message << Qt::endl;
@@ -345,7 +527,9 @@ int main(int argc, char **argv)
         });
         QTimer renderTimeout;
         renderTimeout.setSingleShot(true);
-        renderTimeout.setInterval(30'000);
+        // Allow the exporter's 30-second graphics preflight to report its
+        // specific failure and restore state before the outer watchdog.
+        renderTimeout.setInterval(35'000);
         QObject::connect(&movie, &MovieExporter::changed, &renderTimeout, [&] {
             if (movie.exporting())
                 renderTimeout.start();
@@ -353,7 +537,7 @@ int main(int argc, char **argv)
                 renderTimeout.stop();
         });
         QObject::connect(&renderTimeout, &QTimer::timeout, &app, [completed] {
-            completed(false, QStringLiteral("The export window did not produce another frame within 30 seconds."));
+            completed(false, QStringLiteral("The export window did not produce another frame within 35 seconds."));
         });
         const auto exportLoaded = [&] {
             if ((!demo && !source.isFile()) || (project && replay.projectPath().isEmpty()) ||
@@ -380,9 +564,13 @@ int main(int argc, char **argv)
         };
         QTimer::singleShot(0, &app, [&] {
             const auto url = QUrl::fromLocalFile(source.absoluteFilePath());
-            if (!demo && project)
+            // An empty desktop is intentional. Only an explicit CLI demo
+            // request initializes demonstration data before export validation.
+            if (demo)
+                replay.openDemo();
+            else if (project)
                 replay.openProject(url);
-            else if (!demo)
+            else
                 replay.openBag(url);
             if (replay.loading())
                 loadProgress = QObject::connect(&replay, &ReplayController::stateChanged, &app, schedule);
@@ -523,7 +711,7 @@ int main(int argc, char **argv)
                     return;
                 }
                 auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
-                QList<QVideoSink *> sinks;
+                QList<ClipPreview *> sinks;
                 if (window)
                     videoOutputs(window->contentItem(), sinks);
                 if (sinks.size() != 2) {
@@ -531,22 +719,39 @@ int main(int argc, char **argv)
                     app.exit(1);
                     return;
                 }
-                auto decoded = std::make_shared<QSet<QVideoSink *>>();
+                // Settle both precise, paused targets before advancing through the
+                // short first clip. A slow first decode must not be mistaken for
+                // a broken decoder after that clip has legitimately become hidden.
+                replay.pause();
+                replay.seek(.2);
+                auto decoded = std::make_shared<QSet<ClipPreview *>>();
+                auto playbackStarted = std::make_shared<bool>(false);
                 for (auto *sink : sinks) {
-                    QObject::connect(sink, &QVideoSink::videoFrameChanged, &app, [&app, decoded, sink](const QVideoFrame &frame) {
-                        if (frame.isValid()) {
+                    QObject::connect(sink, &ClipPreview::frameChanged, &app, [&app, &replay, decoded, playbackStarted, sink, sinks] {
+                        if (!*playbackStarted && sink->ready() && !sink->busy()) {
                             decoded->insert(sink);
-                            if (decoded->size() == 2)
-                                app.exit(0);
+                            if (decoded->size() == sinks.size()) {
+                                *playbackStarted = true;
+                                const auto initial = sinks.last()->actualSeconds();
+                                replay.togglePlayback();
+                                QTimer::singleShot(1000, &app, [&app, sinks, initial] {
+                                    if (!sinks.last()->ready() || sinks.last()->actualSeconds() <= initial) {
+                                        qWarning("Video preview did not advance during playback");
+                                        app.exit(1);
+                                    } else app.exit(0);
+                                });
+                            }
                         }
                     });
                 }
-                QTimer::singleShot(12000, &app, [&app] {
+                QTimer::singleShot(12000, &app, [&app, sinks] {
                     qWarning("Video preview did not decode a frame");
+                    for (const auto *sink : sinks)
+                        qWarning() << "Preview source/target/enabled/ready/busy/actual/error:"
+                                   << sink->source() << sink->sourceSeconds() << sink->decodingEnabled()
+                                   << sink->ready() << sink->busy() << sink->actualSeconds() << sink->error();
                     app.exit(1);
                 });
-                replay.seek(.2);
-                replay.togglePlayback();
             } catch (const std::exception &) {
                 app.exit(1);
             }
@@ -555,7 +760,7 @@ int main(int argc, char **argv)
         const auto path = QFileInfo(app.arguments().at(1)).absoluteFilePath();
         const auto url = QUrl::fromLocalFile(path);
         const auto extension = QFileInfo(path).suffix().toLower();
-        if (extension == QStringLiteral("slamfpv"))
+        if (extension == QStringLiteral("slamfpv") || extension == QStringLiteral("uavstudio"))
             replay.openProject(url);
         else if (extension == QStringLiteral("rviz") || extension == QStringLiteral("yaml") || extension == QStringLiteral("yml"))
             replay.openRviz(url);

@@ -2,10 +2,13 @@
 
 #include "project_document.h"
 #include "replay_data.h"
+#include "canvas_layer_model.h"
 
+#include <QAbstractListModel>
 #include <QElapsedTimer>
 #include <QFutureWatcher>
 #include <QHash>
+#include <QSet>
 #include <QImage>
 #include <QObject>
 #include <QTimer>
@@ -15,6 +18,20 @@
 #include <atomic>
 
 class QQuickItemGrabResult;
+
+// Keep decoder-owning QML delegates alive when another clip is added or removed.
+class VideoLayerListModel final : public QAbstractListModel {
+    Q_OBJECT
+public:
+    enum Role { VideoLayer = Qt::UserRole + 1 };
+    explicit VideoLayerListModel(QObject *parent = nullptr) : QAbstractListModel(parent) {}
+    int rowCount(const QModelIndex &parent = {}) const override;
+    QVariant data(const QModelIndex &index, int role) const override;
+    QHash<int, QByteArray> roleNames() const override { return {{VideoLayer, "videoLayer"}}; }
+    void setLayers(const QVariantList &layers);
+private:
+    QVariantList layers_;
+};
 
 class ReplayController : public QObject {
     Q_OBJECT
@@ -27,6 +44,7 @@ class ReplayController : public QObject {
     Q_PROPERTY(QString name READ name NOTIFY recordingChanged)
     Q_PROPERTY(QString speed READ speed NOTIFY positionChanged)
     Q_PROPERTY(QVariantMap speedGauge READ speedGauge NOTIFY recordingChanged)
+    Q_PROPERTY(QVariantList speedMeters READ speedMeters NOTIFY recordingChanged)
     Q_PROPERTY(QVariantMap moviePreferences READ moviePreferences NOTIFY recordingChanged)
     Q_PROPERTY(QString cloudTopic READ cloudTopic NOTIFY recordingChanged)
     Q_PROPERTY(QString odometryTopic READ odometryTopic NOTIFY recordingChanged)
@@ -46,7 +64,18 @@ class ReplayController : public QObject {
     Q_PROPERTY(bool replacing READ replacing NOTIFY recordingChanged)
     Q_PROPERTY(bool demo READ demo NOTIFY recordingChanged)
     Q_PROPERTY(QVariantList topicDisplays READ topicDisplays NOTIFY recordingChanged)
+    Q_PROPERTY(QVariantList independentDisplays READ independentDisplays NOTIFY independentDisplaysChanged)
+    Q_PROPERTY(QVariantList independentDisplayTypes READ independentDisplayTypes CONSTANT)
+    Q_PROPERTY(QString selectedIndependentDisplayId READ selectedIndependentDisplayId NOTIFY independentDisplaySelectionChanged)
+    Q_PROPERTY(QVariantMap selectedIndependentDisplay READ selectedIndependentDisplay NOTIFY independentDisplaysChanged)
+    Q_PROPERTY(bool independentDisplayLoading READ independentDisplayLoading NOTIFY independentDisplaysChanged)
+    Q_PROPERTY(QString independentFixedFrame READ independentFixedFrame NOTIFY independentDisplaysChanged)
+    Q_PROPERTY(bool independentDisplayModelActive READ independentDisplayModelActive NOTIFY independentDisplaysChanged)
     Q_PROPERTY(QString projectPath READ projectPath NOTIFY recordingChanged)
+    Q_PROPERTY(QVariantMap nativeReplaySource READ nativeReplaySource NOTIFY recordingChanged)
+    Q_PROPERTY(QVariantMap nativeRvizConfig READ nativeRvizConfig NOTIFY nativeConfigChanged)
+    Q_PROPERTY(QString renderBackend READ renderBackend WRITE setRenderBackend NOTIFY renderBackendChanged)
+    Q_PROPERTY(QString experimentStampNs READ experimentStampNs NOTIFY positionChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY editHistoryChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY editHistoryChanged)
     Q_PROPERTY(QVariantList markers READ markers NOTIFY markersChanged)
@@ -67,6 +96,10 @@ class ReplayController : public QObject {
     Q_PROPERTY(QVariantList layerMotions READ layerMotions NOTIFY motionsChanged)
     Q_PROPERTY(QVariantList cloudViews READ cloudViews NOTIFY cloudViewsChanged)
     Q_PROPERTY(QVariantList videoLayers READ videoLayers NOTIFY videoLayersChanged)
+    Q_PROPERTY(QAbstractItemModel *videoLayerModel READ videoLayerModel CONSTANT)
+    Q_PROPERTY(CanvasLayerModel *canvas READ canvas CONSTANT)
+    Q_PROPERTY(QVariantList sources READ sources NOTIFY sourcesChanged)
+    Q_PROPERTY(QVariantMap pendingSourceRemoval READ pendingSourceRemoval NOTIFY sourcesChanged)
 public:
     explicit ReplayController(QObject *parent = nullptr);
     ~ReplayController() override;
@@ -82,6 +115,9 @@ public:
     QVariantMap speedGauge() const;
     QVariantMap moviePreferences() const;
     Q_INVOKABLE void setSpeedGauge(const QVariantMap &settings);
+    QVariantList speedMeters() const;
+    Q_INVOKABLE QString addSpeedMeter();
+    Q_INVOKABLE void editSpeedMeter(const QString &id, const QString &section, const QVariantMap &changes);
     Q_INVOKABLE void setMoviePreferences(double speed, int audioIndex);
     QString cloudTopic() const { return record_->cloudTopic; }
     QString odometryTopic() const { return record_->odometryTopic; }
@@ -100,14 +136,33 @@ public:
     QStringList tfFrames() const;
     int pointCount() const;
     bool replacing() const { return record_->replace; }
-    bool demo() const { return path_.isEmpty() && (!project_ || project_->source() == "demo"); }
+    bool demo() const { return path_.isEmpty() && (project_ ? project_->source() == "demo" : demoMode_); }
     QString projectPath() const { return project_ ? project_->path() : QString(); }
     QString bagPath() const { return path_; }
+    QVariantMap nativeReplaySource() const;
+    QVariantMap nativeRvizConfig() const;
+    Q_INVOKABLE void setNativeRvizConfig(const QString &yaml, const QVariantMap &metadata);
+    QString renderBackend() const;
+    void setRenderBackend(const QString &backend);
+    QString experimentStampNs() const;
     std::shared_ptr<const replay::Recording> recording() const { return record_; }
 
     const std::vector<replay::VideoClip> &videoClips() const { return clips_; }
     bool referencesFile(const QString &path) const;
     const QVariantList &videoLayers() const { return videoLayers_; }
+    QAbstractItemModel *videoLayerModel() { return &videoLayerModel_; }
+    CanvasLayerModel *canvas() const { return canvas_; }
+    QVariantList sources() const { return project_ ? project_->sources() : projectSnapshot().sources(); }
+    QVariantMap pendingSourceRemoval() const { return pendingSourceRemoval_; }
+    Q_INVOKABLE void removeLayers(const QStringList &ids);
+    Q_INVOKABLE void clearCanvas();
+    Q_INVOKABLE void addSource(const QUrl &file, const QString &kind);
+    Q_INVOKABLE bool removeSources(const QStringList &ids, bool removeReferences = false);
+    Q_INVOKABLE void cancelSourceRemoval();
+    Q_INVOKABLE void clearUnusedSources();
+    Q_INVOKABLE void renameSource(const QString &id, const QString &name);
+    Q_INVOKABLE void replaceSource(const QString &id, const QUrl &file);
+    Q_INVOKABLE void addSourceLayer(const QString &id);
     QVariantList markers() const;
     QVariantList planningEvents() const;
     Q_INVOKABLE QVariantList alignmentCandidates() const;
@@ -134,6 +189,8 @@ public:
     Q_INVOKABLE void renameMarker(double time, const QString &label);
     Q_INVOKABLE void removeMarker(double time);
     QVariantMap mainView() const;
+    Q_INVOKABLE void setMainView(const QVariantMap &settings);
+    Q_INVOKABLE void restoreMainView();
     QVariantList layerMotions() const;
     Q_INVOKABLE QRectF animatedLayer(const QString &kind, const QString &id, double time,
                                     const QRectF &base, const QSizeF &canvas) const;
@@ -164,6 +221,23 @@ public:
     bool canRedo() const { return !redo_.empty(); }
 
     QVariantList topicDisplays() const;
+    QVariantList independentDisplays() const;
+    QVariantList independentDisplayTypes() const;
+    Q_INVOKABLE QVariantList compatibleIndependentDisplays(const QString &messageType) const;
+    std::vector<replay::TopicDisplay> independentDisplayStates() const;
+    std::vector<std::shared_ptr<const replay::Recording>> independentDisplayRecordings() const;
+    bool independentDisplayModelActive() const;
+    QString independentFixedFrame() const;
+    bool independentDisplayLoading() const { return independentWatcher_.isRunning(); }
+    QString selectedIndependentDisplayId() const { return selectedIndependentDisplayId_; }
+    QVariantMap selectedIndependentDisplay() const;
+    Q_INVOKABLE void selectIndependentDisplay(const QString &id);
+    Q_INVOKABLE QString addIndependentDisplay(const QString &pluginClass, const QString &topic = {}, const QString &parentId = {});
+    Q_INVOKABLE QString duplicateIndependentDisplay(const QString &id);
+    Q_INVOKABLE void removeIndependentDisplays(const QStringList &ids);
+    Q_INVOKABLE bool editIndependentDisplay(const QString &id, const QVariantMap &changes);
+    Q_INVOKABLE QVariantList independentDisplayProperties(const QString &id) const;
+    Q_INVOKABLE void retryIndependentDisplays();
     const QHash<QString, bool> &topicDisplayVisibility() const { return displayVisibility_; }
     Q_INVOKABLE void setTopicDisplayEnabled(int index, bool enabled);
     Q_INVOKABLE void setFixedFrame(const QString &frame);
@@ -204,8 +278,19 @@ signals:
     void activeLayoutChanged();
     void editHistoryChanged();
     void trajectorySettingsLoaded(const QVariantMap &settings);
+    void sourcesChanged();
+    void sourceRemoved(const QString &kind, const QUrl &file);
+    void nativeConfigChanged();
+    void nativeConfigLoaded(const QVariantMap &config);
+    void renderBackendChanged();
+    void independentDisplaysChanged();
+    void independentDisplaySelectionChanged();
 
 private:
+    friend class CanvasLayerModel;
+    void recordProjectEdit(const replay::ProjectDocument &before,
+        std::shared_ptr<const replay::Recording> beforeRecord = {}, const QString &beforePath = {});
+    void refreshProjectModels();
     struct Result {
         std::shared_ptr<const replay::Recording> record;
         QString path;
@@ -222,6 +307,27 @@ private:
     void install(std::shared_ptr<const replay::Recording> record, bool keepSession = false);
     void applyTopicLayout(const replay::RvizLayout &layout);
     void refreshDisplayVisibility();
+    replay::RvizLayout independentLayout() const;
+    void storeIndependentLayout(const replay::RvizLayout &layout, const QString &message = {});
+    void refreshIndependentDisplayData();
+    void ensureInitialDisplayLayout();
+    QString independentCacheKey(const replay::TopicDisplay &display) const;
+    struct IndependentDisplayLoad {
+        QString source, fixedFrame, error;
+        quint64 generation = 0;
+        QStringList keys;
+        QHash<QString, std::shared_ptr<const replay::Recording>> records;
+    };
+    QFutureWatcher<IndependentDisplayLoad> independentWatcher_;
+    QTimer independentStatusTimer_;
+    QVariantList independentTimeStatuses_;
+    QHash<QString, std::shared_ptr<const replay::Recording>> independentData_;
+    QHash<QString, QString> independentErrors_;
+    QSet<QString> independentPending_;
+    QString independentDataSource_, independentDataFrame_, selectedIndependentDisplayId_;
+    quint64 independentDataGeneration_ = 0;
+    quint64 independentSourceGeneration_ = 0;
+    std::shared_ptr<std::atomic_bool> independentCancel_;
     void setPosition(double seconds);
     void refreshVideoLayers();
     void refreshSceneLayers();
@@ -236,20 +342,28 @@ private:
     void changeVideoSegment(int index, double at, bool remove);
     void storeVideoSpans(int index, const std::vector<replay::VideoTiming::Range> &ranges);
     struct VideoEdit {
-        int index;
-        QJsonObject before, after;
+        replay::ProjectDocument before, after;
+        std::shared_ptr<const replay::Recording> beforeRecord, afterRecord;
+        QString beforePath, afterPath;
     };
     void restoreVideoEdit(bool redo);
 
     QHash<QString, double> videoDurations_;
     QHash<QString, bool> displayVisibility_;
     std::vector<VideoEdit> undo_, redo_;
+    CanvasLayerModel *canvas_ = nullptr;
+    int projectEditDepth_ = 0;
+    QVariantMap pendingSourceRemoval_;
+    std::optional<replay::ProjectDocument> replacementBefore_;
+    QVariantList replacementRemovedSources_;
 
     std::shared_ptr<const replay::Recording> record_;
+    quint64 recordingGeneration_ = 0;
     QFutureWatcher<Result> watcher_;
     QFutureWatcher<QString> folderWatcher_;
     std::optional<replay::ProjectDocument> project_;
     std::vector<replay::VideoClip> clips_;
+    VideoLayerListModel videoLayerModel_;
     QVariantList videoLayers_, sceneLayers_, cloudViews_;
     QJsonArray layouts_, motions_;
     QSharedPointer<QQuickItemGrabResult> frameGrab_;
@@ -258,7 +372,7 @@ private:
     QString path_, status_;
     std::optional<replay::MapMode> mapMode_;
     std::atomic_bool cancelRequested_ = false;
-    bool loading_ = false, capturing_ = false;
+    bool loading_ = false, capturing_ = false, demoMode_ = false;
     int captureMatte_ = 0, cameraIndex_ = 0;
     double position_ = 0., start_ = 0., progress_ = 0.;
 };

@@ -10,22 +10,48 @@ ApplicationWindow {
     visible: !smokeTest
     width: 1440; height: 900
     minimumWidth: 980; minimumHeight: 640
-    title: "UAV Studio — All-in-One Robotics Research Studio"
+    title: appInfo.fullBranding
     color: appearance.colors.window
     palette: StudioPalette {}
-font.pixelSize: appearance.metrics.body
+    font.pixelSize: appearance.metrics.body
     property alias workspaceIndex: workspace.currentIndex
     property int selectedVideo: 0
+    property int sidebarIndex: 0
+    property url nativeStartupConfig: ""
+    // Standalone editing is always available. An optional native runtime is
+    // detected asynchronously and can be selected without managing a process.
+    property bool nativeBackendSelected: replay.renderBackend === "native-rviz"
+    readonly property bool nativeBackendActive: nativeBackendSelected && nativeRviz.connected
+    property bool backendSettingsVisible: false
+    property string pendingNativeYaml: ""
+    property string nativeSaveJob: ""
+    property bool nativeSaveWaiting: false
+    property url nativeSaveDestination: ""
+    property string nativeSaveKind: ""
+    property string nativeSaveSignature: ""
+    property string nativeSaveViewSignature: ""
+    property string nativeSaveError: ""
+    Component.onCompleted: { replay.canvas.layoutMode = false; if (automaticNativeBackend) nativeRviz.ensureStarted() }
     property bool timelineFloating: false
     property int timelineMode: 0
     property var frameOptions: ({})
     property real frameTime: 0
     property bool frameSettingsVisible: false
-    readonly property bool exportBusy: movie.exporting || frameBatch.active
+    readonly property bool exportBusy: movie.exporting || frameBatch.active || nativeSaveJob.length > 0
+    readonly property bool textInputFocused: activeFocusItem instanceof TextInput || activeFocusItem instanceof TextEdit
     property var batchOptions: ({})
+    readonly property var movieRateValues: [1., .5, .25, 2., 4.]
+    readonly property var movieRateLabels: movieRateValues.map(rate => String(rate) + "×")
     readonly property var topicInspector: inspector
+    property string selectedMeterId: ""
+    property var copiedMeterStyle: null
+    property string meterExportFormat: "png"
+    property string meterExportMessage: ""
+    property var copiedCanvasElements: []
+    readonly property var activeCanvasModel: workspace.currentIndex === 3 ? trajectory.canvas : replay.canvas
+    readonly property var selectedMeter: replay.speedMeters.find(row => row.id === selectedMeterId) || replay.speedMeters[0] || ({})
     readonly property color panel: appearance.colors.panel
-    readonly property color thin: appearance.colors.border
+    readonly property color thin: appearance.colors.separator
     readonly property color ink: appearance.colors.text
     readonly property color muted: appearance.colors.secondaryText
     readonly property color accent: appearance.colors.accent
@@ -40,8 +66,8 @@ font.pixelSize: appearance.metrics.body
                 id: workspace
                 Layout.fillWidth: true
                 enabled: !window.exportBusy
-                background: Rectangle { color: appearance.colors.control; radius: appearance.metrics.radius }
-                onCurrentIndexChanged: if (currentIndex < 3) settingsSection.currentIndex = currentIndex === 0 ? 0 : 1
+                background: Rectangle { color: appearance.colors.transparent; radius: appearance.metrics.radius }
+                onCurrentIndexChanged: if (currentIndex < 3) { settingsSection.currentIndex = currentIndex === 0 ? 0 : 1; replay.canvas.layoutMode = currentIndex !== 0 }
                 WorkspaceTab { text: "Visualization\n数据可视化" }
                 WorkspaceTab { text: "Synchronization\n编辑与同步" }
                 WorkspaceTab { text: "Video Editor\n视频剪辑" }
@@ -56,21 +82,22 @@ font.pixelSize: appearance.metrics.body
                 Accessible.name: "Appearance · 外观"
                 StudioToolTip { visible: parent.hovered; text: "Appearance · 外观，自动保存；不改变场景和输出配色" }
             }
-            StudioButton { text: "About"; onClicked: about.open() }
+            StudioButton { objectName: "aboutButton"; text: "About · 关于"; onClicked: about.open() }
         }
     }
     component WorkspaceTab: TabButton {
         id: tab
         implicitHeight: 40
-        contentItem: Text { text: tab.text; font.pixelSize: 12; color: tab.checked ? appearance.colors.text : appearance.colors.secondaryText; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-        background: Rectangle { radius: appearance.metrics.radius; color: tab.checked ? appearance.colors.panel : tab.hovered ? appearance.colors.hover : appearance.colors.transparent; border.width: tab.visualFocus ? 2 : 0; border.color: appearance.colors.accent }
+        contentItem: Text { text: tab.text; font.pixelSize: appearance.metrics.body; font.weight: tab.checked ? Font.DemiBold : Font.Normal; color: tab.checked ? appearance.colors.text : appearance.colors.secondaryText; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+        background: Rectangle { radius: appearance.metrics.radius; color: tab.checked ? appearance.colors.selection : tab.hovered ? appearance.colors.hover : appearance.colors.transparent; border.width: tab.visualFocus ? 2 : 0; border.color: appearance.colors.accent }
     }
     component PanelTitle: StudioLabel { font.pixelSize: appearance.metrics.section; font.weight: Font.DemiBold; color: appearance.colors.text }
     component Caption: StudioLabel { font.pixelSize: appearance.metrics.caption; color: appearance.colors.secondaryText }
-    Dialog { palette: StudioPalette {}
-
-        id: about; title: "About UAV Studio"; width: 420; anchors.centerIn: parent; modal: true; standardButtons: Dialog.Ok
-        contentItem: StudioLabel { text: "UAV Studio\nAll-in-One Robotics Research Studio\n无人机科研工作站\nC++ / Qt · Development Preview\n完整验收通过前不发布稳定版"; wrapMode: Text.Wrap; padding: 16 }
+    AboutPane {
+        id: about
+        parent: Overlay.overlay
+        applicationInfo: appInfo
+        updateManager: updater
     }
     Window {
         id: timelineWindow; title: "UAV Studio · Floating Timeline"; width: 900; height: Math.max(120, timelineContents.implicitHeight + 24); transientParent: window; flags: Qt.Tool
@@ -86,13 +113,35 @@ font.pixelSize: appearance.metrics.body
         id: bagDialog
         title: "打开 ROS1 bag"
         nameFilters: ["ROS1 bag (*.bag)"]
-        onAccepted: replay.openBag(selectedFile)
+        onAccepted: window.topicInspector.openBag(selectedFile)
+    }
+    FileDialog {
+        id: meterExportDialog
+        title: "Export Speed Meter · 导出速度仪表"
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: window.meterExportFormat
+        nameFilters: [window.meterExportFormat.toUpperCase() + " (*." + window.meterExportFormat + ")"]
+        onAccepted: {
+            const id = window.selectedMeter.id
+            if (window.meterExportFormat === "csv") {
+                speedMeterData.exportCsv(id, selectedFile, Object.assign({}, window.selectedMeter.settings, {playheadNs:replay.experimentStampNs}))
+                return
+            }
+            const item = canvas.layerItems[id]
+            if (item) item.exportElement(selectedFile, Qt.size(2400,2080), 300, window.meterExportFormat)
+        }
+    }
+    Connections { target: speedMeterData; function onExportFinished(success, message) { window.meterExportMessage = message } }
+    Connections {
+        target: canvas.layerItems[window.selectedMeter.id] || null
+        ignoreUnknownSignals: true
+        function onExportFinished(jobId, success, metadata, error) { window.meterExportMessage = success ? "Exported · 已导出 " + metadata.path : error }
     }
     FileDialog {
         id: rvizDialog
         title: "导入 RViz 显示配置"
         nameFilters: ["RViz 配置 (*.rviz *.yaml *.yml)"]
-        onAccepted: replay.openRviz(selectedFile)
+        onAccepted: window.importRviz(selectedFile)
     }
     FileDialog {
         id: rvizExportDialog
@@ -100,21 +149,21 @@ font.pixelSize: appearance.metrics.body
         fileMode: FileDialog.SaveFile
         defaultSuffix: "rviz"
         nameFilters: ["RViz configuration (*.rviz)"]
-        onAccepted: replay.exportRviz(selectedFile)
+        onAccepted: window.nativeBackendActive ? nativeRviz.saveConfig(selectedFile) : replay.exportRviz(selectedFile)
     }
     FileDialog {
         id: projectDialog
         title: "打开 UAV Studio 项目（兼容旧格式）"
-        nameFilters: ["UAV Studio 项目（兼容旧格式） (*.slamfpv)"]
+        nameFilters: ["UAV Studio 项目 (*.uavstudio *.slamfpv)"]
         onAccepted: replay.openProject(selectedFile)
     }
     FileDialog {
         id: saveDialog
         title: "保存 UAV Studio 项目（兼容旧格式）"
         fileMode: FileDialog.SaveFile
-        defaultSuffix: "slamfpv"
-        nameFilters: ["UAV Studio 项目（兼容旧格式） (*.slamfpv)"]
-        onAccepted: replay.saveProjectAs(selectedFile)
+        defaultSuffix: "uavstudio"
+        nameFilters: ["UAV Studio 项目 (*.uavstudio *.slamfpv)"]
+        onAccepted: window.saveProject(selectedFile, "project")
     }
     FileDialog {
         id: pngDialog
@@ -132,7 +181,7 @@ font.pixelSize: appearance.metrics.body
         nameFilters: ["MP4 视频 (*.mp4)"]
         onAccepted: movie.start(selectedFile, canvas, Number(movieBegin.text),
                                 movieEnd.text.trim() === "" ? replay.duration : Number(movieEnd.text),
-                                [1., .5, .25][movieSpeed.currentIndex], movieAudio.currentIndex - 1,
+                                replay.moviePreferences.speed, movieAudio.currentIndex - 1,
                                 [1280, 1920, 3840][movieSize.currentIndex], [720, 1080, 2160][movieSize.currentIndex],
                                 movieFps.value, movieQuality.value, movieSample.currentIndex + 1, movieEncoder.currentIndex === 1)
     }
@@ -154,17 +203,238 @@ font.pixelSize: appearance.metrics.body
     FolderDialog {
         id: packageDialog
         title: "选择打包项目的上级文件夹"
-        onAccepted: replay.exportProjectFolder(selectedFolder)
+        onAccepted: window.saveProject(selectedFolder, "package")
     }
     Shortcut { sequence: StandardKey.Open; enabled: !window.exportBusy && !replay.loading; onActivated: projectDialog.open() }
     Shortcut { sequence: StandardKey.SaveAs; enabled: !window.exportBusy && !replay.loading; onActivated: saveDialog.open() }
-    Shortcut { sequences: [StandardKey.Undo]; enabled: workspace.currentIndex < 3 && !window.exportBusy && !replay.loading && replay.canUndo; onActivated: replay.undo() }
-    Shortcut { sequences: [StandardKey.Redo]; enabled: workspace.currentIndex < 3 && !window.exportBusy && !replay.loading && replay.canRedo; onActivated: replay.redo() }
-    Shortcut { sequence: "Space"; enabled: !window.exportBusy && workspace.currentIndex < 3; onActivated: replay.togglePlayback() }
-    Shortcut { sequence: "Left"; enabled: !window.exportBusy && workspace.currentIndex < 3; onActivated: { replay.pause(); replay.seek(replay.position - 1 / 60) } }
-    Shortcut { sequence: "Right"; enabled: !window.exportBusy && workspace.currentIndex < 3; onActivated: { replay.pause(); replay.seek(replay.position + 1 / 60) } }
+    Shortcut { sequence: StandardKey.Save; enabled: !window.exportBusy && !replay.loading; onActivated: {
+        if (replay.projectPath.length) window.saveProject(Qt.resolvedUrl("file:///" + replay.projectPath.replace(/\\/g, "/")), "project")
+        else saveDialog.open()
+    } }
+    Shortcut { sequences: [StandardKey.Copy]; enabled: !window.textInputFocused && window.activeCanvasModel.selection.length > 0; onActivated: window.copiedCanvasElements = window.activeCanvasModel.copySelected() }
+    Shortcut { sequences: [StandardKey.Paste]; enabled: !window.textInputFocused && window.copiedCanvasElements.length > 0 && !window.exportBusy; onActivated: {
+        const ids = window.activeCanvasModel.pasteElements(window.copiedCanvasElements)
+        if (workspace.currentIndex < 3 && ids.length) window.selectCanvasLayer(ids[ids.length-1])
+    } }
+    CanvasDeleteShortcut {
+        active: workspace.currentIndex >= 2 && !window.exportBusy &&
+            (workspace.currentIndex === 3 ? !trajectory.working : !replay.loading)
+        focusItem: window.activeFocusItem
+        timelineItem: workspace.currentIndex === 2 && videoTimeline.visible ? videoTimeline : null
+        selectionCount: window.activeCanvasModel.selection.length
+        onDeleteCanvasSelection: window.activeCanvasModel.removeSelected()
+        onDeleteTimelineSelection: videoTimeline.removeSelectedClip()
+    }
+    Shortcut { sequence: "Ctrl+Shift+I"; enabled: !window.exportBusy && !replay.loading; onActivated: rvizDialog.open() }
+    Shortcut { sequences: [StandardKey.Undo]; enabled: !window.textInputFocused && workspace.currentIndex < 3 && !window.exportBusy && !replay.loading && replay.canUndo; onActivated: replay.undo() }
+    Shortcut { sequences: [StandardKey.Redo]; enabled: !window.textInputFocused && workspace.currentIndex < 3 && !window.exportBusy && !replay.loading && replay.canRedo; onActivated: replay.redo() }
+    Shortcut { sequence: "Space"; enabled: !window.textInputFocused && !window.exportBusy && workspace.currentIndex < 3; onActivated: replay.togglePlayback() }
+    Shortcut { sequence: "Left"; enabled: !window.textInputFocused && !window.exportBusy && workspace.currentIndex < 3; onActivated: { if (replay.canvas.selection.length && replay.canvas.layoutMode) canvas.nudge(-1, 0); else { replay.pause(); replay.seek(replay.position - 1 / 60) } } }
+    Shortcut { sequence: "Right"; enabled: !window.textInputFocused && !window.exportBusy && workspace.currentIndex < 3; onActivated: { if (replay.canvas.selection.length && replay.canvas.layoutMode) canvas.nudge(1, 0); else { replay.pause(); replay.seek(replay.position + 1 / 60) } } }
     Shortcut { sequence: "Ctrl+Shift+E"; enabled: workspace.currentIndex < 3 && !window.exportBusy && !replay.loading; onActivated: { replay.pause(); window.frameOptions = framePanel.options(); window.frameTime = replay.position; pngDialog.open() } }
 
+    function selectCanvasLayer(id, content = false) {
+        const row = replay.canvas.layers.find(r => r.id === id)
+        if (!row) return
+        if (replay.canvas.selection.indexOf(id) < 0) replay.canvas.select(id)
+        if (row.kind === "video") { window.selectedVideo = replay.videoLayers.findIndex(v => v.id === id); sceneLayerEditor.selectedId = "" }
+        if (row.kind === "view" || row.kind === "main") insetEditor.selectedId = id === "main" ? "" : id
+        if (!row.scientific && (row.kind === "image" || row.kind === "text")) sceneLayerEditor.selectedId = id
+        if (row.kind === "speed") window.selectedMeterId = id
+        settingsSection.currentIndex = !content || row.scientific ? 8 : (row.kind === "main" || row.kind === "view") ? 2 : row.kind === "speed" ? 6 : 1
+        sidebarIndex = 2
+        settingsScroll.contentItem.contentY = 0
+    }
+    function projectSignature() { return replay.projectPath + "|" + (replay.nativeReplaySource.revision || "") }
+    function saveProject(destination, kind) {
+        nativeSaveError = ""
+        if (!window.nativeBackendActive) {
+            nativeSaveWaiting = false
+            if (kind === "package") replay.exportProjectFolder(destination)
+            else replay.saveProjectAs(destination)
+            return
+        }
+        nativeSaveDestination = destination
+        nativeSaveKind = kind
+        nativeSaveSignature = projectSignature()
+        nativeSaveWaiting = true
+        continueNativeSave()
+    }
+    function continueNativeSave() {
+        if (!nativeSaveWaiting) return
+        if (nativeSaveSignature !== projectSignature() || !nativeBackendActive) {
+            nativeSaveWaiting = false
+            nativeSaveError = "Project or native connection changed before saving. Please save the current project again.\n保存前项目或原生连接已改变，请重新保存当前项目。"
+            return
+        }
+        const coordinator = canvas.nativeViewCoordinator
+        if (replay.loading || movie.exporting || frameBatch.active || pendingNativeYaml.length
+                || nativeRviz.busy || coordinator.configurationPending || coordinator.syncPending || coordinator.framePending) return
+        if (coordinator.desiredSignature !== coordinator.actualSignature) {
+            if (coordinator.failedSignature === coordinator.desiredSignature) {
+                nativeSaveWaiting = false
+                nativeSaveError = coordinator.syncError || "Native cameras could not be synchronized; the project was not saved.\n原生机位同步失败，本次项目未保存。"
+            } else coordinator.tick()
+            return
+        }
+        // Keep the coordinator active while waiting. Only the ready snapshot
+        // locks editing and holds preview requests until its async result.
+        nativeSaveViewSignature = coordinator.desiredSignature
+        nativeSaveWaiting = false
+        nativeSaveJob = nativeRviz.snapshotConfig()
+    }
+    Timer {
+        interval: 50; repeat: true
+        running: window.nativeSaveWaiting
+        onTriggered: window.continueNativeSave()
+    }
+    Connections {
+        target: replay
+        function onRenderBackendChanged() {
+            if (replay.renderBackend === "native-rviz" && automaticNativeBackend)
+                nativeRviz.ensureStarted()
+        }
+        function onNativeConfigLoaded(config) {
+            window.nativeStartupConfig = ""
+            window.pendingNativeYaml = config.yaml || "Visualization Manager:\n  Displays: []\n  Global Options:\n    Fixed Frame: map\n"
+            if (!nativeRviz.connected) {
+                nativeRviz.loadConfigYaml(window.pendingNativeYaml)
+                window.pendingNativeYaml = ""
+            }
+        }
+        function onSourceRemoved(kind, file) { if (kind === "bag" && nativeRviz.connected) nativeRviz.closeBag() }
+    }
+    Timer {
+        interval: 100; repeat: true
+        running: window.pendingNativeYaml.length > 0 && nativeRviz.connected
+        onTriggered: {
+            if (nativeRviz.busy) return
+            const yaml = window.pendingNativeYaml
+            nativeRviz.loadConfigYaml(yaml)
+            window.pendingNativeYaml = ""
+        }
+    }
+    Shortcut { sequence: "V"; enabled: !window.textInputFocused && !window.exportBusy && workspace.currentIndex < 3; onActivated: replay.canvas.layoutMode = true }
+    Shortcut { sequence: "C"; enabled: !window.textInputFocused && !window.exportBusy && workspace.currentIndex < 3; onActivated: replay.canvas.layoutMode = false }
+    Shortcut { sequence: "Escape"; enabled: !window.textInputFocused && replay.canvas.selection.length > 0; onActivated: replay.canvas.clearSelection() }
+    function importRviz(file) {
+        // The controller retains the offline tree and publishes one YAML
+        // restore request; the optional backend queues it before connecting.
+        replay.openRviz(file)
+        settingsSection.currentIndex = 5
+        sidebarIndex = 0
+    }
+    Connections {
+        target: nativeRviz
+        property string lastSelected: ""
+        function onModelChanged() {
+            const id = nativeRviz.selectedId
+            if (!id.length) { lastSelected = ""; return }
+            if (lastSelected === id) return
+            const selected = nativeRviz.selected || ({})
+            let scope = selected.view_id ? "views" : ""
+            if (!scope.length) {
+                const root = nativeRviz.properties.find(row => row.depth === 0 && nativeInspector.containsNativeId(row, id))
+                if (root) scope = nativeInspector.nativeRootScope(root)
+            }
+            if (!scope.length) return
+            lastSelected = id
+            if (scope === "views") {
+                if (selected.view_id && selected.view_id !== "main") insetEditor.selectedId = selected.view_id
+            } else nativeInspector.treeScope = scope
+            const section = scope === "views" ? 2 : 5
+            // Keep the camera editor and its scroll position when another
+            // property of the same real controller is selected.
+            if (settingsSection.currentIndex !== section) {
+                settingsSection.currentIndex = section
+                settingsScroll.contentItem.contentY = 0
+            }
+        }
+        function onConfigSnapshotReady(jobId, success, yaml, metadata, error) {
+            if (jobId !== window.nativeSaveJob) return
+            window.nativeSaveJob = ""
+            if (!success || window.nativeSaveSignature !== window.projectSignature()
+                    || window.pendingNativeYaml.length > 0
+                    || window.nativeSaveViewSignature !== canvas.nativeViewCoordinator.desiredSignature
+                    || window.nativeSaveViewSignature !== canvas.nativeViewCoordinator.actualSignature) {
+                window.nativeSaveError = success ? "Project or cameras changed while saving. Please save the current project again.\n保存期间项目或机位已改变，本次未写入文件。" : error
+                return
+            }
+            replay.setNativeRvizConfig(yaml, metadata)
+            if (window.nativeSaveKind === "package") replay.exportProjectFolder(window.nativeSaveDestination)
+            else replay.saveProjectAs(window.nativeSaveDestination)
+        }
+        function onChanged() {
+            if (!nativeRviz.connected && (window.nativeSaveWaiting || window.nativeSaveJob.length)) {
+                window.nativeSaveWaiting = false
+                window.nativeSaveJob = ""
+                window.nativeSaveError = "Native RViz disconnected before the project snapshot was saved.\n原生连接中断，尚未保存本次项目。"
+            }
+        }
+    }
+
+    function droppedFileKind(urls) {
+        if (!urls || urls.length === 0)
+            return ""
+        const videoPattern = /\.(mp4|mov|mkv|avi|webm)$/i
+        let videos = true
+        for (let i = 0; i < urls.length; ++i) {
+            const path = urls[i].toString()
+            if (!path.toLowerCase().startsWith("file:"))
+                return ""
+            videos = videos && videoPattern.test(path)
+        }
+        if (videos)
+            return "video"
+        if (urls.length !== 1)
+            return ""
+        const path = urls[0].toString().toLowerCase()
+        if (/\.(rviz|yaml|yml)$/.test(path)) return "rviz"
+        if (/\.bag$/.test(path)) return "bag"
+        if (/\.(uavstudio|slamfpv)$/.test(path)) return "project"
+        return ""
+    }
+    DropArea {
+        id: fileDrop
+        anchors.fill: parent
+        enabled: !window.exportBusy && !replay.loading && workspace.currentIndex < 3
+        z: 100
+        onEntered: drag => drag.accepted = window.droppedFileKind(drag.urls).length > 0
+        onDropped: drop => {
+            const kind = window.droppedFileKind(drop.urls)
+            if (kind === "rviz") {
+                window.importRviz(drop.urls[0])
+                settingsSection.currentIndex = 0
+            } else if (kind === "bag") {
+                window.topicInspector.openBag(drop.urls[0])
+                settingsSection.currentIndex = 0
+            } else if (kind === "project") {
+                replay.openProject(drop.urls[0])
+            } else if (kind === "video") {
+                for (let i = 0; i < drop.urls.length; ++i) replay.addVideo(drop.urls[i])
+                settingsSection.currentIndex = 1
+            } else {
+                drop.accepted = false
+                return
+            }
+            drop.acceptProposedAction()
+        }
+        Rectangle {
+            anchors.fill: parent
+            anchors.margins: 8
+            radius: appearance.metrics.panelRadius
+            visible: fileDrop.containsDrag
+            color: appearance.colors.selection
+            border.color: appearance.colors.accent
+            border.width: 2
+            StudioLabel {
+                anchors.centerIn: parent
+                text: "Drop to import · 松开以导入\nRViz · ROS Bag · Project · Video"
+                font.pixelSize: appearance.metrics.title
+                horizontalAlignment: Text.AlignHCenter
+            }
+        }
+    }
 
     TrajectoryPane { anchors.fill: parent; anchors.margins: 16; visible: workspace.currentIndex === 3; editor: trajectory }
     ColumnLayout {
@@ -174,36 +444,106 @@ font.pixelSize: appearance.metrics.body
         RowLayout {
             Layout.fillWidth: true; Layout.fillHeight: true; spacing: 12
             Rectangle {
-                Layout.preferredWidth: Math.max(180, Math.min(250, window.width * .18)); Layout.fillHeight: true
-                color: appearance.colors.panel; radius: appearance.metrics.panelRadius; border.color: appearance.colors.border
-                ScrollView {
-        ScrollBar.vertical: StudioScrollBar {}
-        ScrollBar.horizontal: StudioScrollBar {}
-                    id: layerScroll; anchors.fill: parent; anchors.margins: 12; contentWidth: availableWidth; clip: true
+                Layout.preferredWidth: Math.max(210, Math.min(270, window.width * .19)); Layout.fillHeight: true
+                color: appearance.colors.panel; radius: appearance.metrics.panelRadius; border.color: appearance.colors.separator
+                ColumnLayout {
+                    anchors.fill: parent; anchors.margins: 10; spacing: 8
+                    RowLayout {
+                        Layout.fillWidth: true
+                        PanelTitle { text: "Scene · 场景"; Layout.fillWidth: true }
+                        StudioButton { text: "Data · 数据"; onClicked: settingsSection.currentIndex = 0 }
+                    }
+                    TabBar {
+                        id: sidebarTabs; Layout.fillWidth: true
+                        currentIndex: window.sidebarIndex
+                        onCurrentIndexChanged: window.sidebarIndex = currentIndex
+                        background: Rectangle { color: appearance.colors.transparent }
+                        WorkspaceTab { text: "Displays\n显示" }
+                        WorkspaceTab { text: "Topics\n话题" }
+                        WorkspaceTab { text: "Layers\n图层" }
+                        WorkspaceTab { text: "Sources\n素材" }
+                    }
                     ColumnLayout {
-                        width: layerScroll.availableWidth; spacing: 10
-                        PanelTitle { text: "Layers · 图层" }
-                        StudioButton { text: "+ ROS Bag"; Layout.fillWidth: true; enabled: !replay.loading; onClicked: bagDialog.open() }
-                        StudioButton { text: "+ Video · 视频"; Layout.fillWidth: true; enabled: !replay.loading; onClicked: videoDialog.open() }
-                        Caption { text: replay.name; Layout.fillWidth: true; elide: Text.ElideMiddle }
-                        Caption { text: workspace.currentIndex === 1 ? "实验时间 → 视频时间\n使用 Inspector 编辑同步锚点" : workspace.currentIndex === 2 ? "选择图层以编辑；拖动时间轴边缘裁剪" : "共享三维场景与独立机位"; Layout.fillWidth: true; wrapMode: Text.Wrap }
-                        StudioButton { text: "3D Scene · 三维场景"; Layout.fillWidth: true; onClicked: settingsSection.currentIndex = 2 }
-                        Repeater {
-                            model: replay.cloudViews
-                            delegate: StudioButton { required property var modelData; text: "↳ " + modelData.label; Layout.fillWidth: true; onClicked: { insetEditor.selectedId = modelData.id; settingsSection.currentIndex = 2 } }
+                        visible: window.sidebarIndex === 0
+                        Layout.fillWidth: true; Layout.fillHeight: true
+                        StudioComboBox {
+                            objectName: "displayBackendPicker"
+                            Layout.fillWidth: true
+                            model: ["Independent · 独立后端", "Native RViz · 原生增强"]
+                            currentIndex: window.nativeBackendSelected ? 1 : 0
+                            onActivated: { replay.renderBackend = currentIndex === 1 ? "native-rviz" : "independent"; if (currentIndex === 1) nativeRviz.ensureStarted() }
                         }
-                        Repeater {
-                            model: replay.videoLayers
-                            delegate: StudioButton { required property int index; required property var modelData; text: "▸ " + modelData.label; Layout.fillWidth: true; highlighted: index === window.selectedVideo; onClicked: { window.selectedVideo = index; settingsSection.currentIndex = 1 } }
+                        StudioLabel {
+                            Layout.fillWidth: true; wrapMode: Text.Wrap
+                            visible: window.nativeBackendSelected && !nativeRviz.connected
+                            text: nativeRviz.detecting ? "Detecting optional RViz runtime…\n正在检测可选环境，独立后端仍可使用。" : "Native enhancement unavailable. Editing with the independent backend.\n原生增强暂不可用，可继续编辑独立场景。"
+                            color: appearance.colors.secondaryText; font.pixelSize: appearance.metrics.caption
                         }
-                        Repeater {
-                            model: replay.sceneLayers
-                            delegate: StudioButton { required property var modelData; text: modelData.label; Layout.fillWidth: true; onClicked: { sceneLayerEditor.selectedId = modelData.id; settingsSection.currentIndex = 1 } }
+                        IndependentDisplays {
+                            id: independentTree
+                            visible: !window.nativeBackendActive
+                            Layout.fillWidth: true; Layout.fillHeight: true
+                            controller: replay
+                            showInspector: false
+                            onBrowseTopicsRequested: window.sidebarIndex = 1
+                            onRenameRequested: id => { settingsSection.currentIndex = 5; independentInspector.beginRename() }
+                            onPropertySelected: id => { nativeInspector.treeScope = "displays"; settingsSection.currentIndex = 5 }
                         }
-                        StudioCheckBox { text: "Speed Meter · 速度表"; checked: replay.speedGauge.visible; onClicked: replay.setSpeedGauge({visible: checked}) }
-                        StudioButton { text: "Topic Inspector · 话题"; Layout.fillWidth: true; onClicked: settingsSection.currentIndex = 4 }
-                        StudioButton { text: "Open Project · 打开项目"; Layout.fillWidth: true; onClicked: projectDialog.open() }
-                        StudioButton { text: "Save As · 另存为"; Layout.fillWidth: true; onClicked: saveDialog.open() }
+                        NativeRvizPanel {
+                            id: displayTree
+                            objectName: "nativeDisplaysTree"
+                            visible: window.nativeBackendActive
+                            Layout.fillWidth: true; Layout.fillHeight: true
+                            client: nativeRviz
+                            treeScope: "displays"
+                            showConnection: false; showInspector: false; showPreview: false
+                            onImportRequested: file => window.importRviz(file)
+                            onExportRequested: file => window.nativeBackendActive ? nativeRviz.saveConfig(file) : replay.exportRviz(file)
+                            onPropertySelected: id => { nativeInspector.treeScope = "displays"; settingsSection.currentIndex = 5 }
+                        }
+                    }
+                    TopicBrowser {
+                        objectName: "allTopicBrowser"
+                        visible: window.sidebarIndex === 1
+                        Layout.fillWidth: true; Layout.fillHeight: true
+                        inspector: window.topicInspector
+                        nativeClient: nativeRviz
+                        controller: replay
+                        useNativeBackend: window.nativeBackendActive
+                        onTopicSelected: topic => { window.topicInspector.inspect(topic.name, topic.type); settingsSection.currentIndex = 4 }
+                        onAddDisplayRequested: topic => { if (window.nativeBackendActive) displayTree.addByTopic(topic); else independentTree.addByTopic(topic); window.sidebarIndex = 0 }
+                    }
+                    StudioScrollView {
+                        objectName: "mediaSourceScroll"
+                        visible: window.sidebarIndex === 2
+                        Layout.fillWidth: true; Layout.fillHeight: true
+                        contentWidth: availableWidth; clip: true
+                        ColumnLayout {
+                            width: parent.width; spacing: 8
+                            StudioButton { text: "+ ROS Bag"; Layout.fillWidth: true; enabled: !replay.loading; onClicked: bagDialog.open() }
+                            StudioButton { text: "+ Video · 视频"; Layout.fillWidth: true; enabled: !replay.loading; onClicked: videoDialog.open() }
+                            StudioButton { text: "+ RViz Config · 配置"; Layout.fillWidth: true; enabled: !replay.loading; onClicked: rvizDialog.open() }
+                            Caption { text: replay.name; Layout.fillWidth: true; elide: Text.ElideMiddle }
+                            CanvasLayers {
+                                Layout.fillWidth: true
+                                controller: replay
+                                onLayerSelected: id => window.selectCanvasLayer(id)
+                            }
+                            StudioButton { text: "Clear Canvas · 清空画布"; Layout.fillWidth: true; onClicked: replay.clearCanvas() }
+                            StudioButton { text: "+ Main View · 主视角"; Layout.fillWidth: true; onClicked: replay.restoreMainView() }
+                            StudioButton { text: "Camera · 相机"; Layout.fillWidth: true; onClicked: { insetEditor.selectedId = ""; settingsSection.currentIndex = 2 } }
+                            StudioButton { text: "Telemetry · 科研数据"; Layout.fillWidth: true; onClicked: settingsSection.currentIndex = 6 }
+                            StudioButton { text: "Open Project · 打开项目"; Layout.fillWidth: true; onClicked: projectDialog.open() }
+                            StudioButton { text: "Save As · 另存为"; Layout.fillWidth: true; onClicked: saveDialog.open() }
+                        }
+                    }
+                    SourceBrowser {
+                        id: sourcesPanel
+                        visible: window.sidebarIndex === 3
+                        Layout.fillWidth: true; Layout.fillHeight: true
+                        controller: replay
+                        onOpenBagRequested: bagDialog.open()
+                        onAddVideoRequested: videoDialog.open()
                     }
                 }
             }
@@ -213,8 +553,47 @@ font.pixelSize: appearance.metrics.body
                     Layout.fillWidth: true
                     PanelTitle { text: ["Viewport · 三维画布", "Synchronization · 同步预览", "Canvas · 视频画布"][workspace.currentIndex] ?? "" }
                     Item { Layout.fillWidth: true }
+                    StudioButton { objectName: "layoutModeButton"; text: replay.canvas.layoutMode ? "Layout · 布局" : "Camera · 相机"; selected: replay.canvas.layoutMode; onClicked: replay.canvas.layoutMode = !replay.canvas.layoutMode; StudioToolTip { visible: parent.hovered; text: "V: Layout · 布局编辑 / C: Camera · 相机操作" } }
+                    StudioCheckBox { text: "Snap"; checked: replay.canvas.snapping; onClicked: replay.canvas.snapping = checked }
                     StudioButton { text: "重置视角"; onClicked: canvas.resetCamera() }
                     StudioButton { text: "📷"; Accessible.name: "Export Frame · 导出当前画面"; onClicked: { window.frameSettingsVisible = true; settingsSection.currentIndex = 3 } StudioToolTip { visible: parent.hovered; text: "Export Frame · 导出当前画面 · Ctrl+Shift+E" } }
+                }
+                Flow {
+                    visible: workspace.currentIndex === 0
+                    Layout.fillWidth: true; spacing: 6
+                    Repeater {
+                        model: window.nativeBackendActive ? nativeRviz.tools.filter(tool => ["MoveCamera", "Select", "FocusCamera", "Measure"].indexOf(tool.class.split("/").pop()) >= 0) : []
+                        delegate: StudioButton {
+                            required property var modelData
+                            text: modelData.name
+                            selected: nativeRviz.activeToolClass === modelData.class
+                            onClicked: { replay.canvas.layoutMode = false; nativeRviz.activateTool(modelData.class) }
+                            StudioToolTip { visible: parent.hovered; text: parent.modelData.description }
+                        }
+                    }
+                    StudioButton {
+                        visible: !window.nativeBackendActive
+                        text: "Move Camera · 操作相机"
+                        selected: !replay.canvas.layoutMode
+                        onClicked: replay.canvas.layoutMode = false
+                        StudioToolTip { visible: parent.hovered; text: "Left: orbit · 左键旋转；Middle / Shift: pan · 中键平移；Right / Wheel: zoom · 右键/滚轮缩放" }
+                    }
+                    StudioButton { visible: !window.nativeBackendActive; text: "Focus · 重置观察"; onClicked: canvas.resetCamera() }
+                    StudioComboBox {
+                        visible: !window.nativeBackendActive
+                        width: 190
+                        model: replay.cameraLabels
+                        currentIndex: replay.cameraIndex
+                        onActivated: replay.setCamera(currentIndex)
+                    }
+                    StudioSearchComboBox {
+                        visible: window.nativeBackendActive
+                        width: 190
+                        sourceModel: nativeRviz.viewControllers.map(view => view.class)
+                        onChosen: value => { selectedText = value; nativeRviz.setViewController(value) }
+                    }
+                    StudioButton { visible: window.nativeBackendActive; text: "Tools · 全部工具"; onClicked: { settingsSection.currentIndex = 5; nativeInspector.treeScope = "tools" } }
+                    StudioButton { visible: window.nativeBackendActive && nativeInspector.treeScope !== "displays"; text: "Displays · 显示属性"; onClicked: { settingsSection.currentIndex = 5; nativeInspector.treeScope = "displays" } }
                 }
             Rectangle {
                 Layout.fillWidth: true
@@ -228,17 +607,22 @@ font.pixelSize: appearance.metrics.body
                     id: canvas
                     objectName: "previewCanvas"
                     anchors.centerIn: parent
-                    width: Math.max(0, Math.min(parent.width - 2, (parent.height - 2) * 16 / 9))
-                    height: width * 9 / 16
+                    width: Math.max(0, Math.min(parent.width - 2, (parent.height - 2) * replay.canvas.outputWidth / replay.canvas.outputHeight))
+                    height: width * replay.canvas.outputHeight / replay.canvas.outputWidth
                     controller: replay
                     exporter: movie
+                    nativeClient: nativeRviz
+                    nativeEnabled: window.nativeBackendActive
+                    nativeConfigurationPending: window.pendingNativeYaml.length > 0 || window.nativeSaveJob.length > 0
+                    nativeFrameReady: !replay.nativeReplaySource.bag || nativeInspector.matchesPlayhead
                     interactive: !window.exportBusy
-                    onInsetSelected: id => insetEditor.selectedId = id
-                    onSceneSelected: id => sceneLayerEditor.selectedId = id
+                    onLayerSelected: id => window.selectCanvasLayer(id)
+                    onInsetSelected: id => { insetEditor.selectedId = id; settingsSection.currentIndex = 2 }
+                    onSceneSelected: id => { sceneLayerEditor.selectedId = id; settingsSection.currentIndex = 1 }
                 }
 
             }
-                Caption { text: replay.worldFrame + " · " + Number(replay.pointCount).toLocaleString(Qt.locale(), "f", 0) + " points · " + (replay.demo ? "Demo · 模拟数据" : "ROS Recording · 实验记录"); Layout.fillWidth: true; elide: Text.ElideRight }
+                Caption { text: replay.worldFrame + " · " + Number(replay.pointCount).toLocaleString(Qt.locale(), "f", 0) + " points · " + (replay.demo ? "Demo · 主动演示模式" : replay.nativeReplaySource.bag ? "ROS Recording · 实验记录" : "No Data · 空场景，可预先配置"); Layout.fillWidth: true; elide: Text.ElideRight }
             }
         Rectangle {
             Layout.preferredWidth: Math.min(280, window.width * .22)
@@ -249,19 +633,27 @@ font.pixelSize: appearance.metrics.body
             border.color: window.thin
             radius: 10
 
+            PanelTitle {
+                id: inspectorHeading
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: 12
+                text: "Inspector · 属性"
+                font.pixelSize: appearance.metrics.title
+            }
             StudioComboBox {
                 id: settingsSection
                 objectName: "settingsSection"
                 anchors.left: parent.left
                 anchors.right: parent.right
-                anchors.top: parent.top
+                anchors.top: inspectorHeading.bottom
                 anchors.margins: 12
-                model: ["Data · 数据与项目", "Media · 视频与图层", "View · 视角与机位", "Export · 导出", "Topic Inspector · 消息检查"]
+                model: ["Data · 数据与项目", "Media · 视频与图层", "Camera · 相机", "Export · 导出", "Topic · 原始消息", "Displays · 显示属性", "Telemetry · 科研数据", "Quick Presets · 快捷预设", "Layer · 画布元素"]
                 onActivated: settingsScroll.contentItem.contentY = 0
             }
-            ScrollView {
-        ScrollBar.vertical: StudioScrollBar {}
-        ScrollBar.horizontal: StudioScrollBar {}
+            StudioScrollView {
+                objectName: "workspaceSettingsScroll"
                 id: settingsScroll
                 anchors.left: parent.left
                 anchors.right: parent.right
@@ -275,12 +667,58 @@ font.pixelSize: appearance.metrics.body
                     width: settingsScroll.availableWidth
                     spacing: 9
 
+                    StudioLabel { Layout.fillWidth: true; visible: window.nativeSaveWaiting || window.nativeSaveJob.length > 0; text: window.nativeSaveWaiting ? "Waiting for native cameras · 正在等待原生机位同步后保存…" : "Saving native configuration · 正在保存原生配置…"; wrapMode: Text.Wrap; color: appearance.colors.secondaryText }
+                    StudioLabel { Layout.fillWidth: true; visible: window.nativeSaveError.length > 0; text: window.nativeSaveError; wrapMode: Text.Wrap; color: appearance.colors.text }
+
+                    ColumnLayout {
+                        visible: settingsSection.currentIndex === 8
+                        Layout.fillWidth: true
+                        CanvasTransformEditor { Layout.fillWidth: true; controller: replay; canvas: canvas }
+                        ScientificElementInspector { Layout.fillWidth:true;controller:replay }
+                        StudioButton { Layout.fillWidth: true; text: "Content / Timing · 内容与时间"; enabled: replay.canvas.selectedId.length > 0; onClicked: window.selectCanvasLayer(replay.canvas.selectedId, true) }
+                    }
                     TopicInspector {
                         visible: settingsSection.currentIndex === 4
                         Layout.fillWidth: true
                         Layout.preferredHeight: Math.max(580, settingsScroll.height - 24)
                         inspector: window.topicInspector
                         controller: replay
+                    }
+
+                    NativeRvizPanel {
+                        id: nativeInspector
+                        visible: settingsSection.currentIndex === 5 && window.nativeBackendActive
+                        objectName: "nativeRvizInspector"
+                        Layout.fillWidth: true
+                        embedded: true
+                        client: nativeRviz
+                        treeScope: "displays"
+                        previewExternallyManaged: window.nativeBackendActive
+                        showTree: false
+                        showConnection: false
+                        onImportRequested: file => window.importRviz(file)
+                        onExportRequested: file => window.nativeBackendActive ? nativeRviz.saveConfig(file) : replay.exportRviz(file)
+                        showInspector: settingsSection.currentIndex === 5
+                        showPreviewImage: false
+                        showPreview: settingsSection.currentIndex === 5
+                        autoAttachSource: window.nativeBackendSelected
+                        startupConfig: window.nativeStartupConfig
+                        experimentBag: replay.nativeReplaySource.bag || ""
+                        experimentTopics: (replay.nativeReplaySource.topics || []).filter(t => t === "/tf" || t === "/tf_static")
+                        experimentTimeBasis: replay.nativeReplaySource.timeBasis === "bag-storage" ? "record" : replay.nativeReplaySource.timeBasis === "header-with-storage-fallback" ? "mixed" : "header"
+                        linkPausedFrame: window.nativeBackendSelected
+                        experimentRevision: replay.nativeReplaySource.revision || ""
+                        experimentTargetNs: replay.experimentStampNs
+                        experimentPaused: !replay.playing && !replay.loading && !replay.capturing && !movie.exporting
+                    }
+
+                    IndependentDisplays {
+                        id: independentInspector
+                        visible: settingsSection.currentIndex === 5 && !window.nativeBackendActive
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 640
+                        controller: replay
+                        showTree: false
                     }
 
                     FrameExportPanel {
@@ -295,41 +733,41 @@ font.pixelSize: appearance.metrics.body
                     ColumnLayout {
                         Layout.fillWidth: true
                         visible: settingsSection.currentIndex === 0
-                        StudioButton {
-                            text: "打开 ROS1 bag"
+                        PanelTitle { text: "Data Sources · 数据源" }
+                        StudioButton { Layout.fillWidth: true; text: "Manage Sources · 素材及引用管理"; onClicked: window.sidebarIndex = 3 }
+                        StudioButton { Layout.fillWidth: true; text: "Open ROS Bag · 打开录包"; enabled: !replay.loading; highlighted: true; onClicked: bagDialog.open() }
+                        Caption { Layout.fillWidth: true; text: window.topicInspector.catalogStatus || replay.name; wrapMode: Text.WrapAnywhere }
+                        StudioButton { Layout.fillWidth: true; text: "Browse All Topics · 全部话题"; onClicked: window.sidebarIndex = 1 }
+                        StudioButton { Layout.fillWidth: true; text: "Import .rviz · 导入原生配置"; enabled: !replay.loading && !nativeRviz.busy; onClicked: rvizDialog.open() }
+                        StudioButton { Layout.fillWidth: true; text: "Export .rviz · 导出配置"; enabled: !replay.loading && !nativeRviz.busy; onClicked: rvizExportDialog.open() }
+                        PanelTitle { text: "Project · 项目" }
+                        StudioButton { Layout.fillWidth: true; text: "Open Project · 打开项目"; enabled: !window.exportBusy && !replay.loading; onClicked: projectDialog.open() }
+                        StudioButton { Layout.fillWidth: true; text: "Save Project As · 另存为"; enabled: !window.exportBusy && !replay.loading; onClicked: saveDialog.open() }
+                        StudioButton { Layout.fillWidth: true; text: "Save Project · 保存"; enabled: !window.exportBusy && !replay.loading; onClicked: {
+                            if (replay.projectPath.length) window.saveProject(Qt.resolvedUrl("file:///" + replay.projectPath.replace(/\\/g, "/")), "project")
+                            else saveDialog.open()
+                        } }
+                        StudioButton { Layout.fillWidth: true; text: "Package Project · 打包项目"; enabled: !window.exportBusy && !replay.loading; onClicked: packageDialog.open() }
+                        Caption { Layout.fillWidth: true; text: replay.projectPath; visible: text.length > 0; wrapMode: Text.WrapAnywhere }
+                        StudioButton { Layout.fillWidth: true; text: "Legacy Quick Presets · 旧项目预设"; onClicked: settingsSection.currentIndex = 7 }
+                        Caption { Layout.fillWidth: true; text: "Displays own their Topics and properties. Speed and numeric fields are configured in Telemetry.\n每个显示对象独立选择话题及原生属性；速度与科研字段请在 Telemetry 配置。"; wrapMode: Text.Wrap }
+                        StudioButton { Layout.fillWidth: true; text: "Demo · 加载模拟演示"; onClicked: replay.openDemo() }
+                        StudioButton { Layout.fillWidth: true; text: (window.backendSettingsVisible ? "⌄ " : "› ") + "RViz Environment · 可选增强环境"; onClicked: window.backendSettingsVisible = !window.backendSettingsVisible }
+                        NativeRvizPanel {
+                            visible: window.backendSettingsVisible
                             Layout.fillWidth: true
-                            enabled: !replay.loading
-                            highlighted: true
-                            onClicked: bagDialog.open()
+                            embedded: true
+                            client: nativeRviz
+                            showTree: false; showInspector: false; showPreview: false
+                            onImportRequested: file => window.importRviz(file)
+                            onExportRequested: file => window.nativeBackendActive ? nativeRviz.saveConfig(file) : replay.exportRviz(file)
                         }
-                        StudioButton {
-                            text: "使用模拟数据"
-                            Layout.fillWidth: true
-                            enabled: !replay.loading
-                            onClicked: replay.openDemo()
-                        }
-                        Caption {
-                            Layout.fillWidth: true
-                            text: replay.name
-                            elide: Text.ElideMiddle
-                            Layout.bottomMargin: 8
-                        }
-
-                        PanelTitle { text: "项目" }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            StudioButton { text: "打开项目"; enabled: !window.exportBusy && !replay.loading; onClicked: projectDialog.open() }
-                            StudioButton { text: "另存为"; enabled: !window.exportBusy && !replay.loading; onClicked: saveDialog.open() }
-                            StudioButton { text: "打包"; enabled: !window.exportBusy && !replay.loading; onClicked: packageDialog.open() }
-                        }
-                        Caption {
-                            Layout.fillWidth: true
-                            visible: replay.projectPath.length > 0
-                            text: replay.projectPath
-                            elide: Text.ElideMiddle
-                        }
-
-                        PanelTitle { text: "数据来源" }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        visible: settingsSection.currentIndex === 7
+                        Caption { Layout.fillWidth: true; wrapMode: Text.Wrap; text: "Legacy research presets · 兼容科研快捷预设。仅供旧画布/轨迹及速度计算使用；不限制原生 Display 实例与话题。" }
+                        PanelTitle { text: "Legacy Quick Presets · 旧项目快捷预设" }
                         Caption { text: "点云话题" }
                         StudioSearchComboBox {
                             Layout.fillWidth: true
@@ -599,10 +1037,30 @@ font.pixelSize: appearance.metrics.body
                         }
                     }
                     ColumnLayout {
+                        objectName: "cameraSettingsSection"
                         Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        Layout.maximumWidth: settingsScroll.availableWidth
                         visible: settingsSection.currentIndex === 2
-                        PanelTitle { text: "View · 视口"; Layout.topMargin: 8 }
-                        Caption { text: "Scene Background · 场景背景" }
+                        PanelTitle { Layout.fillWidth: true; Layout.minimumWidth: 0; wrapMode: Text.Wrap; text: "Native RViz Camera · 原生相机"; visible: nativeRviz.connected }
+                        NativeRvizPanel {
+                            objectName: "nativeCameraInspector"
+                            visible: nativeRviz.connected
+                            Layout.fillWidth: true
+                            embedded: true
+                            client: nativeRviz
+                            treeScope: "views"
+                            showConnection: false
+                            showPreview: false
+                            showPreviewImage: false
+                        }
+                        Caption {
+                            visible: nativeRviz.connected
+                            Layout.fillWidth: true; wrapMode: Text.Wrap
+                            text: "Native camera properties control the librviz scene. The settings below belong to the compatible point-cloud canvas.\n原生属性控制 librviz 场景；以下设置用于兼容点云画布。"
+                        }
+                        PanelTitle { Layout.fillWidth: true; Layout.minimumWidth: 0; wrapMode: Text.Wrap; text: "Point-cloud Canvas Camera · 点云画布相机"; Layout.topMargin: 8 }
+                        Caption { Layout.fillWidth: true; Layout.minimumWidth: 0; wrapMode: Text.Wrap; text: "Scene Background · 场景背景" }
                         StudioTextField {
                             Layout.fillWidth: true; text: replay.sceneBackground.toString()
                             placeholderText: "#RRGGBB · 独立场景颜色"
@@ -617,6 +1075,13 @@ font.pixelSize: appearance.metrics.body
                             enabled: !replay.loading
                             onActivated: replay.setCamera(currentIndex)
                         }
+                        MainCameraSettings {
+                            objectName: "mainCameraSettings"
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            Layout.maximumWidth: parent.width
+                            controller: replay
+                        }
                         StudioCheckBox {
                             text: "显示已飞轨迹"
                             checked: true
@@ -627,8 +1092,8 @@ font.pixelSize: appearance.metrics.body
                             Caption { text: "点大小" }
                             StudioSlider {
                                 Layout.fillWidth: true
-                                from: 1; to: 6; value: 1.5; stepSize: .25
-                                onValueChanged: canvas.pointSize = value
+                                from: .25; to: 20; value: replay.mainView.pointSize ?? 1.5; stepSize: .25
+                                onMoved: replay.setMainView({pointSize: value})
                             }
                             Caption { text: canvas.pointSize.toFixed(1) + " px" }
                         }
@@ -647,51 +1112,60 @@ font.pixelSize: appearance.metrics.body
                                 settingsSection.currentIndex = 3
                             }
                         }
-                        PanelTitle { text: "附加点云机位" }
+                        PanelTitle { Layout.fillWidth: true; Layout.minimumWidth: 0; wrapMode: Text.Wrap; text: window.nativeBackendActive ? "Native Views · 原生多视角" : "附加点云机位" }
                         CloudInsetEditor {
                             id: insetEditor
                             Layout.fillWidth: true
                             controller: replay
+                            pointSize: canvas.pointSize
+                            nativeClient: nativeRviz
+                            nativeEnabled: window.nativeBackendActive
+                            nativeCoordinator: canvas.nativeViewCoordinator
                         }
                         LayerMotionEditor {
                             Layout.fillWidth: true
                             controller: replay
                         }
-                        StudioCheckBox {
-                            text: "显示合成速度表"
-                            checked: replay.speedGauge.visible
-                            onClicked: replay.setSpeedGauge({visible: checked})
-                        }
-                        GridLayout {
-                            visible: replay.speedGauge.visible
-                            columns: 2
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        visible: settingsSection.currentIndex === 6
+                        PanelTitle { text: "Telemetry · 科研数据" }
+                        RowLayout {
                             Layout.fillWidth: true
-                            StudioLabel { text: "量程（m/s）" }
-                            StudioTextField { id: gaugeLimit; Layout.fillWidth: true; text: replay.speedGauge.limit }
-                            StudioLabel { text: "缩放" }
-                            StudioTextField { id: gaugeScale; Layout.fillWidth: true; text: replay.speedGauge.scale }
-                            StudioLabel { text: "开始（秒）" }
-                            StudioTextField { id: gaugeStart; Layout.fillWidth: true; text: replay.speedGauge.start }
-                            StudioLabel { text: "结束（秒）" }
-                            StudioTextField {
-                                id: gaugeEnd
+                            StudioComboBox {
                                 Layout.fillWidth: true
-                                text: replay.speedGauge.end < 0 ? "" : replay.speedGauge.end
+                                model: replay.speedMeters.map(row => row.label || row.id)
+                                currentIndex: replay.speedMeters.findIndex(row => row.id === window.selectedMeter.id)
+                                onActivated: { window.selectedMeterId = replay.speedMeters[currentIndex].id; replay.canvas.select(window.selectedMeterId) }
                             }
-                            StudioCheckBox {
-                                id: gaugeClear
-                                text: "透明"
-                                checked: replay.speedGauge.transparent
-                            }
-                            StudioLabel { text: "Output Style" }
-                            StudioComboBox { id: gaugeScheme; model: ["Dark · 深色", "Light · 亮色"]; currentIndex: replay.speedGauge.scheme === "light" ? 1 : 0 }
-                            StudioButton {
-                                text: "应用速度表"
-                                onClicked: replay.setSpeedGauge({limit: Number(gaugeLimit.text), scale: Number(gaugeScale.text),
-                                    start: Number(gaugeStart.text), end: gaugeEnd.text.trim() === "" ? -1 : Number(gaugeEnd.text),
-                                    transparent: gaugeClear.checked, scheme: gaugeScheme.currentIndex === 0 ? "dark" : "light"})
-                            }
+                            StudioButton { text: "+"; Accessible.name: "Add Speed Meter · 添加速度表"; onClicked: window.selectedMeterId = replay.addSpeedMeter() }
                         }
+                        StudioLabel { Layout.fillWidth: true; wrapMode: Text.Wrap; text: window.meterExportMessage; visible: text.length > 0 }
+                        SpeedMeterInspector {
+                            Layout.fillWidth: true
+                            visible: !!window.selectedMeter.id
+                            controller: replay
+                            model: speedMeterData
+                            meterId: window.selectedMeter.id || ""
+                            topicInspector: window.topicInspector
+                            sourceMap: window.selectedMeter.source || ({})
+                            settings: window.selectedMeter.settings || ({})
+                            styleMap: window.selectedMeter.style || ({})
+                            onSourceEdited: changes => replay.editSpeedMeter(meterId,"source",changes)
+                            onSettingsEdited: changes => replay.editSpeedMeter(meterId,"settings",changes)
+                            onStyleEdited: changes => replay.editSpeedMeter(meterId,"style",changes)
+                            onPresetRequested: preset => {
+                                const item = canvas.layerItems[meterId]
+                                if (item) replay.editSpeedMeter(meterId,"style",item.presetStyle(preset))
+                            }
+                            onCopyStyleRequested: window.copiedMeterStyle = Object.assign({},styleMap)
+                            onPasteStyleRequested: if (window.copiedMeterStyle) replay.editSpeedMeter(meterId,"style",window.copiedMeterStyle)
+                            onExportElementRequested: format => { window.meterExportFormat = format; meterExportDialog.open() }
+                            onExportCsvRequested: { window.meterExportFormat = "csv"; meterExportDialog.open() }
+                        }
+                        StudioButton { Layout.fillWidth: true; visible: !!window.selectedMeter.id; text: "Remove Meter · 删除速度表"; onClicked: { replay.canvas.select(window.selectedMeter.id); replay.canvas.removeSelected() } }
+                        StudioButton { Layout.fillWidth: true; text: "Numeric Fields / Curves · 数值与曲线"; onClicked: { window.sidebarIndex = 1; settingsSection.currentIndex = 4 } }
                     }
                     ColumnLayout {
                         Layout.fillWidth: true
@@ -729,10 +1203,11 @@ font.pixelSize: appearance.metrics.body
                             StudioLabel { text: "速度" }
                             StudioComboBox {
                                 id: movieSpeed
+                                objectName: "movieRatePicker"
                                 Layout.fillWidth: true
-                                model: ["1×", "0.5×", "0.25×"]
-                                currentIndex: Math.max(0, [1., .5, .25].indexOf(replay.moviePreferences.speed))
-                                onActivated: replay.setMoviePreferences([1., .5, .25][currentIndex], movieAudio.currentIndex - 1)
+                                model: window.movieRateLabels
+                                currentIndex: Math.max(0, window.movieRateValues.indexOf(replay.moviePreferences.speed))
+                                onActivated: replay.setMoviePreferences(window.movieRateValues[currentIndex], movieAudio.currentIndex - 1)
                             }
                             StudioLabel { text: "音轨" }
                             StudioComboBox {
@@ -740,7 +1215,7 @@ font.pixelSize: appearance.metrics.body
                                 Layout.fillWidth: true
                                 model: ["无音轨"].concat(replay.videoLayers.map(layer => layer.label))
                                 currentIndex: Math.max(0, Math.min(count - 1, replay.moviePreferences.audioIndex + 1))
-                                onActivated: replay.setMoviePreferences([1., .5, .25][movieSpeed.currentIndex], currentIndex - 1)
+                                onActivated: replay.setMoviePreferences(replay.moviePreferences.speed, currentIndex - 1)
                             }
                         }
                         StudioButton {
@@ -815,6 +1290,7 @@ font.pixelSize: appearance.metrics.body
                     }
 
                     VideoTimeline {
+                        id: videoTimeline
                         Layout.fillWidth: true
                         visible: window.timelineMode === 0 && replay.videoLayers.length + replay.sceneLayers.length > 0
                         controller: replay
@@ -825,8 +1301,9 @@ font.pixelSize: appearance.metrics.body
                         onSelected: (index) => {
                             window.selectedVideo = index
                             sceneLayerEditor.selectedId = ""
+                            settingsSection.currentIndex = 1
                         }
-                        onLayerSelected: (id) => sceneLayerEditor.selectedId = id
+                        onLayerSelected: (id) => { sceneLayerEditor.selectedId = id; settingsSection.currentIndex = 1 }
                     }
 
                     RowLayout {
@@ -837,6 +1314,16 @@ font.pixelSize: appearance.metrics.body
                             highlighted: true
                             enabled: !replay.loading && replay.duration > 0
                             onClicked: replay.togglePlayback()
+                        }
+                        StudioComboBox {
+                            objectName: "playbackRatePicker"
+                            Layout.preferredWidth: 80
+                            model: window.movieRateLabels
+                            currentIndex: Math.max(0, window.movieRateValues.indexOf(replay.moviePreferences.speed))
+                            enabled: !window.exportBusy && !replay.loading
+                            Accessible.name: "Playback speed · 播放倍率"
+                            onActivated: replay.setMoviePreferences(window.movieRateValues[currentIndex], replay.moviePreferences.audioIndex)
+                            StudioToolTip { visible: parent.hovered; text: "Playback and export speed · 播放及导出倍率；不改变物理速度值" }
                         }
                         StudioButton {
                             text: "分割"
@@ -850,8 +1337,8 @@ font.pixelSize: appearance.metrics.body
                             enabled: !replay.loading && videoPicker.currentIndex >= 0
                             onClicked: replay.deleteVideoSegment(videoPicker.currentIndex, replay.position)
                         }
-                        StudioButton { text: "撤销视频"; visible: window.timelineMode < 2 && replay.videoLayers.length > 0; enabled: !window.exportBusy && !replay.loading && replay.canUndo; onClicked: replay.undo() }
-                        StudioButton { text: "重做视频"; visible: window.timelineMode < 2 && replay.videoLayers.length > 0; enabled: !window.exportBusy && !replay.loading && replay.canRedo; onClicked: replay.redo() }
+                        StudioButton { text: "Undo · 撤销"; visible: window.timelineMode < 2 && replay.videoLayers.length > 0; enabled: !window.exportBusy && !replay.loading && replay.canUndo; onClicked: replay.undo() }
+                        StudioButton { text: "Redo · 重做"; visible: window.timelineMode < 2 && replay.videoLayers.length > 0; enabled: !window.exportBusy && !replay.loading && replay.canRedo; onClicked: replay.redo() }
                         ColumnLayout {
                             visible: window.timelineMode < 3
                             spacing: 3
@@ -883,7 +1370,7 @@ font.pixelSize: appearance.metrics.body
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.bottom: parent.bottom
         anchors.bottomMargin: 20
-        visible: window.exportBusy
+        visible: movie.exporting || frameBatch.active
         color: window.panel
         border.color: window.thin
         radius: 8

@@ -19,6 +19,18 @@ class CloudView : public QQuickFramebufferObject {
     Q_PROPERTY(int textureLimit READ textureLimit NOTIFY textureLimitChanged)
     Q_PROPERTY(QSize framebufferSize READ framebufferSize NOTIFY framebufferSizeChanged)
     Q_PROPERTY(QColor captureBackground READ captureBackground WRITE setCaptureBackground NOTIFY captureBackgroundChanged)
+    Q_PROPERTY(QString targetFrame READ targetFrame WRITE setTargetFrame NOTIFY followSettingsChanged)
+    Q_PROPERTY(int followMode READ followMode WRITE setFollowMode NOTIFY followSettingsChanged)
+    Q_PROPERTY(double followLag READ followLag WRITE setFollowLag NOTIFY followSettingsChanged)
+    Q_PROPERTY(double smoothing READ smoothing WRITE setSmoothing NOTIFY followSettingsChanged)
+    Q_PROPERTY(bool opticalFrame READ opticalFrame WRITE setOpticalFrame NOTIFY followSettingsChanged)
+    Q_PROPERTY(QString cameraStatus READ cameraStatus NOTIFY cameraStatusChanged)
+    Q_PROPERTY(bool followingTarget READ followingTarget NOTIFY cameraStatusChanged)
+    Q_PROPERTY(bool cloudVisible READ cloudVisible WRITE setCloudVisible NOTIFY viewStyleChanged)
+    Q_PROPERTY(QColor cloudColor READ cloudColor WRITE setCloudColor NOTIFY viewStyleChanged)
+    Q_PROPERTY(QColor pathColor READ pathColor WRITE setPathColor NOTIFY viewStyleChanged)
+    Q_PROPERTY(QColor viewBackground READ viewBackground WRITE setViewBackground NOTIFY viewStyleChanged)
+    Q_PROPERTY(QStringList hiddenDisplays READ hiddenDisplays WRITE setHiddenDisplays NOTIFY viewStyleChanged)
 public:
     explicit CloudView(QQuickItem *parent = nullptr);
     Renderer *createRenderer() const override;
@@ -45,10 +57,34 @@ public:
     QSize framebufferSize() const { return framebufferSize_; }
     QColor captureBackground() const { return captureBackground_; }
     void setCaptureBackground(const QColor &color);
+    QString targetFrame() const { return targetFrame_; }
+    void setTargetFrame(const QString &frame);
+    int followMode() const { return followMode_; }
+    void setFollowMode(int mode);
+    double followLag() const { return followLag_; }
+    void setFollowLag(double seconds);
+    double smoothing() const { return smoothing_; }
+    void setSmoothing(double seconds);
+    bool opticalFrame() const { return opticalFrame_; }
+    void setOpticalFrame(bool optical);
+    QString cameraStatus() const { return cameraStatus_; }
+    bool followingTarget() const { return followingTarget_; }
+    bool cloudVisible() const { return cloudVisible_; }
+    void setCloudVisible(bool visible);
+    QColor cloudColor() const { return cloudColor_; }
+    void setCloudColor(const QColor &color);
+    QColor pathColor() const { return pathColor_; }
+    void setPathColor(const QColor &color);
+    QColor viewBackground() const { return viewBackground_; }
+    void setViewBackground(const QColor &color);
+    QStringList hiddenDisplays() const { return hiddenDisplays_; }
+    void setHiddenDisplays(const QStringList &ids);
     Q_INVOKABLE void orbit(float dx, float dy);
     Q_INVOKABLE void pan(float dx, float dy);
     Q_INVOKABLE void zoom(float steps);
     Q_INVOKABLE void resetCamera();
+    // Recompute from source data and exact experiment time, not queued render diagnostics.
+    QString exportValidationError(double experimentTime) const;
 
 signals:
     void controllerChanged();
@@ -63,6 +99,9 @@ signals:
     void textureLimitChanged();
     void framebufferSizeChanged();
     void captureBackgroundChanged();
+    void followSettingsChanged();
+    void cameraStatusChanged();
+    void viewStyleChanged();
 
 private:
     friend class CloudRenderer;
@@ -78,4 +117,10 @@ private:
     QSize framebufferSize_;
     int textureLimit_ = 0;
     QColor captureBackground_;
+    QString targetFrame_, cameraStatus_;
+    int followMode_ = 0;
+    double followLag_ = 0, smoothing_ = 0;
+    bool opticalFrame_ = false, followingTarget_ = false, cloudVisible_ = true;
+    QColor cloudColor_, pathColor_, viewBackground_;
+    QStringList hiddenDisplays_;
 };

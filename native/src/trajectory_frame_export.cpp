@@ -8,23 +8,115 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QPainter>
+#include <QPdfWriter>
+#include <QPageSize>
+#include <QPageLayout>
 #include <QSaveFile>
+#include <QSvgGenerator>
+#include <QTemporaryDir>
 #include <QUuid>
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
 namespace replay {
+QString writeTrajectoryStillImage(const FixedCameraTrajectory &trajectory, const std::vector<size_t> &samples,
+    const TrajectoryEdits &edits, double opacity, const QVariantMap &canvasState, const QString &path,
+    QSize size, int dpi, double time, const QColor &background, const TrackingCancelled &cancel,
+    std::optional<QStringList> selectedLayers, QVariantMap *report)
+{
+    auto details = report ? *report : QVariantMap{};
+    details["scope"] = selectedLayers ? "layers" : "canvas";
+    details["layerIds"] = selectedLayers.value_or(QStringList{});
+    details["composedUavInstances"] = 0; details["visibleLineSegments"] = 0; details["paintedLayers"] = 0;
+    details["foregroundGateApplied"] = !selectedLayers.has_value(); details["cleanForegroundAccepted"] = false;
+    details["foregroundValidation"] = selectedLayers ? "not_applicable_selected_layers" : edits.lineOnly ? "line_only" : "visible_uav_composition";
+    details["time"] = time; details["width"] = size.width(); details["height"] = size.height(); details["dpi"] = dpi;
+    const auto finish = [&](const QString &error) {
+        details["success"] = error.isEmpty(); details["error"] = error;
+        if (report) *report = details;
+        return error;
+    };
+    try {
+        if (size.width() < 16 || size.height() < 16 || size.width() > 8192 || size.height() > 8192 ||
+            qint64(size.width())*size.height() > 40'000'000 || dpi < 36 || dpi > 2400 || !std::isfinite(time) || !background.isValid())
+            return finish(QStringLiteral("Invalid trajectory export dimensions, DPI, timestamp or background."));
+        auto exportSamples = samples;
+        if (selectedLayers) {
+            selectedLayers->removeDuplicates();
+            if (selectedLayers->isEmpty() || std::any_of(selectedLayers->cbegin(),selectedLayers->cend(),[](const auto &id){return id.trimmed().isEmpty();}))
+                return finish(QStringLiteral("请选择至少一个有效图层。 / Select at least one valid layer."));
+            details["layerIds"] = *selectedLayers;
+            QSet<QString> spriteSources; const auto copies = canvasState.value("copies").toMap();
+            for (const auto &id : *selectedLayers) spriteSources.insert(copies.value(id,id).toString());
+            std::erase_if(exportSamples,[&](size_t index) {
+                return index>=trajectory.frames.size() || !spriteSources.contains("sprite:"+QString::number(trajectoryTimestamp(trajectory.frames[index].seconds)));
+            });
+        }
+        const auto layers = trajectoryLayers(trajectory,exportSamples,opacity,{},edits,cancel);
+        if (cancel && cancel()) return finish(QStringLiteral("已取消。 / Cancelled."));
+        const QSize canvas(canvasState.value("outputWidth",layers.canvasSize.width()).toInt(),canvasState.value("outputHeight",layers.canvasSize.height()).toInt());
+        if (canvas.isEmpty()) return finish(QStringLiteral("Empty trajectory canvas."));
+        auto state = canvasState; state["outputWidth"] = canvas.width(); state["outputHeight"] = canvas.height();
+        if (selectedLayers) {
+            auto rows = trajectoryCanvasLayerRows(trajectory,layers,edits,opacity,state); rows.append(state.value("elements").toList());
+            for (const auto &id : *selectedLayers) if (std::none_of(rows.cbegin(),rows.cend(),[&](const auto &row){return row.toMap().value("id").toString()==id;}))
+                return finish(QStringLiteral("选中图层不可用：%1 / Selected layer is unavailable.").arg(id));
+        }
+        auto content = canvas; content.scale(size,Qt::KeepAspectRatio);
+        const QRectF area(QPointF((size.width()-content.width())*.5,(size.height()-content.height())*.5),content);
+        const auto paint = [&](QPainter &painter) -> QString {
+            painter.fillRect(QRectF(QPointF(),size),background);
+            TrajectoryCompositionStats counts;
+            paintTrajectoryLayers(painter,trajectory,layers,area,edits,cancel,TrajectoryAll,state,time,&counts,selectedLayers.value_or(QStringList{}));
+            details["composedUavInstances"] = counts.composed; details["visibleLineSegments"] = counts.lineSegments; details["paintedLayers"] = counts.paintedLayers;
+            details["failedSamples"] = counts.failed; details["filteredSamples"] = counts.filtered;
+            if (cancel && cancel()) return QStringLiteral("已取消。 / Cancelled.");
+            return selectedLayers ? counts.paintedLayers>0 ? QString() : QStringLiteral("选中图层均隐藏、为空或位于画布外。 / Selected layers have no visible canvas content.") : counts.exportError(edits);
+        };
+        const auto selectionDescription = QStringLiteral("export_scope=%1; selected_layer_ids=%2; clean_foreground_accepted=false")
+            .arg(details.value("scope").toString(),selectedLayers.value_or(QStringList{}).join(','));
+        const auto suffix = QFileInfo(path).suffix().toLower();
+        if (suffix != "pdf" && suffix != "svg") {
+            QImage output(size,QImage::Format_ARGB32_Premultiplied); if (output.isNull()) return finish(QStringLiteral("Insufficient memory for trajectory image."));
+            output.fill(Qt::transparent); QPainter painter(&output); const auto error = paint(painter); painter.end();
+            output.setText("SourceTimestamp",details.value("sourceTimestamp").toString()+"; "+selectionDescription+QStringLiteral("; composed_uav_instances=%1").arg(details.value("composedUavInstances").toInt()));
+            return finish(error.isEmpty() ? writeStillImage(output,path,dpi,time) : error);
+        }
+        QSaveFile file(path); if (!file.open(QIODevice::WriteOnly)) return finish(file.errorString());
+        const auto description = QStringLiteral("UAV Studio; experiment_time_seconds=%1; embedded raster background and UAV video sprites; vector trajectory, endpoint circles and captions; ").arg(time,0,'f',9)+selectionDescription;
+        QString error;
+        if (suffix == "pdf") {
+            QPdfWriter writer(&file); writer.setResolution(dpi); writer.setTitle(description); writer.setCreator("UAV Studio");
+            writer.setPageSize(QPageSize(QSizeF(size.width()*25.4/dpi,size.height()*25.4/dpi),QPageSize::Millimeter));
+            writer.setPageMargins(QMarginsF(),QPageLayout::Millimeter);
+            QPainter painter(&writer); if (!painter.isActive()) return finish(QStringLiteral("Cannot create trajectory PDF."));
+            painter.scale(double(writer.width())/size.width(),double(writer.height())/size.height());
+            error = paint(painter); if (!painter.end() && error.isEmpty()) error = QStringLiteral("Cannot finish trajectory PDF.");
+        } else {
+            QSvgGenerator writer; writer.setOutputDevice(&file); writer.setResolution(dpi); writer.setSize(size); writer.setViewBox(QRect(QPoint(),size));
+            writer.setTitle("UAV Studio trajectory frame"); writer.setDescription(description);
+            QPainter painter(&writer); if (!painter.isActive()) return finish(QStringLiteral("Cannot create trajectory SVG."));
+            error = paint(painter); if (!painter.end() && error.isEmpty()) error = QStringLiteral("Cannot finish trajectory SVG.");
+        }
+        if (!error.isEmpty()) return finish(error);
+        if (cancel && cancel()) return finish(QStringLiteral("已取消。 / Cancelled."));
+        return finish(file.commit() ? QString() : file.errorString());
+    } catch (const std::exception &error) { return finish(QString::fromUtf8(error.what())); }
+}
 TrajectoryBatchResult exportTrajectoryBatch(const QString &source, const QString &parentDirectory,
     std::shared_ptr<const FixedCameraTrajectory> trajectory, const std::vector<size_t> &samples,
     const TrajectoryEdits &edits, double opacity, double currentTime, const QVariantMap &options,
-    const TrackingCancelled &cancel, const TrackingProgress &progress)
+    const TrackingCancelled &cancel, const TrackingProgress &progress, const QVariantMap &canvasState)
 {
     TrajectoryBatchResult result;
     QJsonArray completed;
     QJsonArray sampleTimes;
+    QJsonArray foregroundWarnings;
     if (trajectory) for (auto index : samples) if (index < trajectory->frames.size())
         sampleTimes.append(QString::number(trajectoryTimestamp(trajectory->frames[index].seconds)));
+    if (trajectory) for (auto index : samples) if (index < trajectory->frames.size() && !trajectory->frames[index].foregroundError.isEmpty())
+        foregroundWarnings.append(QJsonObject{{"time", trajectory->frames[index].seconds}, {"reason", trajectory->frames[index].foregroundError}});
     QVector<FrameExportJob> jobs;
     const auto content = options.value("content", "source").toString();
     const auto cancelled = [&] { return cancel && cancel(); };
@@ -33,9 +125,10 @@ TrajectoryBatchResult exportTrajectoryBatch(const QString &source, const QString
         const QJsonObject document{{"status", status}, {"error", result.error}, {"content", content},
             {"time_basis", "source_video_seconds"}, {"source_file", QFileInfo(source).fileName()},
             {"original_preview_time", currentTime}, {"options", QJsonObject::fromVariantMap(options)},
-            {"edits", edits.toJson()}, {"opacity", opacity}, {"completed", completed}, {"planned", int(jobs.size())},
+            {"edits", edits.toJson()}, {"canvas", QJsonObject::fromVariantMap(canvasState)}, {"opacity", opacity}, {"completed", completed}, {"planned", int(jobs.size())},
             {"sample_timestamps_ns", sampleTimes},
-            {"limitations", "Video frame times use the decoder timestamp, with frame-index/FPS fallback; source PTS certification pending. Sampling indices refer to the configured time grid. Trajectory snapshots preserve the current background, samples and edits, clipped at the requested time. Panels are raster; PDF/SVG figure captions are vector."}};
+            {"foreground_warnings", foregroundWarnings}, {"background_warning", trajectory ? trajectory->backgroundWarning : QString()},
+            {"limitations", "Source time is relative to the first decoded presentation timestamp. Raw PTS and rational time_base are preserved; no FPS timestamp fallback. Unknown ordinals after seeking are null. Recovered timestamps are explicitly labelled. Sampling indices refer to the configured time grid. Trajectory snapshots preserve the current background, samples, edits and canvas, clipped at the requested time. Trajectory PDF/SVG frames retain vector paths/markers/captions with embedded raster video content. Figure panels are raster; PDF/SVG figure captions are vector."}};
         const auto bytes = QJsonDocument(document).toJson();
         if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit())
             throw std::runtime_error("Cannot save trajectory export manifest.");
@@ -54,7 +147,7 @@ TrajectoryBatchResult exportTrajectoryBatch(const QString &source, const QString
         if (content == "trajectory" && (!trajectory || trajectory->frames.empty()))
             throw std::runtime_error("Generate a tracked trajectory before exporting accumulated snapshots.");
         std::unique_ptr<VideoReader> reader;
-        if (content == "source") reader = std::make_unique<VideoReader>(source);
+        if (content == "source") reader = std::make_unique<VideoReader>(source, cancel);
         auto planning = options;
         // 轨迹采样使用真实跟踪时间；独立采样网格使用序号 / 采样率。
         if (options.value("mode").toString() == "tracked") {
@@ -84,16 +177,25 @@ TrajectoryBatchResult exportTrajectoryBatch(const QString &source, const QString
         result.directory = QDir(parentDirectory).filePath("trajectory-frames-" + QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss-zzz") + '-' + QUuid::createUuid().toString(QUuid::Id128).left(8));
         if (!QDir().mkdir(result.directory)) { result.directory.clear(); throw std::runtime_error("Cannot create output directory."); }
         saveManifest("running");
-        QStringList paths; QList<double> figureTimes;
+        QStringList paths; QList<double> figureTimes; QTemporaryDir figureCache;
         for (const auto &job : jobs) {
             if (cancelled()) break;
             QImage frame; double sourceTime = job.time; int sourceIndex = -1;
+            QJsonObject sourceStamp; std::optional<TrajectoryEdits> clippedEdits;
             if (reader) {
                 if (!reader->select(job.time, cancel) || reader->frame.empty()) {
                     if (cancelled()) break;
                     throw std::runtime_error("No source video frame at the requested time.");
                 }
                 sourceTime = reader->seconds; sourceIndex = reader->index();
+                sourceStamp = {{"pts", QString::number(reader->pts())}, {"origin_pts", QString::number(reader->originPts())},
+                    {"time_base", QJsonArray{reader->timeBaseNumerator(), reader->timeBaseDenominator()}},
+                    {"time_ns", QString::number(reader->timestampNs())}, {"kind", reader->hasSourcePts() ? "source_pts" : "decoder_recovered"},
+                    {"coded_size", QJsonArray{reader->codedSize().width(), reader->codedSize().height()}},
+                    {"sample_aspect_ratio", QJsonArray{reader->sampleAspectNumerator(), reader->sampleAspectDenominator()}},
+                    {"display_rotation_degrees", reader->displayRotation()},
+                    {"display_size", QJsonArray{reader->frame.cols, reader->frame.rows}},
+                    {"pixel_normalization", "square_pixels_then_display_rotation"}};
                 frame = imageOf(reader->frame).scaled(size, Qt::KeepAspectRatio, Qt::SmoothTransformation);
             } else {
                 const auto stamp = trajectoryTimestamp(job.time);
@@ -103,7 +205,9 @@ TrajectoryBatchResult exportTrajectoryBatch(const QString &source, const QString
                 else clipped.trim = {trajectoryTimestamp(trajectory->frames.front().seconds), end};
                 // 空交集用空的半开区间表达，不改变原始编辑范围。
                 if (clipped.trim->first > clipped.trim->second) clipped.trim->first = clipped.trim->second;
-                frame = renderTrajectory(*trajectory, samples, opacity, {}, size, clipped, cancel, true);
+                clippedEdits = clipped;
+                TrajectoryCompositionStats counts;
+                frame = renderTrajectory(*trajectory, samples, opacity, {}, size, clipped, cancel, true, &counts, true, canvasState, job.time);
                 const auto latest = std::upper_bound(trajectory->frames.begin(), trajectory->frames.end(), stamp,
                     [](qint64 time, const auto &frame) { return time < trajectoryTimestamp(frame.seconds); });
                 sourceTime = latest == trajectory->frames.begin() ? trajectory->frames.front().seconds : std::prev(latest)->seconds;
@@ -119,11 +223,19 @@ TrajectoryBatchResult exportTrajectoryBatch(const QString &source, const QString
             const auto path = QDir(result.directory).filePath(job.fileName);
             // 源帧标签使用实际解码时间；累积轨迹图使用裁切时间。
             const double outputTime = reader ? sourceTime : job.time;
-            const auto error = writeStillImage(output, path, dpi, outputTime);
+            const bool vectorFrame = trajectory && clippedEdits && (QFileInfo(path).suffix().toLower() == "pdf" || QFileInfo(path).suffix().toLower() == "svg");
+            const auto error = vectorFrame ? writeTrajectoryStillImage(*trajectory,samples,*clippedEdits,opacity,canvasState,path,size,dpi,outputTime,background,cancel) : writeStillImage(output, path, dpi, outputTime);
             if (!error.isEmpty()) throw std::runtime_error(error.toStdString());
-            paths.append(path); figureTimes.append(outputTime); ++result.completed;
+            QString panelPath = path;
+            if (options.value("figure").toBool() && (QFileInfo(path).suffix().toLower() == "pdf" || QFileInfo(path).suffix().toLower() == "svg")) {
+                if (!figureCache.isValid()) throw std::runtime_error("Cannot allocate temporary figure panels.");
+                panelPath = figureCache.filePath(QString::number(result.completed)+".png");
+                if (!output.save(panelPath,"PNG")) throw std::runtime_error("Cannot save a temporary figure panel.");
+            }
+            paths.append(panelPath); figureTimes.append(outputTime); ++result.completed;
             completed.append(QJsonObject{{"file", job.fileName}, {"requested_time", job.time}, {"output_time", outputTime},
-                {"source_frame_time", sourceTime}, {"source_frame_index", sourceIndex}, {"width", size.width()}, {"height", size.height()}, {"dpi", dpi}});
+                {"source_frame_time", sourceTime}, {"source_frame_index", sourceIndex < 0 ? QJsonValue(QJsonValue::Null) : QJsonValue(sourceIndex)},
+                {"source_timestamp", sourceStamp}, {"width", size.width()}, {"height", size.height()}, {"dpi", dpi}});
             saveManifest("running");
             if (progress) progress(double(result.completed) / (jobs.size() + (options.value("figure").toBool() ? 1 : 0)));
         }

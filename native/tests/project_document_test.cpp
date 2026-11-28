@@ -4,6 +4,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QTemporaryDir>
 #include <cmath>
 #include <iostream>
@@ -87,6 +88,19 @@ int main(int argc, char **argv)
         })json");
 
         auto project = replay::ProjectDocument::load(manifest);
+        expect(project.renderBackend() == "independent", "legacy project must default to the independent backend");
+        const auto beforeInvalidBackend = project.json();
+        bool invalidBackend = false;
+        try { project.setRenderBackend("missing/Backend"); } catch (const std::exception &) { invalidBackend = true; }
+        expect(invalidBackend && project.json() == beforeInvalidBackend, "invalid backend edit must leave the document unchanged");
+        for (const auto &invalid : {QJsonValue("missing/Backend"), QJsonValue(true)}) {
+            auto root = project.json(); auto scene = root.value("composition").toObject(); scene["render_backend"] = invalid; root["composition"] = scene;
+            const auto bad = directory.filePath("invalid-backend.uavstudio"); write(bad, QJsonDocument(root).toJson());
+            bool rejected = false; try { replay::ProjectDocument::load(bad); } catch (const std::exception &) { rejected = true; }
+            expect(rejected, "invalid stored backend must not silently activate an arbitrary renderer");
+        }
+        auto scene = project.composition(); scene["future_user_setting"] = QJsonObject{{"preserve", true}}; project.setComposition(scene);
+        project.setRenderBackend("native-rviz");
         expect(project.media().size() == 5, "deduplicated media paths");
         expect(project.bag().endsWith("素材/run.bag"), "bag reference");
         const auto rviz = directory.filePath("import.rviz");
@@ -133,10 +147,36 @@ Visualization Manager:
         const auto settings = project.json().value("composition").toObject();
         project.setSceneBackground("#E5EAEE");
         project.setSpeedGauge({{"scheme", "light"}});
+        const QVariantMap cameraSettings{{"targetFrame", "camera_optical"}, {"followMode", 3},
+            {"followLag", .2}, {"smoothing", .4}, {"opticalFrame", true}, {"pointSize", 2.75},
+            {"cloudVisible", false}, {"cloudColor", "#c1d2e3"}, {"pathColor", "#aabbcc"},
+            {"hiddenDisplays", QStringList{"odometry"}}};
+        project.setMainView(cameraSettings);
+        project.addCloudView("rear");
+        project.addCloudView("rear");
+        const auto firstViewId = project.cloudViews().first().toMap().value("id").toString();
+        project.setCloudView(firstViewId, cameraSettings);
+        const auto beforeInvalidCamera = project.json();
+        bool invalidCamera = false;
+        try { project.setMainView({{"followMode", 9}}); }
+        catch (const std::exception &) { invalidCamera = true; }
+        expect(invalidCamera && project.json() == beforeInvalidCamera, "invalid camera edit must be atomic");
         project.setTrajectorySettings({{"path", videoPath}, {"interval", .1},
             {"edits", QJsonObject{{"ranges", QJsonArray{QJsonObject{{"id", "stable"}, {"begin_ns", "100"}, {"end_ns", "200"}}}}}}});
-        auto saved = project.saveAs(directory.filePath("relocated/edit.slamfpv"));
-        expect(saved.sceneBackground() == "#e5eaee" && saved.speedGauge().value("scheme") == "light", "independent content style persisted");
+        auto saved = project.saveAs(directory.filePath("relocated/edit.uavstudio"));
+        const auto newBrand = replay::ProjectDocument::load(saved.path());
+        expect(newBrand.renderBackend() == "native-rviz" && newBrand.composition().value("future_user_setting") == scene.value("future_user_setting"),
+            "SaveAs/reopen lost requested native backend or unrelated composition fields");
+        for (auto it = cameraSettings.begin(); it != cameraSettings.end(); ++it) {
+            expect(QJsonValue::fromVariant(newBrand.mainView().value(it.key())) == QJsonValue::fromVariant(it.value()),
+                "main camera setting lost on branded-project reopen");
+            expect(QJsonValue::fromVariant(newBrand.cloudViews().first().toMap().value(it.key())) == QJsonValue::fromVariant(it.value()),
+                "inset camera setting lost on reopen");
+        }
+        expect(newBrand.cloudViews().size() == 2 && newBrand.cloudViews()[1].toMap().value("id") != firstViewId,
+            "same-kind independent cameras must survive save and reopen");
+        expect(saved.sceneBackground() == "#e5eaee" && saved.topicLayout().backgroundColor == QColor("#e5eaee") &&
+            saved.speedGauge().value("scheme") == "light", "independent content style and Global Options background persisted");
         expect(saved.trajectorySettings().value("path").toString() == videoPath &&
             saved.trajectorySettings().value("edits") == project.trajectorySettings().value("edits"), "trajectory video and stable edit state rebased");
         expect(replay::ProjectDocument::load(saved.path()).media() == project.media(), "save as must rebase references");
@@ -175,6 +215,7 @@ Visualization Manager:
 
         const QString packedPath = project.exportFolder(directory.filePath("打包项目"));
         const auto packed = replay::ProjectDocument::load(packedPath);
+        expect(packed.renderBackend() == "native-rviz", "portable project lost requested backend");
         expect(read(packed.trajectorySettings().value("path").toString()) == "fpv material", "portable trajectory video copied");
         expect(packed.isPortable() && packed.media().size() == 5, "portable project metadata");
         expect(QFileInfo(packedPath).dir().exists("cache") && QFileInfo(packedPath).dir().exists("exports"), "portable folders");

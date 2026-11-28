@@ -149,7 +149,7 @@ void runFrameAcceptance(QGuiApplication &app, QQuickWindow &window, ReplayContro
             const auto item = entry.toObject(); const QImage image(QDir(trajectory.exportDirectory()).filePath(item["file"].toString()));
             valid &= image.size() == size && image.hasAlphaChannel();
             valid &= std::abs(image.dotsPerMeterX() * .0254 - state->trajectoryBatchOptions["dpi"].toInt()) < .1;
-            valid &= item["source_frame_index"].toInt(-1) >= 0 && item["source_frame_time"].toDouble(-1) >= 0. && item["source_frame_time"].toDouble() <= item["requested_time"].toDouble() + 1.e-8;
+            valid &= !item["source_timestamp"].toObject().value("pts").toString().isEmpty() && item["source_frame_time"].toDouble(-1) >= 0. && item["source_frame_time"].toDouble() <= item["requested_time"].toDouble() + 1.e-8;
         }
         if (state->trajectoryBatchOptions.value("figure").toBool()) {
             QFile figure(QDir(trajectory.exportDirectory()).filePath("figure." + state->trajectoryBatchOptions["figureFormat"].toString()));

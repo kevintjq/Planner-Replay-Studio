@@ -9,26 +9,32 @@ ColumnLayout {
     required property string selectedLayer
     required property color ink
     required property color accent
+    property var selectedClip: null
+    function removeSelectedClip() {
+        if (!selectedClip || controller.loading) return
+        if (selectedClip.videoIndex !== undefined) controller.deleteVideoSegment(selectedClip.videoIndex, selectedClip.at)
+        else controller.canvas.removeInterval(selectedClip.layerId, selectedClip.first, selectedClip.last)
+        selectedClip = null
+    }
+    Keys.onDeletePressed: removeSelectedClip()
     signal selected(int index)
     signal layerSelected(string id)
 
-    readonly property var trackData: controller.videoLayers.map((video, index) => ({
+    readonly property var trackData: { const revision = controller.canvas.revision; return controller.videoLayers.map((video, index) => ({
         videoIndex: index, label: video.label, segments: video.segments
     })).concat(controller.sceneLayers.map(layer => ({
         layerId: layer.id, kind: layer.kind, label: layer.label,
-        segments: layer.start >= duration ? [] : [{
-            first: layer.start, last: Math.min(duration, layer.end), storedEnd: layer.end,
-            leftEdge: true, rightEdge: layer.end <= duration, part: 0
-        }]
-    })))
+        segments: (controller.canvas.settings(layer.id).visibilityRangesEnabled || (controller.canvas.settings(layer.id).visibilityRanges || []).length)
+            ? (controller.canvas.settings(layer.id).visibilityRanges || []).map((r, i) => ({first: Math.max(layer.start,r[0]), last: Math.min(duration,layer.end,r[1]), storedEnd: r[1],leftEdge:true,rightEdge:true,part:i})).filter(r => r.last > r.first)
+            : layer.start >= duration ? [] : [{first: layer.start, last: Math.min(duration,layer.end), storedEnd:layer.end,leftEdge:true,rightEdge:layer.end<=duration,part:0}]
+    }))) }
 
     readonly property real duration: controller.duration
     readonly property real labelWidth: 124
     spacing: 4
 
-    ScrollView {
-        ScrollBar.vertical: StudioScrollBar {}
-        ScrollBar.horizontal: StudioScrollBar {}
+    StudioScrollView {
+        objectName: "videoTracksScroll"
         id: scroller
         Layout.fillWidth: true
         Layout.preferredHeight: Math.min(102, tracks.implicitHeight)
@@ -66,6 +72,7 @@ ColumnLayout {
                         text: row.modelData.label
                         highlighted: row.isSelected
                         id: trackButton
+                        objectName: "videoTimelineTrackButton"
                         contentItem: StudioLabel {
                             text: trackButton.text
                             color: timeline.ink
@@ -141,12 +148,13 @@ ColumnLayout {
                                             if (row.isVideo)
                                                 timeline.controller.deleteVideoSegment(row.modelData.videoIndex, actions.at)
                                             else
-                                                timeline.controller.removeSceneLayer(row.modelData.layerId)
+                                                timeline.controller.canvas.removeInterval(row.modelData.layerId,clip.first,clip.last)
                                         }
                                     }
                                 }
 
                                 MouseArea {
+                                    objectName: "videoTimelineClipInput"
                                     anchors.fill: parent
                                     acceptedButtons: Qt.LeftButton | Qt.RightButton
                                     enabled: !timeline.controller.loading
@@ -158,6 +166,8 @@ ColumnLayout {
 
                                     onPressed: (mouse) => {
                                         row.select()
+                                        timeline.forceActiveFocus()
+                                        timeline.selectedClip = row.isVideo ? {videoIndex:row.modelData.videoIndex,at:(clip.first+clip.last)/2} : {layerId:row.modelData.layerId,first:clip.first,last:clip.last}
                                         timeline.controller.pause()
                                         pressX = mapToItem(lane, mouse.x, 0).x
                                         if (mouse.button === Qt.RightButton) {

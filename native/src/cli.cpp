@@ -1,6 +1,7 @@
 #include "replay_data.h"
 #include "live_capture.h"
 #include "project_document.h"
+#include "app_info.h"
 
 #include <QCommandLineParser>
 #include <QCoreApplication>
@@ -21,7 +22,9 @@ int main(int argc, char **argv)
     qputenv("QT_COMMAND_LINE_PARSER_NO_GUI_MESSAGE_BOXES", "1");
 #endif
     QCoreApplication app(argc, argv);
-    app.setApplicationName(QStringLiteral("uav-studio-cli"));
+    AppInfo appInfo;
+    app.setApplicationName(appInfo.executableName() + "-cli");
+    app.setApplicationVersion(appInfo.version());
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("Inspect ROS1 bags and export UAV Studio scenes."));
     const QCommandLineOption output("output", "Save a PNG, MP4, or RViz round-trip configuration to this path.", "file");
@@ -45,6 +48,7 @@ int main(int argc, char **argv)
     parser.addOptions({output, start, duration, port, delay, cloud, odometry, world, body, pose, gap, extrinsics,
                        width, height, fps, crf, supersample, encoder});
     parser.addHelpOption();
+    parser.addVersionOption();
     parser.addPositionalArgument("command", "inspect, export, bag, demo, listen, or rviz-roundtrip.");
     parser.addPositionalArgument("source", "ROS1 bag or .slamfpv project.", "[source]");
     parser.process(app);

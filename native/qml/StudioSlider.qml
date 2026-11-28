@@ -3,7 +3,7 @@ import QtQuick.Controls as C
 C.Slider {
     id: control
     palette: StudioPalette {}
-implicitWidth: 120; implicitHeight: appearance.metrics.controlHeight
+    implicitWidth: 120; implicitHeight: appearance.metrics.controlHeight
     background: Rectangle {
         x: control.leftPadding; y: control.topPadding + (control.availableHeight - height) / 2
         width: control.availableWidth; height: 4; radius: 2; color: appearance.colors.control

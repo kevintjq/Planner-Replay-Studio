@@ -4,7 +4,7 @@ import QtQuick.Controls as C
 C.ComboBox {
     id: control
     palette: StudioPalette {}
-implicitWidth: Math.max(100, contentItem.implicitWidth + 38)
+    implicitWidth: Math.max(100, contentItem.implicitWidth + 38)
     implicitHeight: appearance.metrics.controlHeight
     leftPadding: 10
     rightPadding: 28
@@ -34,10 +34,12 @@ implicitWidth: Math.max(100, contentItem.implicitWidth + 38)
     }
     popup: C.Popup {
         y: control.height + 4
+        x: Math.min(0, control.width - width)
         width: Math.max(control.width, 220)
+        margins: 8
         padding: 4
         palette: StudioPalette {}
-implicitHeight: contentItem.implicitHeight + 8
+        implicitHeight: contentItem.implicitHeight + 8
         contentItem: ListView {
             implicitHeight: Math.min(contentHeight, 360)
             clip: true

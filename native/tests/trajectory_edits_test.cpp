@@ -37,6 +37,9 @@ int main(int argc, char **argv)
         expect(half == std::vector<size_t>({0, 3, 5, 10}), "Manual source frame survives resampling");
         const auto tenth = editedTrajectorySamples(*track, .1, 0, 12, state);
         expect(tenth.size() == 11 && state.frames[trajectoryTimestamp(.3)].excluded, "Resampling must preserve exclusion identity");
+        auto deleted = state; deleted.frames[trajectoryTimestamp(.3)].removed = true;
+        expect(editedTrajectorySamples(*track, .1, 0, 12, deleted).size() == 10 &&
+            TrajectoryEdits::fromJson(deleted.toJson()) == deleted, "Deleted sample reference survived resampling or project persistence");
         auto image = renderTrajectory(*track, tenth, 1., {}, {}, state);
         expect(image.pixelColor(36, 13).red() == 0, "Timestamp exclusion must remove rendered frame");
         state.frames[trajectoryTimestamp(.3)].excluded = false;

@@ -10,51 +10,46 @@ Item {
     signal selected(string id)
 
     Repeater {
-        model: scene.controller.sceneLayers
+        parent: scene.parent
+        model: scene.controller.sceneLayers.length
 
-        delegate: Item {
-            id: layer
-            required property var modelData
+        delegate: CanvasElement {
+            id: sceneLayer
+            required property int index
+            readonly property var modelData: scene.controller.sceneLayers[index] || ({})
+            parent: scene.parent
+            sceneCanvas: scene.parent
+            controller: scene.controller
+            layerId: modelData.id
+            layerName: modelData.label
+            interactive: scene.interactive
+            baseZ: 400 + index
             readonly property bool picture: modelData.kind === "images"
-            readonly property real xRange: Math.max(0, scene.width - width)
-            readonly property real yRange: Math.max(0, scene.height - height)
-            property real dragX: 0
-            property real dragY: 0
-            readonly property real baseX: Math.max(0, Math.min(xRange, xRange * modelData.horizontal + dragX))
-            readonly property real baseY: Math.max(0, Math.min(yRange, yRange * modelData.vertical + dragY))
-            readonly property rect geometry: {
-                const base = Qt.rect(baseX, baseY, width, height)
-                return scene.controller.layerMotions.length
-                    ? scene.controller.animatedLayer(picture ? "image" : "text", modelData.id,
-                                                     scene.controller.position, base, Qt.size(scene.width, scene.height))
-                    : base
+            readonly property real naturalWidth: picture ? scene.width*modelData.width : Math.min(scene.width,measure.advanceWidth+14)
+            readonly property real naturalHeight: picture ? (image.sourceSize.width>0?naturalWidth*image.sourceSize.height/image.sourceSize.width:0) : measure.height+12
+            baseGeometry: {
+                const base=Qt.rect((scene.width-naturalWidth)*modelData.horizontal,(scene.height-naturalHeight)*modelData.vertical,naturalWidth,naturalHeight)
+                return scene.controller.layerMotions.length ? scene.controller.animatedLayer(picture?"image":"text",modelData.id,scene.controller.position,base,Qt.size(scene.width,scene.height)) : base
             }
-            x: geometry.x
-            y: geometry.y
-            transformOrigin: Item.TopLeft
-            scale: width > 0 ? geometry.width / width : 1
-            width: picture ? image.width : Math.min(scene.width, caption.implicitWidth)
-            height: picture ? image.height : caption.implicitHeight
-            visible: (scene.captureLayerIds === null || scene.captureLayerIds.indexOf(modelData.id) >= 0)
-                     && (picture || scene.includeText) && scene.controller.position >= modelData.start
-                     && scene.controller.position < modelData.end
-                     && (picture ? image.status === Image.Ready : scene.showText)
+            contentAllowed: (scene.captureLayerIds===null || scene.captureLayerIds.indexOf(modelData.id)>=0)
+                && (picture || scene.includeText) && scene.controller.position>=modelData.start
+                && scene.controller.position<modelData.end && (picture?image.status===Image.Ready:scene.showText)
+            TextMetrics { id:measure; text:sceneLayer.picture?"":sceneLayer.modelData.text; font.pixelSize:Math.max(1,sceneLayer.modelData.size*scene.height/900);font.bold:true }
 
             Rectangle {
                 anchors.fill: parent
                 radius: 5
                 color: appearance.outputColors().panel
-                visible: !layer.modelData.transparent
+                visible: !sceneLayer.modelData.transparent
             }
 
             Image {
                 id: image
-                source: layer.picture ? layer.modelData.url : ""
+                source: sceneLayer.picture ? sceneLayer.modelData.url : ""
                 asynchronous: scene.interactive
-                width: scene.width * layer.modelData.width
-                height: sourceSize.width > 0 ? Math.min(scene.height, width * sourceSize.height / sourceSize.width) : 0
+                anchors.fill: parent
                 fillMode: Image.PreserveAspectFit
-                visible: layer.picture
+                visible: sceneLayer.picture
             }
 
             Text {
@@ -64,51 +59,17 @@ Item {
                 rightPadding: 7
                 topPadding: 6
                 bottomPadding: 6
-                text: layer.picture ? "" : layer.modelData.text
+                text: sceneLayer.picture ? "" : sceneLayer.modelData.text
                 textFormat: Text.PlainText
-                color: layer.modelData.color
-                font.pixelSize: Math.max(10, layer.modelData.size * scene.height / 900)
+                color: sceneLayer.modelData.color
+                font.pixelSize: Math.max(1, sceneLayer.modelData.size * scene.height / 900 * Math.min(sceneLayer.width/Math.max(1,sceneLayer.naturalWidth),sceneLayer.height/Math.max(1,sceneLayer.naturalHeight)))
                 font.bold: true
                 style: Text.Outline
                 styleColor: appearance.outputColors().textOutline
                 wrapMode: Text.Wrap
-                visible: !layer.picture
+                visible: !sceneLayer.picture
             }
 
-            MouseArea {
-                anchors.fill: parent
-                enabled: scene.interactive && !scene.controller.loading
-                cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
-                property point origin
-                onPressed: (mouse) => {
-                    scene.selected(layer.modelData.id)
-                    scene.controller.pause()
-                    origin = mapToItem(scene, mouse.x, mouse.y)
-                }
-                onPositionChanged: (mouse) => {
-                    if (pressed) {
-                        const at = mapToItem(scene, mouse.x, mouse.y)
-                        layer.dragX = at.x - origin.x
-                        layer.dragY = at.y - origin.y
-                    }
-                }
-                onReleased: {
-                    if (Math.abs(layer.dragX) + Math.abs(layer.dragY) < 3) {
-                        layer.dragX = 0
-                        layer.dragY = 0
-                        return
-                    }
-                    const position = [layer.xRange ? layer.baseX / layer.xRange : layer.modelData.horizontal,
-                                      layer.yRange ? layer.baseY / layer.yRange : layer.modelData.vertical]
-                    layer.dragX = 0
-                    layer.dragY = 0
-                    scene.controller.editSceneLayer(layer.modelData.id, {position: position})
-                }
-                onCanceled: {
-                    layer.dragX = 0
-                    layer.dragY = 0
-                }
-            }
         }
     }
 }

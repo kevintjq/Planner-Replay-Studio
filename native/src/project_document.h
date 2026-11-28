@@ -24,7 +24,21 @@ public:
     QString extrinsics() const;
     const QJsonObject &json() const { return root_; }
     QJsonObject values() const;
+    QJsonObject composition() const { return root_.value("composition").toObject(); }
+    void setComposition(const QJsonObject &composition) { root_.insert("composition", composition); }
+    QString renderBackend() const;
+    void setRenderBackend(const QString &backend);
+    QVariantMap canvasState() const;
+    void setCanvasState(const QVariantMap &state);
+    QVariantList sources() const;
+    QString addSource(const QString &file, const QString &kind);
+    void retainSourceCatalog();
+    void removeCanvasLayers(const QStringList &ids);
+    bool removeSource(const QString &id, bool removeReferences);
+    void renameSource(const QString &id, const QString &name);
+    void replaceSource(const QString &id, const QString &file);
     void setValue(const QString &key, const QString &value);
+    void setBagSource(const QString &file);
     bool isLayerEnabled(const QString &layer) const;
     void setLayerEnabled(const QString &layer, bool isEnabled);
     QVariantMap speedGauge() const;
@@ -47,6 +61,7 @@ public:
     void addTimelineMarker(double time);
     void replaceTimelineMarker(double time, const std::optional<QString> &label);
     QVariantMap mainView() const;
+    void setMainView(const QVariantMap &settings);
     void setMainViewWidth(double width);
     QJsonArray layerMotions() const;
     void addLayerMotion(const QString &kind, const QString &id, double begin, double time, double duration,

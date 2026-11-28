@@ -4,6 +4,8 @@ import QtQuick.Controls as C
 C.ToolTip {
     id: control
     delay: 600
+    padding: 8
+    implicitWidth: Math.min(420, contentItem.implicitWidth + leftPadding + rightPadding)
     font.pixelSize: appearance.metrics.caption
     contentItem: Text {
         text: control.text

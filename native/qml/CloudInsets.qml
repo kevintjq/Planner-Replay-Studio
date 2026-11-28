@@ -8,19 +8,34 @@ Item {
     required property bool allowed
     property bool interactive: true
     property var captureOptions: ({})
+    property var nativeClient: null
+    property bool nativeEnabled: false
+    property var nativeCoordinator: null
+    property var exporter: null
+    property string nativeTargetNs: ""
+    property bool nativeRequiresSync: false
     signal selected(string id)
 
     Repeater {
+        parent: insets.parent
         model: insets.controller.cloudViews.length
-        delegate: Item {
+        delegate: CanvasElement {
             id: inset
             required property int index
+            parent: insets.parent
+            sceneCanvas: insets.parent
+            controller: insets.controller
+            layerId: settings.id ?? ""
+            layerName: settings.label ?? layerId
+            interactive: insets.interactive
+            cameraElement: true
+            baseZ: 300 + index
             readonly property var settings: insets.controller.cloudViews[index] ?? {}
             readonly property real normalWidth: Math.min(insets.width * (settings.width ?? .32), insets.height * 16 / 9)
             readonly property real normalHeight: normalWidth * 9 / 16
             readonly property real spanX: Math.max(0, insets.width - normalWidth)
             readonly property real spanY: Math.max(0, insets.height - normalHeight)
-            readonly property rect geometry: {
+            baseGeometry: {
                 const base = Qt.rect(spanX * relativeX, spanY * relativeY, normalWidth, normalHeight)
                 return insets.controller.layerMotions.length
                     ? insets.controller.animatedLayer("view", settings.id, insets.controller.position, base, Qt.size(insets.width, insets.height))
@@ -28,13 +43,14 @@ Item {
             }
             property real relativeX: settings.x ?? 0
             property real relativeY: settings.y ?? 0
-            visible: insets.allowed && (insets.captureOptions.scope !== "layers" || (insets.captureOptions.layerIds ?? []).indexOf(settings.id) >= 0)
-            x: geometry.x
-            y: geometry.y
-            width: geometry.width
-            height: geometry.height
+            contentAllowed: insets.allowed && (insets.captureOptions.scope !== "layers" || (insets.captureOptions.layerIds ?? []).indexOf(settings.id) >= 0)
 
-            CloudView {
+            Loader {
+                id: compatibleLoader
+                anchors.fill: parent
+                active: !insets.nativeEnabled
+                sourceComponent: CloudView {
+                id: scene
                 property string exportViewId: inset.settings.id ?? ""
                 anchors.fill: parent
                 captureBackground: Object.keys(insets.captureOptions).length > 0 && insets.captureOptions.background !== undefined ? insets.captureOptions.background : ""
@@ -42,55 +58,75 @@ Item {
                 camera: inset.settings.camera ?? 0
                 cameraZoom: inset.settings.zoom ?? 1
                 overlays: inset.settings.overlays ?? []
-                pointSize: insets.pointSize
+                targetFrame: inset.settings.targetFrame ?? ""
+                followMode: inset.settings.followMode ?? 0
+                followLag: inset.settings.followLag ?? 0
+                smoothing: inset.settings.smoothing ?? 0
+                opticalFrame: inset.settings.opticalFrame ?? false
+                cloudVisible: inset.settings.cloudVisible ?? true
+                cloudColor: inset.settings.cloudColor ?? ""
+                pathColor: inset.settings.pathColor ?? ""
+                viewBackground: inset.settings.viewBackground ?? ""
+                hiddenDisplays: inset.settings.hiddenDisplays ?? []
+                pointSize: inset.settings.pointSize ?? insets.pointSize
                 transparent: inset.settings.transparent ?? true
                 auxiliary: true
+                }
+            }
+
+            Loader {
+                anchors.fill: parent
+                active: insets.nativeEnabled
+                sourceComponent: NativeSceneView {
+                    anchors.fill: parent
+                    client: insets.nativeClient
+                    coordinator: insets.nativeCoordinator
+                    exporter: insets.exporter
+                    viewId: inset.settings.id ?? ""
+                    targetNs: insets.nativeTargetNs
+                    requireSynchronized: insets.nativeRequiresSync
+                    interactive: insets.interactive && !insets.controller.canvas.layoutMode
+                    showDiagnostics: insets.interactive && Object.keys(insets.captureOptions).length === 0
+                    onSelected: viewId => insets.selected(viewId)
+                }
+            }
+
+            Rectangle {
+                objectName: "insetCameraStatus-" + (inset.settings.id ?? "")
+                // Camera diagnostics belong to editing UI, never exported content.
+                visible: !insets.nativeEnabled && insets.interactive && Object.keys(insets.captureOptions).length === 0
+                         && !!compatibleLoader.item && compatibleLoader.item.camera !== 0
+                         && !compatibleLoader.item.followingTarget && compatibleLoader.item.cameraStatus.length > 0
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: cameraMessage.implicitHeight + 10
+                color: appearance.colors.panel
+                opacity: .94
+                StudioLabel {
+                    id: cameraMessage
+                    anchors.fill: parent
+                    anchors.margins: 5
+                    text: compatibleLoader.item?.cameraStatus ?? ""
+                    wrapMode: Text.Wrap
+                    color: appearance.colors.text
+                    font.pixelSize: appearance.metrics.caption
+                }
             }
 
             MouseArea {
-                id: move
-                enabled: insets.interactive
                 anchors.fill: parent
-                cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
-                property point start
-                property bool moved: false
-                property real initialX
-                property real initialY
-
-                function resetPosition() {
-                    inset.relativeX = Qt.binding(() => inset.settings.x ?? 0)
-                    inset.relativeY = Qt.binding(() => inset.settings.y ?? 0)
-                }
-
-                onPressed: mouse => {
-                    start = mapToItem(insets, mouse.x, mouse.y)
-                    initialX = inset.relativeX
-                    initialY = inset.relativeY
-                    insets.controller.pause()
-                    moved = false
-                    insets.selected(inset.settings.id)
-                }
+                enabled: !insets.nativeEnabled && insets.interactive && !insets.controller.canvas.layoutMode
+                acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
+                property point previous
+                onPressed: mouse => { previous=Qt.point(mouse.x,mouse.y); insets.selected(inset.settings.id) }
                 onPositionChanged: mouse => {
-                    if (!pressed)
-                        return
-                    const current = mapToItem(insets, mouse.x, mouse.y)
-                    const dx = current.x - start.x
-                    const dy = current.y - start.y
-                    if (!moved && Math.abs(dx) + Math.abs(dy) < 2)
-                        return
-                    moved = true
-                    if (inset.spanX > 0)
-                        inset.relativeX = Math.max(0, Math.min(1, initialX + dx / inset.spanX))
-                    if (inset.spanY > 0)
-                        inset.relativeY = Math.max(0, Math.min(1, initialY + dy / inset.spanY))
+                    if(!pressed)return
+                    if(pressedButtons&(Qt.RightButton|Qt.MiddleButton))compatibleLoader.item.pan(mouse.x-previous.x,mouse.y-previous.y)
+                    else compatibleLoader.item.orbit(mouse.x-previous.x,mouse.y-previous.y)
+                    previous=Qt.point(mouse.x,mouse.y)
                 }
-                onReleased: {
-                    if (moved) {
-                        insets.controller.setCloudView(inset.settings.id, {x: inset.relativeX, y: inset.relativeY})
-                        resetPosition()
-                    }
-                }
-                onCanceled: resetPosition()
+                onWheel: wheel => { compatibleLoader.item.zoom(wheel.angleDelta.y/120);wheel.accepted=true }
             }
         }
     }

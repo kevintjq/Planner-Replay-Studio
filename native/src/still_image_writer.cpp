@@ -15,8 +15,9 @@ QString replay::writeStillImage(QImage image, const QString &path, int dpi, doub
     if (image.isNull() || dpi < 36 || dpi > 2400 || !std::isfinite(time))
         return QStringLiteral("无效图像、DPI 或实验时间。 / Invalid image, DPI or time.");
     const auto format = QFileInfo(path).suffix().toLower().toLatin1();
-    const auto description = QStringLiteral("UAV Studio; experiment_time_seconds=%1; embedded raster composition")
-                                 .arg(time, 0, 'f', 9);
+    auto description = QStringLiteral("UAV Studio; experiment_time_seconds=%1; embedded raster composition")
+                           .arg(time, 0, 'f', 9);
+    if (!image.text("SourceTimestamp").isEmpty()) description += "; " + image.text("SourceTimestamp");
     image.setDotsPerMeterX(qRound(dpi / .0254));
     image.setDotsPerMeterY(qRound(dpi / .0254));
     image.setText("Description", description);

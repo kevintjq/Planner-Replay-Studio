@@ -216,6 +216,22 @@ int main(int argc, char **argv)
                 inventory.value("tf_pairs").toArray().size() == 2,
                 "Bag inventory lost a storage timestamp, count, type or TF pair.");
         const auto bag = replay::loadBag(file.fileName());
+        const std::vector<replay::TopicDisplay> lazyDisplays{
+            {"lazy", "/secondary", "cloud", "Lazy cloud", QColor("#ff0000")},
+            {"laser", "/laser", "laser", "Lazy laser", QColor("#00ff00")}};
+        const auto lazy = replay::loadDisplayData(file.fileName(), "map", lazyDisplays);
+        require(lazy->cloudTopic.isEmpty() && lazy->odometryTopic.isEmpty() && lazy->speedTopic.isEmpty()
+            && lazy->points.empty() && lazy->poses.empty() && !lazy->showMainCloud,
+            "Lazy Display data selected legacy global roles.");
+        require(lazy->topicOverlays.size() == 2 && lazy->topicOverlays[0].points.front().x == 42.f
+            && lazy->topicOverlays[1].points.front().x == 12.f && lazy->transforms,
+            "Lazy Display data lost requested topics or actual TF.");
+        const auto missingFrame = replay::loadDisplayData(file.fileName(), "not_available", lazyDisplays);
+        require(missingFrame->topicOverlays[0].samples.empty() && !missingFrame->topicWarnings.empty(),
+            "Lazy Display data silently ignored missing TF.");
+        const auto cachedTarget = bag->transforms ? bag->transforms->lookup("map", "scanner", 2'000'000'000) : std::nullopt;
+        require(cachedTarget && cachedTarget->translation.x() == 10.f,
+                "Default bag loading must retain TF for camera targets without a configured TF display.");
         require(bag->replace && bag->cloudTopic == "/rog_map/occ", "Planner map defaults are wrong.");
         require(bag->duration() == 2. && bag->points.back().x == 9.f, "ROS1 PointCloud2 data was misread.");
         require(bag->frameAt(bag->stampAt(1)).first == 0 && bag->frameAt(bag->stampAt(2)).first == 1,

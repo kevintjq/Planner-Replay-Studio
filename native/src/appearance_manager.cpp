@@ -63,6 +63,7 @@ QVariantMap AppearanceManager::designColors(bool dark)
         {"accent", dark ? "#82B4F5" : "#2868BC"},
         {"accentFill", dark ? "#35659F" : "#2868BC"},
         {"accentText", "#FFFFFF"},
+        {"error", dark ? "#FFA69B" : "#A63B32"},
         {"selection", dark ? "#364F6E" : "#DCE9FA"},
         {"border", dark ? "#7F8C9D" : "#768398"},
         {"separator", dark ? "#414955" : "#DDE2E9"},

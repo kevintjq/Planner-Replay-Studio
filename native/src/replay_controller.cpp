@@ -12,11 +12,53 @@
 #include <QPointer>
 #include <QQuickItemGrabResult>
 #include <QSaveFile>
+#include <QSettings>
+#include <QUuid>
 #include <QVariantMap>
 #include <algorithm>
 #include <cmath>
 #include <exception>
 #include <stdexcept>
+
+namespace {
+bool independentDataKind(const QString &kind)
+{
+    return QStringList{"cloud", "laser", "path", "marker", "position", "tf"}.contains(kind);
+}
+QStringList independentMessageTypes(const QString &pluginClass)
+{
+    static const QHash<QString, QStringList> types{{"PointCloud2", {"sensor_msgs/PointCloud2"}},
+        {"LaserScan", {"sensor_msgs/LaserScan"}}, {"Path", {"nav_msgs/Path"}},
+        {"Marker", {"visualization_msgs/Marker"}}, {"MarkerArray", {"visualization_msgs/MarkerArray"}},
+        {"Odometry", {"nav_msgs/Odometry"}}, {"Pose", {"geometry_msgs/PoseStamped"}},
+        {"PointStamped", {"geometry_msgs/PointStamped"}},
+        {"PoseWithCovariance", {"geometry_msgs/PoseWithCovarianceStamped"}},
+        {"TF", {"tf2_msgs/TFMessage", "tf/tfMessage"}}};
+    return types.value(pluginClass.section('/', -1));
+}
+const replay::TopicCatalogEntry *independentTopicEntry(const replay::Recording &record, const QString &topic)
+{
+    const auto found = std::find_if(record.topicCatalog.begin(), record.topicCatalog.end(), [&](const auto &item) { return item.name == topic; });
+    return found == record.topicCatalog.end() ? nullptr : &*found;
+}
+bool independentCompatible(const replay::TopicCatalogEntry *entry, const replay::TopicDisplay &display)
+{
+    return entry && !entry->schemaConflict && independentMessageTypes(display.pluginClass).contains(entry->type);
+}
+const replay::TopicCatalogEntry *independentTopicEntry(const replay::Recording &record, const replay::TopicDisplay &display)
+{
+    const auto *entry = independentTopicEntry(record, display.topic);
+    if (display.kind != "tf" || independentCompatible(entry, display)) return entry;
+    const auto *staticEntry = independentTopicEntry(record, QStringLiteral("/tf_static"));
+    return independentCompatible(staticEntry, display) || !entry ? staticEntry : entry;
+}
+std::shared_ptr<const replay::Recording> emptyRecording()
+{
+    auto result = std::make_shared<replay::Recording>();
+    result->name = QStringLiteral("No Data · 未载入数据"); result->radius = 1.f;
+    return result;
+}
+}
 
 QStringList ReplayController::tfFrames() const
 {
@@ -27,14 +69,144 @@ QStringList ReplayController::tfFrames() const
     return frames;
 }
 
-ReplayController::ReplayController(QObject *parent) : QObject(parent), record_(replay::makeDemo())
+QVariantMap ReplayController::nativeReplaySource() const
 {
+    if (demo() || loading_ || path_.isEmpty() || (!record_->hasMessages && record_->frames.empty())) return {};
+    // A source inventory is not a list of fixed rendering roles. Subscriptions
+    // and their caches belong to each native Display, not these legacy presets.
+    return {{"bag", QUrl::fromLocalFile(path_)}, {"topics", record_->topics},
+            {"timeBasis", record_->timelineTimeBasis},
+            {"revision", QString::number(recordingGeneration_)}};
+}
+
+QString ReplayController::experimentStampNs() const
+{
+    // Keep the absolute Header clock as an integer string across the QML boundary.
+    // A JavaScript Number cannot preserve nanoseconds at ROS epoch magnitudes.
+    return demo() || loading_ || (!record_->hasMessages && record_->frames.empty()) ? QString() : QString::number(record_->stampAt(position_));
+}
+
+QVariantMap ReplayController::nativeRvizConfig() const
+{
+    if (!project_) return {};
+    auto result = project_->composition().value("native_rviz").toObject().toVariantMap();
+    if (result.value("yaml").toString().isEmpty()) {
+        const auto original = project_->topicLayout().sourceYaml;
+        if (!original.isEmpty()) result["yaml"] = original;
+    }
+    return result;
+}
+
+void ReplayController::setNativeRvizConfig(const QString &yaml, const QVariantMap &metadata)
+{
+    if (loading_ || yaml.isEmpty()) return;
+    auto document = projectSnapshot();
+    auto composition = document.composition();
+    composition["native_rviz"] = QJsonObject{{"yaml", yaml}, {"metadata", QJsonObject::fromVariantMap(metadata)}};
+    document.setComposition(composition);
+    project_ = std::move(document);
+    // Native Property edits have their own exact host snapshots. Persisting a
+    // snapshot must not reload the Bag or add a second unrelated undo command.
+    emit nativeConfigChanged();
+}
+
+QString ReplayController::renderBackend() const
+{
+    return project_ ? project_->renderBackend() : QStringLiteral("independent");
+}
+
+void ReplayController::setRenderBackend(const QString &backend)
+{
+    if (loading_ || backend == renderBackend() ||
+        (backend != "independent" && backend != "native-rviz")) return;
+    const auto before = projectSnapshot();
+    auto document = before;
+    document.setRenderBackend(backend);
+    project_ = std::move(document);
+    recordProjectEdit(before);
+    // This is the user's requested backend, independent of runtime availability.
+    // Changing it must not reload data or pause the shared experiment clock.
+    emit renderBackendChanged();
+}
+
+int VideoLayerListModel::rowCount(const QModelIndex &parent) const
+{
+    return parent.isValid() ? 0 : int(layers_.size());
+}
+
+QVariant VideoLayerListModel::data(const QModelIndex &index, int role) const
+{
+    return role == VideoLayer && index.isValid() && index.row() >= 0 && index.row() < layers_.size()
+        ? layers_[index.row()] : QVariant{};
+}
+
+void VideoLayerListModel::setLayers(const QVariantList &layers)
+{
+    const auto id = [](const QVariant &value) { return value.toMap().value("id").toString(); };
+    QSet<QString> wanted;
+    for (const auto &row : layers) {
+        const auto key = id(row);
+        if (key.isEmpty() || wanted.contains(key)) return;
+        wanted.insert(key);
+    }
+    for (int row = int(layers_.size()) - 1; row >= 0; --row) if (!wanted.contains(id(layers_[row]))) {
+        beginRemoveRows({}, row, row); layers_.removeAt(row); endRemoveRows();
+    }
+    for (int row = 0; row < layers.size(); ++row) {
+        const auto key = id(layers[row]);
+        int existing = row;
+        while (existing < layers_.size() && id(layers_[existing]) != key) ++existing;
+        if (existing == layers_.size()) {
+            beginInsertRows({}, row, row); layers_.insert(row, layers[row]); endInsertRows();
+        } else if (existing != row) {
+            beginMoveRows({}, existing, existing, {}, row); layers_.move(existing, row); endMoveRows();
+        }
+        if (layers_[row] != layers[row]) {
+            layers_[row] = layers[row]; emit dataChanged(index(row), index(row), {VideoLayer});
+        }
+    }
+}
+
+ReplayController::ReplayController(QObject *parent) : QObject(parent), record_(emptyRecording()), videoLayerModel_(this)
+{
+    canvas_ = new CanvasLayerModel(*this);
+    connect(this, &ReplayController::videoLayersChanged, this, &ReplayController::sourcesChanged);
+    connect(this, &ReplayController::sceneLayersChanged, this, &ReplayController::sourcesChanged);
+    connect(this, &ReplayController::recordingChanged, this, &ReplayController::sourcesChanged);
     connect(this, &ReplayController::positionChanged, this, &ReplayController::activeLayoutChanged);
     connect(this, &ReplayController::layoutsChanged, this, &ReplayController::activeLayoutChanged);
+    connect(this, &ReplayController::recordingChanged, this, &ReplayController::refreshIndependentDisplayData);
+    // Seeking and frame-locked TF can change availability. Coalesce rapid seeks
+    // to 10 Hz and only notify the tree when its actual status changes.
+    independentStatusTimer_.setSingleShot(true);
+    independentStatusTimer_.setInterval(100);
+    connect(this, &ReplayController::positionChanged, this, [this] {
+        if (!path_.isEmpty() && !independentStatusTimer_.isActive()) independentStatusTimer_.start();
+    });
+    connect(&independentStatusTimer_, &QTimer::timeout, this, [this] {
+        QVariantList statuses;
+        for (const auto &value : independentDisplays()) {
+            const auto row = value.toMap();
+            statuses.append(QVariantMap{{"id", row.value("id")}, {"status", row.value("status")}, {"text", row.value("statusText")}});
+        }
+        if (statuses != independentTimeStatuses_) { independentTimeStatuses_ = std::move(statuses); emit independentDisplaysChanged(); }
+    });
+    connect(&independentWatcher_, &QFutureWatcher<IndependentDisplayLoad>::finished, this, [this] {
+        const auto result = independentWatcher_.future().takeResult();
+        if (result.generation == independentDataGeneration_ && result.source == independentDataSource_ && result.fixedFrame == independentDataFrame_) {
+            for (const auto &key : result.keys) {
+                independentPending_.remove(key);
+                if (result.records.contains(key)) independentData_[key] = result.records.value(key);
+                else independentErrors_[key] = result.error.isEmpty() ? tr("没有可解码数据。 / No decoded data.") : result.error;
+            }
+        }
+        emit independentDisplaysChanged();
+        refreshIndependentDisplayData();
+    });
     timer_.setTimerType(Qt::PreciseTimer);
     timer_.setInterval(16);
     connect(&timer_, &QTimer::timeout, this, [this] {
-        setPosition(start_ + clock_.nsecsElapsed() / 1.e9);
+        setPosition(start_ + clock_.nsecsElapsed() / 1.e9 * moviePreferences().value("speed").toDouble());
         if (position_ >= duration())
             pause();
     });
@@ -42,7 +214,10 @@ ReplayController::ReplayController(QObject *parent) : QObject(parent), record_(r
         auto result = watcher_.result();
         loading_ = false;
         if (!cancelRequested_ && result.record) {
+            const auto previousRecord = record_;
+            const auto previousPath = path_;
             path_ = result.path;
+            demoMode_ = false;
             mapMode_ = result.mode;
             project_ = std::move(result.project);
             status_ = result.record->odometryTopic.isEmpty() ? tr("点云已载入。此记录没有里程计。")
@@ -62,10 +237,19 @@ ReplayController::ReplayController(QObject *parent) : QObject(parent), record_(r
             if (!result.skipped.isEmpty())
                 status_ += tr(" · 无法按原插件显示：%1").arg(result.skipped.mid(0, 5).join(QStringLiteral("、")));
             install(std::move(result.record), result.keepSession);
+            if (replacementBefore_) {
+                recordProjectEdit(*replacementBefore_, previousRecord, previousPath);
+                for (const auto &entry : replacementRemovedSources_) {
+                    const auto source = entry.toMap();
+                    emit sourceRemoved(source.value("kind").toString(), source.value("url").toUrl());
+                }
+            }
         } else {
             status_ = cancelRequested_ ? tr("已取消读取") : result.issue;
             emit recordingChanged();
         }
+        replacementBefore_.reset();
+        replacementRemovedSources_.clear();
         emit stateChanged();
     });
     connect(&folderWatcher_, &QFutureWatcher<QString>::finished, this, [this] {
@@ -78,6 +262,8 @@ ReplayController::ReplayController(QObject *parent) : QObject(parent), record_(r
 ReplayController::~ReplayController()
 {
     cancelRequested_ = true;
+    if (independentCancel_) *independentCancel_ = true;
+    independentWatcher_.waitForFinished();
     watcher_.waitForFinished();
     folderWatcher_.waitForFinished();
 }
@@ -86,6 +272,8 @@ void ReplayController::install(std::shared_ptr<const replay::Recording> record, 
 {
     pause();
     record_ = std::move(record);
+    ensureInitialDisplayLayout();
+    ++recordingGeneration_;
     refreshDisplayVisibility();
     position_ = keepSession ? std::min(position_, duration()) : 0.;
     if (!keepSession) {
@@ -105,6 +293,8 @@ void ReplayController::install(std::shared_ptr<const replay::Recording> record, 
         videoDurations_.swap(durations);
         emit editHistoryChanged();
         emit trajectorySettingsLoaded(project_ ? project_->trajectorySettings().toVariantMap() : QVariantMap{});
+        emit nativeConfigChanged();
+        emit nativeConfigLoaded(nativeRvizConfig());
     }
     refreshSceneLayers();
     refreshCloudViews();
@@ -114,6 +304,7 @@ void ReplayController::install(std::shared_ptr<const replay::Recording> record, 
     emit transparentCanvasChanged();
     emit sceneStyleChanged();
     emit markersChanged();
+    emit renderBackendChanged();
     emit recordingChanged();
     emit positionChanged();
 }
@@ -127,9 +318,348 @@ QVariantList ReplayController::topicDisplays() const
     const auto layout = project_->topicLayout();
     for (const auto &display : layout.displays) {
         const auto label = display.name.isEmpty() ? display.topic : display.name + QStringLiteral(" · ") + display.topic;
-        result.append(QVariantMap{{"label", label}, {"enabled", display.enabled}, {"color", display.color}});
+        result.append(QVariantMap{{"id", display.id}, {"label", label}, {"enabled", display.enabled}, {"color", display.color}});
     }
     return result;
+}
+
+replay::RvizLayout ReplayController::independentLayout() const
+{
+    auto layout = project_ ? project_->topicLayout() : replay::RvizLayout{};
+    if (layout.useInstanceModel || !layout.instances.empty() || !layout.displays.empty() || !layout.sourceYaml.isEmpty()) {
+        if (layout.instances.empty() && !layout.useInstanceModel) layout.instances = replay::rvizDisplayInstances(layout);
+        return layout;
+    }
+    replay::TopicDisplay grid; grid.id = "initial-grid"; grid.kind = "grid"; grid.pluginClass = "rviz/Grid";
+    grid.name = tr("Grid · 网格"); grid.color = QColor("#75808c");
+    grid.properties = {{"Cell Size", 1.}, {"Plane Cell Count", 20.}};
+    replay::TopicDisplay axes; axes.id = "initial-axes"; axes.kind = "axes"; axes.pluginClass = "rviz/Axes";
+    axes.name = tr("Axes · 坐标轴"); axes.color = QColor("#ffffff"); axes.properties = {{"Length", 1.}};
+    layout.instances = {grid, axes}; layout.useInstanceModel = true;
+    return layout;
+}
+
+void ReplayController::ensureInitialDisplayLayout()
+{
+    if (demo()) return;
+    const auto stored = project_ ? project_->topicLayout() : replay::RvizLayout{};
+    if (stored.useInstanceModel || !stored.instances.empty() || !stored.displays.empty() || !stored.sourceYaml.isEmpty()) return;
+    auto layout = independentLayout();
+    if (!path_.isEmpty() && !record_->cloudTopic.isEmpty()) {
+        replay::TopicDisplay cloud; cloud.id = QUuid::createUuid().toString(QUuid::Id128);
+        cloud.kind = "cloud"; cloud.pluginClass = "rviz/PointCloud2"; cloud.name = tr("Point Cloud · 点云");
+        cloud.topic = record_->cloudTopic; cloud.color = QColor("#64c9ee"); layout.instances.push_back(cloud);
+    }
+    auto document = projectSnapshot(); document.setTopicLayout(replay::withRvizDisplayInstances(layout, layout.instances));
+    project_ = std::move(document);
+}
+
+bool ReplayController::independentDisplayModelActive() const
+{
+    if (demo() && (!project_ || !project_->topicLayout().useInstanceModel)) return false;
+    return independentLayout().useInstanceModel;
+}
+QString ReplayController::independentFixedFrame() const
+{
+    const auto selected = independentLayout().fixedFrame;
+    return selected.isEmpty() ? record_->frameId.isEmpty() ? QStringLiteral("map") : record_->frameId : selected;
+}
+std::vector<replay::TopicDisplay> ReplayController::independentDisplayStates() const
+{
+    const auto layout = independentLayout();
+    auto instances = replay::rvizDisplayInstances(layout);
+    QHash<QString, const replay::TopicDisplay *> byId;
+    for (const auto &display : instances) byId[display.id] = &display;
+    for (auto &display : instances) {
+        auto parent = display.parentId; QSet<QString> seen{display.id};
+        while (!parent.isEmpty() && byId.contains(parent) && !seen.contains(parent)) {
+            seen.insert(parent); const auto *group = byId.value(parent); display.enabled &= group->enabled; parent = group->parentId;
+        }
+    }
+    return instances;
+}
+
+QString ReplayController::independentCacheKey(const replay::TopicDisplay &display) const
+{
+    return display.kind + QChar(0x1f) + display.topic;
+}
+
+std::vector<std::shared_ptr<const replay::Recording>> ReplayController::independentDisplayRecordings() const
+{
+    std::vector<std::shared_ptr<const replay::Recording>> result;
+    for (const auto &display : independentDisplayStates()) {
+        const auto record = independentData_.value(independentCacheKey(display));
+        if (record && std::find(result.begin(), result.end(), record) == result.end()) result.push_back(record);
+    }
+    return result;
+}
+
+QVariantList ReplayController::independentDisplayTypes() const
+{
+    QVariantList result;
+    for (const auto &name : {"Grid", "Axes", "Group", "PointCloud2", "LaserScan", "Path", "Marker", "MarkerArray", "Odometry", "Pose", "PointStamped", "PoseWithCovariance", "TF"}) {
+        const auto plugin = QStringLiteral("rviz/") + QLatin1StringView(name);
+        result.append(QVariantMap{{"class", plugin}, {"name", QString::fromLatin1(name)}, {"kind", replay::independentDisplayKind(plugin)},
+            {"messageTypes", independentMessageTypes(plugin)}, {"backend", QStringLiteral("Standalone C++ / Qt")}});
+    }
+    return result;
+}
+QVariantList ReplayController::compatibleIndependentDisplays(const QString &messageType) const
+{
+    QVariantList result;
+    for (const auto &value : independentDisplayTypes()) if (value.toMap().value("messageTypes").toStringList().contains(messageType)) result.append(value);
+    return result;
+}
+
+QVariantList ReplayController::independentDisplays() const
+{
+    QVariantList result;
+    const auto local = replay::rvizDisplayInstances(independentLayout());
+    const auto effective = independentDisplayStates();
+    QHash<QString, bool> effectiveEnabled;
+    for (const auto &display : effective) effectiveEnabled[display.id] = display.enabled;
+    for (const auto &display : local) {
+        auto row = display.toJson().toVariantMap();
+        row["class"] = display.pluginClass; row["parentId"] = display.parentId;
+        row["alpha"] = display.alpha; row["pointSize"] = display.pointSize; row["lineWidth"] = display.lineWidth;
+        row["historySeconds"] = display.historySeconds; row["useMessageColor"] = display.useMessageColor;
+        row["effectiveEnabled"] = effectiveEnabled.value(display.id, display.enabled);
+        row["supported"] = display.kind != "unsupported";
+        QString code, message, messageType;
+        const auto *catalog = independentTopicEntry(*record_, display);
+        if (catalog) messageType = catalog->type;
+        row["messageType"] = messageType;
+        if (display.kind == "tf") {
+            QStringList topics;
+            for (const auto &topic : {QStringLiteral("/tf"), QStringLiteral("/tf_static")})
+                if (independentCompatible(independentTopicEntry(*record_, topic), display)) topics.append(topic);
+            row["sourceTopics"] = topics;
+        }
+        if (display.kind == "unsupported") { code = "Unsupported"; message = tr("此 Class 没有独立渲染实现；原始属性完整保留。 / Unsupported standalone Class; configuration retained."); }
+        else if (display.kind == "group") { code = "Group"; message = tr("分组管理子显示，不代表传感器数据就绪。 / Group only."); }
+        else if (display.kind == "grid" || display.kind == "axes") { code = "Configured"; message = tr("静态场景显示已配置；无需传感器消息。 / Static scene display configured."); }
+        else if (path_.isEmpty()) { code = "Waiting for Data"; message = tr("等待录包；Topic 和样式已保存。 / Waiting for a Bag source."); }
+        else if (display.topic.isEmpty()) { code = "Waiting for Topic"; message = tr("请选择兼容 Topic。 / Select a compatible Topic."); }
+        else if (!catalog) { code = "Topic Missing"; message = tr("当前录包没有此 Topic。 / Topic is absent from this Bag."); }
+        else if (!independentCompatible(catalog, display)) { code = "Type Mismatch"; message = tr("Topic 类型与显示不兼容，未强制转换。 / Incompatible Topic type."); }
+        else {
+            const auto key = independentCacheKey(display);
+            if (independentErrors_.contains(key)) { code = "Decode Error"; message = independentErrors_.value(key); }
+            else if (independentPending_.contains(key)) { code = "Loading"; message = tr("后台读取此 Topic 与 TF；主数据和播放不重载。 / Loading Topic and TF in the background."); }
+            else if (const auto data = independentData_.value(key)) {
+                size_t samples = 0; bool readyFrame = false, hasCurrent = false;
+                const auto stamp = record_->stampAt(position_);
+                for (const auto &overlay : data->topicOverlays) if (overlay.display.kind == display.kind &&
+                    (overlay.display.topic == display.topic || (display.kind == "tf" && overlay.display.topic == "/tf_static"))) {
+                    samples += overlay.samples.size(); const auto *sample = overlay.sampleAt(stamp);
+                    if (sample && sample->range.end > sample->range.first) {
+                        hasCurrent = true;
+                        if (!sample->frameLocked || sample->frameId.isEmpty() || sample->frameId == data->frameId ||
+                            (data->transforms && data->transforms->lookup(data->frameId, sample->frameId, stamp))) readyFrame = true;
+                    }
+                }
+                row["decodedSamples"] = qulonglong(samples);
+                if (!samples) { code = "No Decoded Data"; message = tr("已检查消息但没有可绘制数据；检查类型、TF 和资源限制。 / No renderable samples; inspect type, TF and resource limits."); }
+                else if (!hasCurrent) { code = "Waiting at Time"; message = tr("该播放头时间没有可用几何。 / No geometry at the current experiment time."); }
+                else if (!readyFrame) { code = "Missing TF"; message = tr("缺少消息坐标系到 Fixed Frame 的 TF，未伪造变换。 / Required TF is missing."); }
+                else { code = "Data Decoded"; message = tr("真实消息已解码；不等于原生 RViz 全兼容或 GUI 验收通过。 / Real data decoded; native plugin parity is not certified."); }
+                if (!data->topicWarnings.isEmpty()) message += ' ' + data->topicWarnings.join("; ");
+            } else { code = "Waiting for Data"; message = tr("等待读取匹配 Topic。 / Waiting to decode the matching Topic."); }
+        }
+        row["status"] = code; row["statusText"] = message;
+        row["compatibility"] = tr("独立 C++ 显示子集；原始属性可查看，未应用属性保留。 / Standalone renderer subset; unapplied native properties are retained.");
+        result.append(row);
+    }
+    return result;
+}
+
+QVariantMap ReplayController::selectedIndependentDisplay() const
+{
+    for (const auto &value : independentDisplays()) if (value.toMap().value("id").toString() == selectedIndependentDisplayId_) return value.toMap();
+    return {};
+}
+void ReplayController::selectIndependentDisplay(const QString &id)
+{
+    const auto rows = independentDisplays();
+    if (!id.isEmpty() && std::none_of(rows.begin(), rows.end(), [&](const auto &row) { return row.toMap().value("id").toString() == id; })) return;
+    if (selectedIndependentDisplayId_ == id) return;
+    selectedIndependentDisplayId_ = id; emit independentDisplaySelectionChanged(); emit independentDisplaysChanged();
+}
+
+void ReplayController::storeIndependentLayout(const replay::RvizLayout &layout, const QString &message)
+{
+    const auto before = projectSnapshot(); auto document = before;
+    document.setTopicLayout(replay::withRvizDisplayInstances(layout, replay::rvizDisplayInstances(layout)));
+    project_ = std::move(document); recordProjectEdit(before); refreshDisplayVisibility();
+    if (!message.isEmpty()) status_ = message;
+    if (before.sceneBackground() != project_->sceneBackground()) emit sceneStyleChanged();
+    emit recordingChanged(); emit independentDisplaysChanged(); emit stateChanged();
+}
+
+QString ReplayController::addIndependentDisplay(const QString &pluginClass, const QString &topic, const QString &parentId)
+{
+    if (loading_) return {};
+    try {
+        const auto types = independentDisplayTypes();
+        if (std::none_of(types.begin(), types.end(), [&](const auto &row) { return row.toMap().value("class").toString() == pluginClass; })) {
+            status_ = tr("此 Class 未提供独立创建实现；可从 .rviz 保真导入未知 Class。 / Unsupported Class for standalone creation."); emit stateChanged(); return {};
+        }
+        auto layout = independentLayout(); auto instances = replay::rvizDisplayInstances(layout);
+        replay::TopicDisplay display; display.id = QUuid::createUuid().toString(QUuid::Id128); display.pluginClass = pluginClass;
+        display.kind = replay::independentDisplayKind(pluginClass); display.name = pluginClass.section('/', -1); display.parentId = parentId;
+        display.topic = display.kind == "tf" ? QStringLiteral("/tf") : topic.trimmed(); display.color = QColor("#64c9ee");
+        if (display.kind == "grid") display.properties = {{"Cell Size", 1.}, {"Plane Cell Count", 20.}};
+        if (display.kind == "axes") display.properties = {{"Length", 1.}};
+        instances.push_back(display); layout = replay::withRvizDisplayInstances(layout, instances);
+        storeIndependentLayout(layout, tr("显示实例已添加；缺少数据时保留 Waiting 状态。 / Display instance added."));
+        selectIndependentDisplay(display.id); return display.id;
+    } catch (const std::exception &error) { status_ = QString::fromUtf8(error.what()); emit stateChanged(); return {}; }
+}
+
+QString ReplayController::duplicateIndependentDisplay(const QString &id)
+{
+    if (loading_) return {};
+    try {
+        auto layout = independentLayout(); auto instances = replay::rvizDisplayInstances(layout);
+        const auto source = std::find_if(instances.begin(), instances.end(), [&](const auto &display) { return display.id == id; });
+        if (source == instances.end()) return {};
+        const auto original = instances; QHash<QString, QString> mapping;
+        mapping[id] = QUuid::createUuid().toString(QUuid::Id128);
+        bool expanded = true;
+        while (expanded) { expanded = false; for (const auto &display : original) if (!mapping.contains(display.id) && mapping.contains(display.parentId)) {
+            mapping[display.id] = QUuid::createUuid().toString(QUuid::Id128); expanded = true;
+        } }
+        for (auto display : original) if (mapping.contains(display.id)) {
+            const auto originalId = display.id; display.id = mapping.value(originalId); display.sourcePath.clear();
+            if (originalId == id) display.name += tr(" Copy · 副本");
+            if (mapping.contains(display.parentId)) display.parentId = mapping.value(display.parentId);
+            instances.push_back(display);
+        }
+        storeIndependentLayout(replay::withRvizDisplayInstances(layout, instances), tr("已复制显示；数据缓存共享，样式独立。 / Display duplicated with shared data."));
+        selectIndependentDisplay(mapping.value(id)); return mapping.value(id);
+    } catch (const std::exception &error) { status_ = QString::fromUtf8(error.what()); emit stateChanged(); return {}; }
+}
+
+void ReplayController::removeIndependentDisplays(const QStringList &ids)
+{
+    if (loading_ || ids.isEmpty()) return;
+    try {
+        auto layout = independentLayout(); auto instances = replay::rvizDisplayInstances(layout); QSet<QString> removed(ids.begin(), ids.end());
+        bool expanded = true; while (expanded) { expanded = false; for (const auto &display : instances) if (removed.contains(display.parentId) && !removed.contains(display.id)) { removed.insert(display.id); expanded = true; } }
+        std::erase_if(instances, [&](const auto &display) { return removed.contains(display.id); });
+        storeIndependentLayout(replay::withRvizDisplayInstances(layout, instances), tr("显示已删除；源数据保留，可撤销。 / Displays removed; source data retained."));
+        if (removed.contains(selectedIndependentDisplayId_)) selectIndependentDisplay({});
+    } catch (const std::exception &error) { status_ = QString::fromUtf8(error.what()); emit stateChanged(); }
+}
+
+bool ReplayController::editIndependentDisplay(const QString &id, const QVariantMap &changes)
+{
+    if (loading_ || changes.isEmpty()) return false;
+    try {
+        auto layout = independentLayout(); auto instances = replay::rvizDisplayInstances(layout);
+        const auto found = std::find_if(instances.begin(), instances.end(), [&](const auto &display) { return display.id == id; });
+        if (found == instances.end()) return false;
+        auto &display = *found;
+        const QSet<QString> allowed{"name", "enabled", "topic", "color", "alpha", "pointSize", "lineWidth", "historySeconds", "useMessageColor", "parentId", "Cell Size", "Plane Cell Count", "Length"};
+        for (auto i = changes.begin(); i != changes.end(); ++i) {
+            if (!allowed.contains(i.key())) throw std::runtime_error("该属性没有独立渲染实现，未伪造写入成功。 / Unsupported independent property.");
+            if (i.key() == "name") { const auto name = i.value().toString().trimmed(); if (name.isEmpty() || name.size() > 256) throw std::runtime_error("显示名称无效。 / Invalid display name."); display.name = name; }
+            else if (i.key() == "enabled") display.enabled = i.value().toBool();
+            else if (i.key() == "topic") { if (display.kind == "tf" || !independentDataKind(display.kind)) throw std::runtime_error("此显示不支持独立 Topic 修改。 / This display has no editable Topic."); display.topic = i.value().toString().trimmed(); }
+            else if (i.key() == "parentId") display.parentId = i.value().toString();
+            else if (i.key() == "color") { const QColor color(i.value().toString()); if (!color.isValid()) throw std::runtime_error("颜色无效。 / Invalid color."); display.color = color; display.properties["_color_edited"] = true; }
+            else if (i.key() == "useMessageColor") display.useMessageColor = i.value().toBool();
+            else {
+                bool ok = false; const auto number = i.value().toDouble(&ok);
+                const auto low = i.key() == "alpha" || i.key() == "historySeconds" ? 0. : .1;
+                const auto high = i.key() == "alpha" ? 1. : i.key() == "historySeconds" ? 86400. : i.key() == "Plane Cell Count" ? 1000. : i.key() == "Cell Size" || i.key() == "Length" ? 10000. : 512.;
+                if (!ok || !std::isfinite(number) || number < low || number > high) throw std::runtime_error("属性数值超出有效范围。 / Property value exceeds supported limits.");
+                if (i.key() == "alpha") display.alpha = number;
+                else if (i.key() == "pointSize") display.pointSize = number;
+                else if (i.key() == "lineWidth") display.lineWidth = number;
+                else if (i.key() == "historySeconds") display.historySeconds = number;
+                else display.properties[i.key()] = number;
+            }
+        }
+        storeIndependentLayout(replay::withRvizDisplayInstances(layout, instances)); return true;
+    } catch (const std::exception &error) { status_ = QString::fromUtf8(error.what()); emit stateChanged(); return false; }
+}
+
+QVariantList ReplayController::independentDisplayProperties(const QString &id) const
+{
+    for (const auto &display : replay::rvizDisplayInstances(independentLayout())) if (display.id == id) {
+        try { return replay::rvizDisplayPropertyTree(display); }
+        catch (const std::exception &error) { return {QVariantMap{{"name", "Configuration error"}, {"value", QString::fromUtf8(error.what())}, {"readOnly", true}}}; }
+    }
+    return {};
+}
+
+void ReplayController::retryIndependentDisplays()
+{
+    if (independentWatcher_.isRunning()) return;
+    independentErrors_.clear(); refreshIndependentDisplayData();
+}
+
+void ReplayController::refreshIndependentDisplayData()
+{
+    const auto frame = independentFixedFrame();
+    if (independentDataSource_ != path_ || independentDataFrame_ != frame || independentSourceGeneration_ != recordingGeneration_) {
+        if (independentCancel_) *independentCancel_ = true;
+        ++independentDataGeneration_; independentDataSource_ = path_; independentDataFrame_ = frame;
+        independentSourceGeneration_ = recordingGeneration_;
+        independentData_.clear(); independentErrors_.clear(); independentPending_.clear();
+    }
+    if (loading_ || path_.isEmpty() || independentWatcher_.isRunning()) { emit independentDisplaysChanged(); return; }
+    std::vector<replay::TopicDisplay> missing; QStringList keys;
+    const auto states = independentDisplayStates(); QSet<QString> activeKeys;
+    for (const auto &display : states) if (independentDataKind(display.kind)) activeKeys.insert(independentCacheKey(display));
+    for (auto i = independentData_.begin(); i != independentData_.end();) {
+        if (!activeKeys.contains(i.key())) i = independentData_.erase(i); else ++i;
+    }
+    for (auto display : states) {
+        if (!independentDataKind(display.kind) || display.topic.isEmpty()) continue;
+        const auto *catalog = independentTopicEntry(*record_, display);
+        if (!independentCompatible(catalog, display)) continue;
+        const auto key = independentCacheKey(display);
+        if (independentData_.contains(key) || independentErrors_.contains(key) || keys.contains(key)) continue;
+        display.id = "data:" + key; display.enabled = true; keys.append(key);
+        if (display.kind == "tf") {
+            for (const auto &topic : {QStringLiteral("/tf"), QStringLiteral("/tf_static")}) {
+                if (!independentCompatible(independentTopicEntry(*record_, topic), display)) continue;
+                auto source = display; source.topic = topic; source.id += QStringLiteral(":") + topic; missing.push_back(std::move(source));
+            }
+        } else missing.push_back(std::move(display));
+    }
+    if (missing.empty()) { emit independentDisplaysChanged(); return; }
+    for (const auto &key : keys) independentPending_.insert(key);
+    independentCancel_ = std::make_shared<std::atomic_bool>(false);
+    const auto source = path_; const auto generation = independentDataGeneration_; const auto cancel = independentCancel_;
+    independentWatcher_.setFuture(QtConcurrent::run([source, frame, generation, keys, missing, cancel] {
+        try {
+            // The returned batch is solely owned here. Move geometry into one
+            // cache per (kind, Topic), while sharing the immutable TF tree.
+            // Deleting a Display can therefore release its Topic's CPU data.
+            auto batch = std::const_pointer_cast<replay::Recording>(replay::loadDisplayData(source, frame, missing, [cancel] { return cancel->load(); }));
+            IndependentDisplayLoad result{source, frame, {}, generation, keys, {}};
+            for (const auto &key : keys) {
+                auto data = std::make_shared<replay::Recording>();
+                data->name = batch->name; data->frameId = batch->frameId; data->transforms = batch->transforms;
+                data->maximumGap = batch->maximumGap; data->recordedOrigin = batch->recordedOrigin;
+                data->timelineFirstStampNs = batch->timelineFirstStampNs; data->timelineLastStampNs = batch->timelineLastStampNs;
+                data->hasMessages = batch->hasMessages; data->timelineTimeBasis = batch->timelineTimeBasis;
+                data->center = batch->center; data->radius = batch->radius; data->showMainCloud = false;
+                const auto kind = key.section(QChar(0x1f), 0, 0), topic = key.section(QChar(0x1f), 1);
+                for (auto &overlay : batch->topicOverlays) if (overlay.display.kind == kind &&
+                    (overlay.display.topic == topic || (kind == "tf" && overlay.display.topic == "/tf_static")))
+                    data->topicOverlays.push_back(std::move(overlay));
+                for (const auto &warning : batch->topicWarnings) if (warning.contains(topic)) data->topicWarnings.append(warning);
+                result.records[key] = std::move(data);
+            }
+            return result;
+        }
+        catch (const std::exception &error) { return IndependentDisplayLoad{source, frame, QString::fromUtf8(error.what()), generation, keys, {}}; }
+    }));
+    emit independentDisplaysChanged();
 }
 
 void ReplayController::setTopicDisplayEnabled(int index, bool enabled)
@@ -140,6 +670,13 @@ void ReplayController::setTopicDisplayEnabled(int index, bool enabled)
     if (index < 0 || size_t(index) >= layout.displays.size())
         return;
     const auto selected = layout.displays[size_t(index)];
+    if (layout.useInstanceModel) {
+        const auto instance = std::find_if(layout.instances.begin(), layout.instances.end(), [&](const auto &item) {
+            return item.id == selected.id || (!selected.sourcePath.isEmpty() && item.sourcePath == selected.sourcePath);
+        });
+        if (instance != layout.instances.end()) editIndependentDisplay(instance->id, {{"enabled", enabled}});
+        return;
+    }
     if (selected.enabled == enabled)
         return;
     // A single RViz TF node produces dynamic and static render layers. Keep its
@@ -147,9 +684,11 @@ void ReplayController::setTopicDisplayEnabled(int index, bool enabled)
     for (auto &display : layout.displays)
         if (display.id == selected.id || (!selected.sourcePath.isEmpty() && display.sourcePath == selected.sourcePath))
             display.enabled = enabled;
-    auto document = projectSnapshot();
+    const auto before = projectSnapshot();
+        auto document = projectSnapshot();
     document.setTopicLayout(layout);
     project_ = std::move(document);
+        recordProjectEdit(before);
     refreshDisplayVisibility();
     emit recordingChanged();
 }
@@ -164,15 +703,15 @@ void ReplayController::refreshDisplayVisibility()
 
 void ReplayController::setFixedFrame(const QString &frame)
 {
-    if (loading_ || path_.isEmpty())
+    if (loading_)
         return;
     auto normalized = frame.trimmed();
     while (normalized.startsWith('/'))
         normalized.remove(0, 1);
-    auto layout = projectSnapshot().topicLayout();
+    auto layout = independentLayout();
     if (layout.fixedFrame != normalized) {
         layout.fixedFrame = normalized;
-        applyTopicLayout(layout);
+        storeIndependentLayout(layout);
     }
 }
 
@@ -193,7 +732,7 @@ QString ReplayController::rvizCompatibility() const
     if (!project_) return {};
     const auto layout = project_->topicLayout();
     if (layout.sourceYaml.isEmpty()) return {};
-    auto report = tr("原始分组、插件及属性完整保存在项目；本地渲染为支持子集。 / Original RViz configuration retained; native rendering is a subset.");
+    auto report = tr("原始分组、插件及属性保存在项目；独立 C++ 渲染仅支持明确列出的子集。 / Original RViz configuration retained; standalone C++ renderer supports an explicit subset.");
     if (!layout.skipped.isEmpty()) report += tr(" 未按原插件渲染：%1").arg(layout.skipped.join(QStringLiteral("、")));
     return report;
 }
@@ -204,10 +743,8 @@ void ReplayController::exportRviz(const QUrl &url)
     try {
         if (QFileInfo(url.toLocalFile()).suffix().compare("rviz", Qt::CaseInsensitive) != 0 || referencesFile(url.toLocalFile()))
             throw std::runtime_error("请选择 .rviz 文件，不能覆盖项目素材。 / Invalid RViz destination.");
-        auto layout = projectSnapshot().topicLayout();
-        if (layout.sourceYaml.isEmpty() && layout.displays.empty())
-            throw std::runtime_error("请先导入 RViz 配置。 / Import an RViz configuration first.");
-        if (layout.fixedFrame.isEmpty()) layout.fixedFrame = worldFrame();
+        auto layout = independentLayout();
+        if (layout.fixedFrame.isEmpty()) layout.fixedFrame = independentFixedFrame();
         const auto bytes = replay::serializeRviz(layout);
         QSaveFile file(url.toLocalFile());
         if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit())
@@ -219,41 +756,23 @@ void ReplayController::exportRviz(const QUrl &url)
 
 void ReplayController::applyTopicLayout(const replay::RvizLayout &layout)
 {
-    auto document = projectSnapshot();
-    document.setTopicLayout(layout);
-    if (!path_.isEmpty()) {
-        load(path_, {cloudTopic(), odometryTopic(), mapMode_}, std::move(document), true, layout.skipped);
-        return;
-    }
-
-    project_ = std::move(document);
-    status_ = tr("已保存 %1 个 RViz 话题显示。打开录包后载入匹配的图层。").arg(layout.displays.size());
-    refreshDisplayVisibility();
-    if (!layout.skipped.isEmpty())
-        status_ += tr(" · 无法按原插件显示：%1").arg(layout.skipped.mid(0, 5).join(QStringLiteral("、")));
-    emit recordingChanged();
-    emit stateChanged();
+    const auto instances = replay::rvizDisplayInstances(layout);
+    storeIndependentLayout(replay::withRvizDisplayInstances(layout, instances),
+        tr("已恢复 %1 个 RViz 显示/分组；未知 Class 和属性保留，后台仅读取匹配 Topic。 / RViz display tree restored.").arg(instances.size()));
+    selectIndependentDisplay(instances.empty() ? QString() : instances.front().id);
+    emit nativeConfigChanged();
+    emit nativeConfigLoaded(QVariantMap{{"yaml", layout.sourceYaml}});
 }
 
 void ReplayController::openBag(const QUrl &url)
 {
-    if (!url.isLocalFile())
+    if (loading_ || !url.isLocalFile())
         return;
     const auto path = url.toLocalFile();
-    if (!path_.isEmpty() || !project_) {
-        load(path, {});
-        return;
-    }
-
-    const auto layout = project_->topicLayout();
-    if (layout.fixedFrame.isEmpty() && layout.displays.empty()) {
-        load(path, {});
-        return;
-    }
-
-    auto document = replay::ProjectDocument::create(QStringLiteral("bag"), path);
-    document.setTopicLayout(layout);
-    load(path, {}, std::move(document));
+    try {
+        auto document = projectSnapshot(); document.setBagSource(path);
+        load(path, {}, std::move(document), true);
+    } catch (const std::exception &error) { status_ = QString::fromUtf8(error.what()); emit stateChanged(); }
 }
 
 void ReplayController::openDemo()
@@ -261,6 +780,7 @@ void ReplayController::openDemo()
     if (loading_)
         return;
     path_.clear();
+    demoMode_ = true;
     project_.reset();
     mapMode_.reset();
     status_.clear();
@@ -300,7 +820,7 @@ void ReplayController::openProject(const QUrl &url)
         } else {
             auto empty = std::make_shared<replay::Recording>();
             empty->name = QFileInfo(project_->path()).fileName();
-            empty->frames.push_back({0, 0, 0});
+            empty->radius = 1.f;
             install(std::move(empty));
         }
     } catch (const std::exception &error) {
@@ -313,7 +833,7 @@ replay::ProjectDocument ReplayController::projectSnapshot() const
 {
     if (project_)
         return *project_;
-    auto project = replay::ProjectDocument::create(demo() ? QStringLiteral("demo") : QStringLiteral("bag"), path_);
+    auto project = replay::ProjectDocument::create(demo() ? QStringLiteral("demo") : path_.isEmpty() ? QStringLiteral("none") : QStringLiteral("bag"), path_);
     project.setCameraKind(QString::fromLatin1(replay::CameraPresets[size_t(cameraIndex_)].id));
     project.setValue("cloud_topic", cloudTopic());
     project.setValue("odom_topic", odometryTopic());
@@ -340,7 +860,9 @@ void ReplayController::saveProjectAs(const QUrl &url)
     if (loading_ || !url.isLocalFile())
         return;
     try {
-        project_ = projectSnapshot().saveAs(url.toLocalFile());
+        auto document = projectSnapshot();
+        if (!project_ && !demo()) document.setTopicLayout(independentLayout());
+        project_ = document.saveAs(url.toLocalFile());
         status_ = tr("项目已保存：%1").arg(QFileInfo(project_->path()).fileName());
         emit recordingChanged();
     } catch (const std::exception &error) {
@@ -441,6 +963,8 @@ void ReplayController::load(const QString &path, const replay::LoadOptions &opti
 {
     if (loading_)
         return;
+    if (independentCancel_) *independentCancel_ = true;
+    ++independentDataGeneration_; independentPending_.clear();
     pause();
     status_ = tr("正在读取 ROS1 bag");
     loading_ = true;
@@ -563,14 +1087,69 @@ QVariantMap ReplayController::speedGauge() const
         {"scale", 1.}, {"x", .05}, {"y", .32}, {"start", 0.}, {"end", -1.}, {"transparent", true}};
 }
 
+QVariantList ReplayController::speedMeters() const
+{
+    auto result = project_ ? project_->composition().value("speed_meters").toArray().toVariantList() : QVariantList{};
+    const auto legacy = speedGauge();
+    const bool containsLegacy = std::any_of(result.cbegin(), result.cend(), [](const QVariant &v) { return v.toMap().value("id").toString() == "speed"; });
+    if (legacy.value("visible").toBool() && !containsLegacy) {
+        const QString savedUnit = QSettings().value("telemetry/speedUnit", "m/s").toString();
+        const QString unit = savedUnit == "km/h" ? savedUnit : QStringLiteral("m/s");
+        result.prepend(QVariantMap{{"id", "speed"}, {"label", tr("Speed Meter · 速度表")}, {"source", QVariantMap{}},
+            {"settings", QVariantMap{{"unit", unit}, {"mode", "total"}, {"statisticsMode", "entire"}, {"rangeMode", "manual"},
+                {"rangeMinimumSI", 0.}, {"rangeMaximumSI", legacy.value("limit", 10.)}}},
+            {"style", QVariantMap{{"backgroundMode", legacy.value("transparent", true).toBool() ? "transparent" : "translucent"}}}});
+    }
+    return result;
+}
+
+QString ReplayController::addSpeedMeter()
+{
+    if (loading_) return {};
+    const auto before = projectSnapshot();
+    auto document = before;
+    auto composition = document.composition();
+    auto meters = QJsonArray::fromVariantList(speedMeters());
+    const auto id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    meters.append(QJsonObject{{"id", id}, {"label", tr("Speed Meter %1 · 速度表").arg(meters.size() + 1)},
+        {"source", QJsonObject{}}, {"settings", QJsonObject{{"unit", QSettings().value("telemetry/speedUnit", "m/s").toString() == "km/h" ? "km/h" : "m/s"},
+            {"mode", "total"}, {"statisticsMode", "entire"}, {"rangeMode", "auto"}}}, {"style", QJsonObject{}}});
+    composition["speed_meters"] = meters;
+    document.setComposition(composition); project_ = std::move(document);
+    recordProjectEdit(before); emit recordingChanged(); canvas_->select(id);
+    return id;
+}
+
+void ReplayController::editSpeedMeter(const QString &id, const QString &section, const QVariantMap &changes)
+{
+    if (loading_ || !QStringList{"source", "settings", "style"}.contains(section)) return;
+    if (section == "settings" && changes.contains("unit") && !QStringList{"m/s", "km/h"}.contains(changes.value("unit").toString())) return;
+    const auto before = projectSnapshot(); auto document = before; auto composition = document.composition();
+    auto meters = QJsonArray::fromVariantList(speedMeters()); bool found = false;
+    for (qsizetype i = 0; i < meters.size(); ++i) {
+        auto meter = meters[i].toObject(); if (meter.value("id").toString() != id) continue;
+        auto value = section == "source" ? QJsonObject{} : meter.value(section).toObject();
+        const auto patch = QJsonObject::fromVariantMap(changes);
+        for (auto p = patch.begin(); p != patch.end(); ++p) value[p.key()] = p.value();
+        meter[section] = value; meters[i] = meter; found = true; break;
+    }
+    if (!found) return;
+    composition["speed_meters"] = meters; document.setComposition(composition); project_ = std::move(document);
+    recordProjectEdit(before);
+    if (section == "settings" && changes.contains("unit")) QSettings().setValue("telemetry/speedUnit", changes.value("unit"));
+    emit recordingChanged();
+}
+
 void ReplayController::setSpeedGauge(const QVariantMap &settings)
 {
     if (loading_)
         return;
     try {
+        const auto before = projectSnapshot();
         auto project = projectSnapshot();
         project.setSpeedGauge(settings);
         project_ = std::move(project);
+        recordProjectEdit(before);
         emit recordingChanged();
     } catch (const std::exception &error) {
         status_ = QString::fromUtf8(error.what());
@@ -581,6 +1160,9 @@ void ReplayController::setSpeedGauge(const QVariantMap &settings)
 QVariantMap ReplayController::moviePreferences() const
 {
     auto prefs = project_ ? project_->moviePreferences() : QVariantMap{{"speed", 1.}, {"audio", QString()}};
+    const auto rate = prefs.value("speed", 1.).toDouble();
+    if (rate != 1. && rate != .5 && rate != .25 && rate != 2. && rate != 4.)
+        prefs.insert("speed", 1.);
     const auto id = prefs.value("audio").toString();
     const auto layer = std::find_if(clips_.begin(), clips_.end(), [&](const auto &clip) {
         return !id.isEmpty() && clip.id == id;
@@ -591,12 +1173,19 @@ QVariantMap ReplayController::moviePreferences() const
 
 void ReplayController::setMoviePreferences(double speed, int audioIndex)
 {
-    if (loading_ || (speed != 1. && speed != .5 && speed != .25) ||
+    if (loading_ || (speed != 1. && speed != .5 && speed != .25 && speed != 2. && speed != 4.) ||
         audioIndex < -1 || (audioIndex >= 0 && size_t(audioIndex) >= clips_.size()))
         return;
+    const auto before = projectSnapshot();
     auto project = projectSnapshot();
     project.setMoviePreferences(speed, audioIndex < 0 ? QString() : clips_[size_t(audioIndex)].id);
     project_ = std::move(project);
+    if (playing()) {
+        // Keep the current experiment position when changing rate mid-playback.
+        start_ = position_;
+        clock_.restart();
+    }
+    recordProjectEdit(before);
     emit recordingChanged();
 }
 
@@ -636,9 +1225,11 @@ void ReplayController::setCamera(int index)
     if (loading_ || index < 0 || size_t(index) >= replay::CameraPresets.size() || cameraIndex_ == index)
         return;
 
-    auto project = projectSnapshot();
+    const auto before = projectSnapshot();
+        auto project = projectSnapshot();
     project.setCameraKind(QString::fromLatin1(replay::CameraPresets[size_t(index)].id));
     project_ = std::move(project);
+        recordProjectEdit(before);
     cameraIndex_ = index;
     emit cameraChanged();
 }
@@ -650,20 +1241,25 @@ QColor ReplayController::sceneBackground() const
 
 void ReplayController::setSceneBackground(const QColor &color)
 {
-    if (!color.isValid() || color.alpha() != 255 || color == sceneBackground()) return;
-    auto document = projectSnapshot();
+    if (loading_ || !color.isValid() || color.alpha() != 255 || (color == sceneBackground() && independentLayout().backgroundColor == color)) return;
+    const auto before = projectSnapshot();
+    auto document = before;
     document.setSceneBackground(color.name());
     project_ = std::move(document);
+    recordProjectEdit(before);
     emit sceneStyleChanged();
+    emit independentDisplaysChanged();
 }
 
 void ReplayController::setTransparentCanvas(bool transparent)
 {
     if (loading_ || transparentCanvas() == transparent)
         return;
-    auto document = projectSnapshot();
+    const auto before = projectSnapshot();
+        auto document = projectSnapshot();
     document.setTransparentCanvas(transparent);
     project_ = std::move(document);
+        recordProjectEdit(before);
     emit transparentCanvasChanged();
 }
 
@@ -836,9 +1432,11 @@ void ReplayController::setLayoutCue(const QString &mode, int videoIndex, double 
     try {
         const QString videoId = videoIndex >= 0 && size_t(videoIndex) < clips_.size()
             ? clips_[size_t(videoIndex)].id : QString();
+        const auto before = projectSnapshot();
         auto document = projectSnapshot();
         document.setLayoutCue(position_, mode, videoId, transition);
         project_ = std::move(document);
+        recordProjectEdit(before);
         refreshLayoutCues();
         status_ = tr("布局标记已更新。");
     } catch (const std::exception &error) {
@@ -851,7 +1449,9 @@ void ReplayController::removeLayoutCue(double time)
 {
     if (loading_ || !project_)
         return;
-    project_->removeLayoutCue(time);
+    const auto before = projectSnapshot();
+        project_->removeLayoutCue(time);
+        recordProjectEdit(before);
     refreshLayoutCues();
     status_ = tr("已删除布局标记。");
     emit stateChanged();
@@ -894,9 +1494,11 @@ void ReplayController::setPlanningLayerEnabled(const QString &role, bool enabled
 {
     if (loading_ || (role != "plan" && role != "corridor" && role != "goal" && role != "camera" && role != "scan"))
         return;
-    auto document = projectSnapshot();
+    const auto before = projectSnapshot();
+        auto document = projectSnapshot();
     document.setLayerEnabled(role, enabled);
     project_ = std::move(document);
+        recordProjectEdit(before);
     emit recordingChanged();
 }
 
@@ -904,9 +1506,11 @@ void ReplayController::setComparePlans(bool compare)
 {
     if (loading_ || compare == comparePlans())
         return;
-    auto document = projectSnapshot();
+    const auto before = projectSnapshot();
+        auto document = projectSnapshot();
     document.setComparePlans(compare);
     project_ = std::move(document);
+        recordProjectEdit(before);
     emit recordingChanged();
 }
 
@@ -955,7 +1559,7 @@ QVariantList ReplayController::planningEvents() const
 {
     QVariantList events;
     for (const auto &[stamp, name] : record_->planningEvents) {
-        const double time = double(stamp - record_->frames.front().stamp) / 1.e9;
+        const double time = double(stamp - record_->stampAt(0.)) / 1.e9;
         if (time >= 0. && time <= duration())
             events.append(QVariantMap{{"time", time}, {"label", QString::number(time, 'f', 3) + " s · " + name}});
     }
@@ -973,9 +1577,11 @@ void ReplayController::addMarker()
         return;
     pause();
     try {
+        const auto before = projectSnapshot();
         auto document = projectSnapshot();
         document.addTimelineMarker(position_);
         project_ = std::move(document);
+        recordProjectEdit(before);
         status_ = tr("已在 %1 秒添加标记。").arg(position_, 0, 'f', 3);
         emit markersChanged();
     } catch (const std::exception &error) {
@@ -1000,7 +1606,9 @@ void ReplayController::changeMarker(double time, const std::optional<QString> &l
         return;
 
     try {
+        const auto before = projectSnapshot();
         project_->replaceTimelineMarker(time, label);
+        recordProjectEdit(before);
         status_ = label ? tr("已重命名标记。") : tr("已删除标记。");
         emit markersChanged();
     } catch (const std::exception &error) {
@@ -1012,6 +1620,32 @@ void ReplayController::changeMarker(double time, const std::optional<QString> &l
 QVariantMap ReplayController::mainView() const
 {
     return project_ ? project_->mainView() : QVariantMap{{"width", 1.}, {"zoom", 1.}, {"x", .5}, {"y", .5}};
+}
+
+void ReplayController::setMainView(const QVariantMap &settings)
+{
+    if (loading_) return;
+    try {
+        const auto before = projectSnapshot();
+        auto document = projectSnapshot();
+        document.setMainView(settings); project_ = std::move(document);
+        recordProjectEdit(before);
+        emit recordingChanged();
+    } catch (const std::exception &error) { status_ = QString::fromUtf8(error.what()); emit stateChanged(); }
+}
+
+void ReplayController::restoreMainView()
+{
+    if (loading_) return;
+    const auto before = projectSnapshot();
+    auto document = before;
+    auto scene = document.composition();
+    scene["has_main_view"] = true;
+    document.setComposition(scene);
+    project_ = std::move(document);
+    recordProjectEdit(before);
+    canvas_->refresh();
+    emit recordingChanged();
 }
 
 void ReplayController::refreshMotions()
@@ -1060,11 +1694,13 @@ void ReplayController::addLayerMotion(const QString &kind, const QString &id, do
     if (loading_)
         return;
     try {
+        const auto before = projectSnapshot();
         auto document = projectSnapshot();
         document.addLayerMotion(kind, id, begin, position_, duration, width, x, y);
         if (kind == "main")
             document.setMainViewWidth(normalWidth);
         project_ = std::move(document);
+        recordProjectEdit(before);
         refreshMotions();
         emit recordingChanged();
         status_ = tr("已添加缩窗动画。");
@@ -1078,7 +1714,9 @@ void ReplayController::removeLayerMotion(int index)
 {
     if (loading_ || !project_)
         return;
-    project_->removeLayerMotion(index);
+    const auto before = projectSnapshot();
+        project_->removeLayerMotion(index);
+        recordProjectEdit(before);
     refreshMotions();
 }
 
@@ -1106,9 +1744,11 @@ void ReplayController::addCloudView(int camera)
     if (loading_ || camera <= 0 || size_t(camera) >= replay::CameraPresets.size())
         return;
     try {
+        const auto before = projectSnapshot();
         auto document = projectSnapshot();
         document.addCloudView(QString::fromLatin1(replay::CameraPresets[size_t(camera)].id));
         project_ = std::move(document);
+        recordProjectEdit(before);
         refreshCloudViews();
         status_ = tr("已添加点云机位。");
     } catch (const std::exception &error) {
@@ -1122,7 +1762,9 @@ void ReplayController::setCloudView(const QString &id, const QVariantMap &settin
     if (loading_ || !project_)
         return;
     try {
+        const auto before = projectSnapshot();
         project_->setCloudView(id, settings);
+        recordProjectEdit(before);
         refreshCloudViews();
     } catch (const std::exception &error) {
         status_ = QString::fromUtf8(error.what());
@@ -1132,11 +1774,7 @@ void ReplayController::setCloudView(const QString &id, const QVariantMap &settin
 
 void ReplayController::removeCloudView(const QString &id)
 {
-    if (loading_ || !project_)
-        return;
-    project_->removeCloudView(id);
-    refreshCloudViews();
-    refreshMotions();
+    removeLayers({id});
 }
 
 void ReplayController::refreshSceneLayers()
@@ -1150,11 +1788,13 @@ void ReplayController::addSceneLayer(const QString &kind, const QString &content
     if (loading_)
         return;
     try {
+        const auto before = projectSnapshot();
         auto document = projectSnapshot();
         const double end = duration() > 0. ? std::min(duration(), position_ + 3.) : position_ + 3.;
         const double start = end <= position_ ? std::max(0., end - 3.) : position_;
         document.addSceneLayer(kind, content, start, end);
         project_ = std::move(document);
+        recordProjectEdit(before);
         refreshSceneLayers();
         emit recordingChanged();
         status_ = tr("已添加合成图层。");
@@ -1180,7 +1820,9 @@ void ReplayController::editSceneLayer(const QString &id, const QVariantMap &chan
     if (loading_ || !project_)
         return;
     try {
+        const auto before = projectSnapshot();
         project_->editSceneLayer(id, QJsonObject::fromVariantMap(changes));
+        recordProjectEdit(before);
         refreshSceneLayers();
         setPosition(position_);
         emit recordingChanged();
@@ -1193,15 +1835,7 @@ void ReplayController::editSceneLayer(const QString &id, const QVariantMap &chan
 
 void ReplayController::removeSceneLayer(const QString &id)
 {
-    if (loading_ || !project_)
-        return;
-    project_->removeSceneLayer(id);
-    refreshSceneLayers();
-    refreshMotions();
-    setPosition(position_);
-    emit recordingChanged();
-    status_ = tr("已移除合成图层。");
-    emit stateChanged();
+    removeLayers({id});
 }
 
 void ReplayController::refreshVideoLayers()
@@ -1243,6 +1877,7 @@ void ReplayController::refreshVideoLayers()
         });
     }
     videoLayers_ = std::move(layers);
+    videoLayerModel_.setLayers(videoLayers_);
     emit videoLayersChanged();
     emit activeLayoutChanged();
 }
@@ -1261,9 +1896,11 @@ void ReplayController::addVideo(const QUrl &url)
     if (loading_ || !url.isLocalFile())
         return;
     try {
+        const auto before = projectSnapshot();
         auto document = projectSnapshot();
         document.addVideo(url.toLocalFile());
         project_ = std::move(document);
+        recordProjectEdit(before);
         refreshVideoLayers();
         status_ = tr("已添加实拍视频。");
     } catch (const std::exception &error) {
@@ -1277,13 +1914,11 @@ void ReplayController::editVideo(int index, const QJsonObject &changes)
     if (loading_ || !project_)
         return;
     try {
-        const auto before = project_->videoTiming(index);
+        const auto before = *project_;
         project_->setVideoTiming(index, changes);
-        const auto after = project_->videoTiming(index);
-        if (before == after)
+        if (before.json() == project_->json())
             return;
-        undo_.push_back({index, before, after});
-        redo_.clear();
+        recordProjectEdit(before);
         refreshVideoLayers();
         emit editHistoryChanged();
         status_ = tr("视频设置已更新。");
@@ -1461,11 +2096,115 @@ void ReplayController::restoreVideoEdit(bool redo)
         return;
 
     const auto edit = history.back();
-    project_->replaceVideoTiming(edit.index, redo ? edit.after : edit.before);
+    const auto previousRecord = record_;
+    const auto previousPath = path_;
+    project_ = redo ? edit.after : edit.before;
+    record_ = redo ? edit.afterRecord : edit.beforeRecord;
+    path_ = redo ? edit.afterPath : edit.beforePath;
+    if (previousRecord != record_ || previousPath != path_) ++recordingGeneration_;
     destination.push_back(edit);
     history.pop_back();
-    refreshVideoLayers();
-    status_ = redo ? tr("已重做视频编辑。") : tr("已撤销视频编辑。");
+    refreshProjectModels();
+    status_ = redo ? tr("已重做编辑。") : tr("已撤销编辑。");
     emit editHistoryChanged();
     emit stateChanged();
+}
+
+void ReplayController::recordProjectEdit(const replay::ProjectDocument &before,
+    std::shared_ptr<const replay::Recording> beforeRecord, const QString &beforePath)
+{
+    if (projectEditDepth_ > 0 || !project_ || before.json() == project_->json()) return;
+    undo_.push_back({before, *project_, beforeRecord ? beforeRecord : record_, record_, beforeRecord ? beforePath : path_, path_});
+    if (undo_.size() > 200) undo_.erase(undo_.begin());
+    redo_.clear();
+    emit editHistoryChanged();
+}
+
+void ReplayController::refreshProjectModels()
+{
+    refreshDisplayVisibility();
+    refreshVideoLayers(); refreshSceneLayers(); refreshCloudViews(); refreshMotions(); refreshLayoutCues();
+    emit markersChanged(); emit recordingChanged(); emit transparentCanvasChanged(); emit sceneStyleChanged();
+    emit renderBackendChanged();
+    emit positionChanged(); canvas_->refresh();
+}
+void ReplayController::removeLayers(const QStringList &ids)
+{
+    if (loading_ || ids.isEmpty()) return;
+    const auto before=projectSnapshot(); auto document=before;
+    document.removeCanvasLayers(ids); project_=std::move(document); recordProjectEdit(before);
+    canvas_->clearSelection(); refreshProjectModels();
+    status_=tr("已删除 %1 个图层。原始素材保留在 Sources；Ctrl+Z 可恢复。 / Layers removed; sources retained.").arg(ids.size());emit stateChanged();
+}
+void ReplayController::clearCanvas()
+{
+    QStringList ids;for(const auto &v:canvas_->layers())ids.append(v.toMap().value("id").toString());removeLayers(ids);
+}
+void ReplayController::addSource(const QUrl &file,const QString &kind)
+{
+    if(loading_||!file.isLocalFile())return;
+    try{const auto before=projectSnapshot();auto document=before;document.addSource(file.toLocalFile(),kind);project_=std::move(document);recordProjectEdit(before);emit sourcesChanged();}
+    catch(const std::exception &e){status_=QString::fromUtf8(e.what());emit stateChanged();}
+}
+void ReplayController::cancelSourceRemoval(){pendingSourceRemoval_.clear();emit sourcesChanged();}
+bool ReplayController::removeSources(const QStringList &ids,bool removeReferences)
+{
+    if(loading_||ids.isEmpty())return false;
+    const auto before=projectSnapshot();const auto previousRecord=record_;const auto previousPath=path_;
+    auto document=before;QVariantList affected,removed;
+    for(const auto &v:document.sources()){const auto s=v.toMap();if(!ids.contains(s.value("id").toString()))continue;
+        removed.append(s);for(const auto &r:s.value("references").toList())affected.append(r);
+    }
+    if(!removeReferences&&!affected.isEmpty()){
+        pendingSourceRemoval_={{"ids",ids},{"references",affected},{"sources",removed}};emit sourcesChanged();return false;
+    }
+    for(const auto &id:ids)document.removeSource(id,true);
+    if (!document.bag().isEmpty() && document.extrinsics() != before.extrinsics()) {
+        replacementBefore_ = before;
+        replacementRemovedSources_ = removed;
+        pendingSourceRemoval_.clear();
+        const auto bag = document.bag();
+        load(bag, {cloudTopic(), odometryTopic(), mapMode_}, std::move(document), true);
+        emit sourcesChanged();
+        return true;
+    }
+    project_=std::move(document);
+    if(!previousPath.isEmpty()&&project_->bag().isEmpty()){
+        auto empty=std::make_shared<replay::Recording>();empty->name=tr("No ROS data · 未载入 ROS 数据");empty->radius=1.;record_=std::move(empty);path_.clear();++recordingGeneration_;
+    }
+    recordProjectEdit(before,previousRecord,previousPath);pendingSourceRemoval_.clear();canvas_->clearSelection();refreshProjectModels();
+    for(const auto &v:removed){const auto s=v.toMap();emit sourceRemoved(s.value("kind").toString(),s.value("url").toUrl());}
+    status_=tr("已从项目移除素材及确认的引用；磁盘原文件未修改。Ctrl+Z 可恢复。");emit stateChanged();return true;
+}
+void ReplayController::clearUnusedSources()
+{
+    QStringList ids;for(const auto &v:sources()){const auto s=v.toMap();if(s.value("referenceCount").toInt()==0)ids.append(s.value("id").toString());}removeSources(ids,false);
+}
+void ReplayController::renameSource(const QString &id,const QString &name)
+{
+    if(loading_)return;const auto before=projectSnapshot();auto document=before;document.renameSource(id,name);project_=std::move(document);recordProjectEdit(before);emit sourcesChanged();
+}
+void ReplayController::replaceSource(const QString &id,const QUrl &file)
+{
+    if(loading_||!file.isLocalFile())return;
+    try{
+        const auto before=projectSnapshot();auto document=before;document.replaceSource(id,file.toLocalFile());
+        if (!document.bag().isEmpty() && (document.bag() != before.bag() || document.extrinsics() != before.extrinsics())) {
+            replacementBefore_ = before;
+            const auto bag = document.bag();
+            load(bag, {cloudTopic(), odometryTopic(), mapMode_}, std::move(document), true);
+            return;
+        }
+        project_=std::move(document);recordProjectEdit(before);refreshProjectModels();
+    }
+    catch(const std::exception &e){status_=QString::fromUtf8(e.what());emit stateChanged();}
+}
+void ReplayController::addSourceLayer(const QString &id)
+{
+    for(const auto &v:sources()){const auto s=v.toMap();if(s.value("id").toString()!=id)continue;
+        if(s.value("kind").toString()=="video")addVideo(s.value("url").toUrl());
+        else if(s.value("kind").toString()=="image")addSceneImage(s.value("url").toUrl());
+        else if(s.value("kind").toString()=="bag")openBag(s.value("url").toUrl());
+        return;
+    }
 }
